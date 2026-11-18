@@ -158,10 +158,12 @@ docker compose restart meatus
 YAML 变体（只读，挂载后启动命令需指向 YAML）：
 
 ```bash
+docker login registry.cn-hangzhou.aliyuncs.com
+
 docker run -d --name meatus \
   -v "$PWD/server.yaml:/data/server.yaml:ro" \
   -v meatus-data:/data \
-  ghcr.io/binsail/meatus:1.1.0 \
+  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0 \
   server --config /data/server.yaml
 ```
 
@@ -365,17 +367,19 @@ docker start meatus
 
 ### 4.7 使用预构建镜像
 
-V1.1 起镜像同时发布到 GHCR（canonical）与阿里云 ACR（国内镜像）：
+当前 `1.1.0` 发布到阿里云 ACR；GHCR 与 GitHub Release 暂缓：
 
 ```bash
-# GHCR
-docker pull ghcr.io/binsail/meatus:1.1.0
+# ACR 当前为私有仓库，先登录
+docker login registry.cn-hangzhou.aliyuncs.com
 
-# 阿里云 ACR 国内镜像
+# 固定版本 / 次版本 / 最新
 docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:latest
 ```
 
-server / client 使用同一镜像，启动参数与 4.6 相同，把镜像名替换为上面的仓库地址即可。发布流水线会同时生成 SPDX SBOM；GHCR 镜像附带 SBOM attestation，ACR 改为推送后 syft 扫描生成镜像 SBOM；两仓库同时推送时校验 manifest digest 一致。
+server / client 使用同一镜像，启动参数与 4.6 相同，把镜像名替换为上面的仓库地址即可。镜像覆盖 linux/amd64 与 linux/arm64；ACR 推送关闭 buildx attestation，镜像 SBOM 由 syft 单独扫描生成。GHCR 路径保留在发布脚本中，待恢复 GitHub 发布时启用。
 
 ## 5. 升级与回滚
 

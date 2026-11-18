@@ -2,9 +2,9 @@
 
 本文件记录 Meatus 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
-## [1.1.0] - Unreleased
+## [1.1.0] - 2026-11-18
 
-V1.1：公网可用性加固 + 双仓库发布 + YAML 配置。
+V1.1：公网可用性加固 + ACR 镜像发布 + YAML 配置。
 
 ### Added
 
@@ -12,9 +12,9 @@ V1.1：公网可用性加固 + 双仓库发布 + YAML 配置。
 - `admin.trust_forwarded_proto`：默认 `false`，仅在可信反向代理后识别 `X-Forwarded-Proto: https`。
 - YAML 配置：`.yaml` / `.yml` 只读解析；`meatus server|client|check --format auto|toml|yaml`。
 - `config/server.example.yaml`、`config/client.example.yaml`，均可直接 `meatus check`。
-- GHCR + 阿里云 ACR 双仓库发布脚本 `scripts/docker-release.sh`：多架构、三标签、digest 比对；GHCR 保留镜像 SBOM attestation，ACR 因不支持 OCI 1.1 empty descriptor 改为 syft 单独扫描。
+- 镜像发布脚本 `scripts/docker-release.sh`：支持 GHCR / 阿里云 ACR、多架构、三标签、digest 比对；当前 `1.1.0` 实推 ACR，GHCR 暂缓。GHCR 保留镜像 SBOM attestation，ACR 因不支持 OCI 1.1 empty descriptor 改为 syft 单独扫描。
 - `scripts/sbom.sh`：从 `Cargo.lock` 与 `web/package-lock.json` 生成 SPDX SBOM；`build-release.sh` 将其作为 `SBOM.spdx.json` 打入发布包。
-- GitHub Actions `docker` job：GHCR/ACR 登录、双推、SPDX SBOM、随 Release 上传。
+- 发布流水线支持 GHCR / ACR 登录与双推、SPDX SBOM、随 Release 上传；当前 `1.1.0` 仅启用 ACR。
 - `meatus check` 输出实际配置格式；YAML 解析错误报告文件、行、列。
 
 ### Changed
@@ -37,7 +37,7 @@ V1.1：公网可用性加固 + 双仓库发布 + YAML 配置。
 
 - YAML 不支持写回、格式互转、`!include`、远程引用或模板执行。
 - 管理面 HTTPS 的可信反代场景需显式设置 `trust_forwarded_proto = true`；默认不支持任意代理链。
-- 1.1.0 尚未正式发布，发布前仍需完成双仓库匿名拉取、digest 比对与 24h soak / 20% 丢包回归记录。
+- GHCR 与 GitHub Release 暂缓；当前镜像发布以阿里云 ACR 为准，ACR 仓库仍为私有，匿名拉取需先 `docker login`。
 
 ## [1.0.0] - 2026-11-18
 
