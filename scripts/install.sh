@@ -61,6 +61,19 @@ DOC_DIR="/usr/share/doc/meatus/config"
 install -d -m 0755 "$DOC_DIR"
 install -m 0644 config/server.example.yaml config/client.example.yaml "$DOC_DIR/"
 
+# 许可证、第三方声明与发布包 SBOM 一并安装，便于离线审计。
+DOC_ROOT="/usr/share/doc/meatus"
+install -d -m 0755 "$DOC_ROOT"
+install -m 0644 LICENSE THIRD_PARTY_NOTICES.md "$DOC_ROOT/"
+for f in THIRD_PARTY_LICENSES.md THIRD_PARTY_LICENSE_TEXTS.txt; do
+    if [[ -f "$f" ]]; then
+        install -m 0644 "$f" "$DOC_ROOT/"
+    else
+        install -m 0644 "docs/$f" "$DOC_ROOT/"
+    fi
+done
+[[ -f SBOM.spdx.json ]] && install -m 0644 SBOM.spdx.json "$DOC_ROOT/"
+
 SERVER_CONF="$CONF_DIR/server.toml"
 if [[ -f "$SERVER_CONF" ]]; then
     echo "keep existing $SERVER_CONF"
