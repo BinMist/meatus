@@ -7,7 +7,7 @@ version = "1.0.0"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
-# repository 在公开仓库地址确定后填写；V1 开源快照不携带内部 Codeup 路径。
+repository = "https://gitee.com/binsail/meatus.git"
 
 [workspace.dependencies]
 meatus-proto = { path = "crates/meatus-proto" }

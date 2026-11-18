@@ -1,5 +1,6 @@
 [Unit]
 Description=Meatus relay (public server)
+Documentation=https://gitee.com/binsail/meatus
 After=network-online.target
 Wants=network-online.target
 

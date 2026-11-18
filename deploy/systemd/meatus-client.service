@@ -1,5 +1,6 @@
 [Unit]
 Description=Meatus client (intranet tunnel)
+Documentation=https://gitee.com/binsail/meatus
 After=network-online.target
 Wants=network-online.target
 
