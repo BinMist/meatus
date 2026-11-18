@@ -929,6 +929,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn yaml_config_is_read_only() {
+        assert!(ensure_writable_config(Path::new("client.toml")).is_ok());
+        let error = ensure_writable_config(Path::new("client.yaml")).expect_err("yaml rejected");
+        assert!(error.contains("read-only"));
+        assert!(ensure_writable_config(Path::new("client.yml")).is_err());
+    }
+
     #[tokio::test]
     async fn reload_diff_adds_and_removes_proxies() {
         let (mut client, mut server) = duplex(8192);

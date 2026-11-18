@@ -185,6 +185,142 @@ hsts = true
 }
 
 #[tokio::test]
+async fn admin_yaml_settings_write_is_rejected() {
+    let control_port = free_port();
+    let admin_port = free_port();
+    let dir = std::env::temp_dir().join(format!("meatus-admin-yaml-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let config = parse_server_config(&format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{}"
+tls_key = "{}"
+
+[auth]
+clients = [
+  {{ id = "client", tenant = "default", token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b" }},
+]
+
+[ports]
+range = [24200, 24210]
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+admin_token = "admin-secret"
+"#,
+        cert_path.display(),
+        key_path.display()
+    ))
+    .expect("parse config");
+
+    let state = ServerState::new(config)
+        .expect("state")
+        .with_config_path(dir.join("server.yaml"));
+    let cancel = CancellationToken::new();
+    let run_cancel = cancel.clone();
+    let task = tokio::spawn(async move { meatus_server::run_until(state, run_cancel).await });
+    sleep(Duration::from_millis(300)).await;
+
+    let (status, head, body) = request(
+        admin_port,
+        "POST /api/v1/session HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 24\r\n\r\n{\"token\":\"admin-secret\"}",
+    )
+    .await;
+    assert_eq!(status, 200);
+    let cookie = cookie_from(&head);
+    let csrf = body
+        .split("\"csrf\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("csrf token");
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "PUT /api/v1/settings HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{}\r\n",
+            json_body("{}")
+        ),
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert!(body.contains("YAML config is read-only"));
+
+    cancel.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn admin_trusted_forwarded_proto_sets_secure_cookie() {
+    let control_port = free_port();
+    let admin_port = free_port();
+    let dir = std::env::temp_dir().join(format!("meatus-admin-proto-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let config = parse_server_config(&format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{}"
+tls_key = "{}"
+
+[auth]
+clients = [
+  {{ id = "client", tenant = "default", token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b" }},
+]
+
+[ports]
+range = [24300, 24310]
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+admin_token = "admin-secret"
+trust_forwarded_proto = true
+"#,
+        cert_path.display(),
+        key_path.display()
+    ))
+    .expect("parse config");
+
+    let state = ServerState::new(config).expect("state");
+    let cancel = CancellationToken::new();
+    let run_cancel = cancel.clone();
+    let task = tokio::spawn(async move { meatus_server::run_until(state, run_cancel).await });
+    sleep(Duration::from_millis(300)).await;
+
+    let (status, head, _) = request(
+        admin_port,
+        "POST /api/v1/session HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-Proto: https\r\nContent-Type: application/json\r\nContent-Length: 24\r\n\r\n{\"token\":\"admin-secret\"}",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(head.contains("Strict-Transport-Security:"));
+    let set_cookie = head
+        .lines()
+        .find(|line| line.starts_with("Set-Cookie:"))
+        .expect("Set-Cookie");
+    assert!(set_cookie.contains("Secure"));
+
+    cancel.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
 async fn admin_panel_login_csrf_and_static_assets() {
     let control_port = free_port();
     let admin_port = free_port();
