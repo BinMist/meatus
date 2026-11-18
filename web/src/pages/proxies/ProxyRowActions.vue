@@ -63,7 +63,13 @@ defineEmits<{
 .mt-inline-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 2px;
+  justify-content: space-evenly;
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+}
+
+.mt-inline-actions > * {
+  flex: 0 0 auto;
 }
 </style>

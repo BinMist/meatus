@@ -78,7 +78,7 @@ const baseColumns: DataTableColumn[] = [
     format: (value: unknown) => formatNumber(Number(value)),
   },
   { key: 'traffic', header: '流量', type: 'text', align: 'end', width: 86 },
-  { key: 'actions', header: '操作', type: 'actions', width: 100 },
+  { key: 'actions', header: '操作', type: 'actions', width: 120 },
 ]
 
 const columns = computed(() => {

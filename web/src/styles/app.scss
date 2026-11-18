@@ -664,8 +664,10 @@ code,
 .mt-inline-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
-  justify-content: flex-end;
+  gap: 0;
+  justify-content: space-evenly;
+  width: 100%;
+  min-width: 0;
 }
 
 .mt-type {
@@ -2069,6 +2071,11 @@ body {
 
 .page .sl-data-table:has(.sl-data-table__td--actions) .sl-data-table__th:last-child {
   background: #f4f7f6;
+  text-align: center;
+}
+
+.page .sl-data-table__th--actions {
+  text-align: center;
 }
 
 /* ── 概览 · 主次布局 ─────────────────────────────────────────── */
