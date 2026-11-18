@@ -1,0 +1,43 @@
+# V1 自建 server 示例。`docker compose up -d` 后查看 `docker compose logs`。
+# 首次启动会在命名卷 meatus-data 里生成 server.toml / 证书 / admin token / client token。
+services:
+  meatus:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        # 国内网络可设为 docker.m.daocloud.io/library/ 并设置 CARGO_REGISTRY
+        BASE_REGISTRY: ${BASE_REGISTRY:-docker.io/library/}
+        CARGO_REGISTRY: ${CARGO_REGISTRY:-}
+    image: meatus:local
+    container_name: meatus
+    restart: unless-stopped
+    stop_grace_period: 20s
+    ports:
+      - "7000:7000" # 控制面（TLS + yamux）
+      - "127.0.0.1:7400:7400" # 面板 / metrics（必须带 admin token）
+      # 按需为 client 申请的 remote_port 增加映射，例如：
+      # - "20022:20022"
+      # 开启 [http] 时再暴露 80/443：
+      # - "80:80"
+      # - "443:443"
+    volumes:
+      # 默认使用命名卷，避免宿主机目录 UID 与容器内 meatus 用户不一致。
+      - meatus-data:/data
+      # 如必须使用宿主机目录，改成下面这行；入口会先 chown 再降权：
+      # - ./data:/data
+    environment:
+      MEATUS_DOMAIN: ${MEATUS_DOMAIN:-localhost}
+      RUST_LOG: ${RUST_LOG:-info}
+      TZ: ${TZ:-Asia/Shanghai}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7400/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  meatus-data:

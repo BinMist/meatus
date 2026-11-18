@@ -1,0 +1,43 @@
+# 环境与凭据（不入库）
+.env
+.env.*
+!.env.example
+/server.toml
+/client.toml
+# 从示例拷出的本地配置；config/*.example.toml 仍入库
+/config/*.toml
+!/config/*.example.toml
+
+# 本地运行产物
+*.log
+*.pid
+
+# Rust
+/target/
+**/*.rs.bk
+
+# 前端
+node_modules/
+web/dist/
+*.local
+
+# 本地证书与 ACME 产物
+certs/
+acme/
+*.key
+*.pem
+
+# 系统与 IDE
+.DS_Store
+.idea/
+
+# 内部设计 / 排障资料（归档到 项目/docs/meatus）
+ui-design-runs/
+ui-bug*.md
+docs/DOCKER_REGISTRY_TEST.md
+
+# 发布产物与 fuzz
+/dist/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/

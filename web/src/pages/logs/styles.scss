@@ -1,0 +1,15 @@
+.mt-log-line__target {
+  margin-inline-end: 8px;
+  color: var(--mt-ink-3);
+  font-size: 11px;
+}
+
+.mt-log-line__level.is-info {
+  color: #2f6cc4;
+  font-weight: 700;
+}
+
+.mt-log-line__level.is-warn,
+.mt-log-line__level.is-error {
+  font-weight: 700;
+}

@@ -1,0 +1,72 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.96"
+license = "Apache-2.0"
+# repository 在公开仓库地址确定后填写；V1 开源快照不携带内部 Codeup 路径。
+
+[workspace.dependencies]
+meatus-proto = { path = "crates/meatus-proto" }
+meatus-core = { path = "crates/meatus-core" }
+meatus-server = { path = "crates/meatus-server" }
+meatus-client = { path = "crates/meatus-client" }
+
+anyhow = "1.0"
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1.12"
+futures-util = "0.3"
+clap = { version = "4.6", features = ["derive", "env"] }
+futures-io = "0.3"
+getrandom = "0.4"
+hex = "0.4"
+hmac = "0.12"
+prost = "0.14"
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "logging",
+    "std",
+    "tls12",
+] }
+rustls-acme = { version = "0.15", default-features = false, features = ["ring", "webpki-roots", "tokio"] }
+rustls-pemfile = "2.2"
+rcgen = "0.14"
+rust-embed = "8.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+subtle = "2.6"
+thiserror = "2.0"
+tokio = { version = "1.54", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+    "time",
+    "sync",
+    "signal",
+    "fs",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "logging",
+    "tls12",
+] }
+tokio-util = { version = "0.7", features = ["compat", "rt"] }
+toml = "1.2"
+toml_edit = "0.19"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+webpki-roots = "1.0"
+x509-parser = "0.18"
+yamux = "0.14"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"

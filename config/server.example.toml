@@ -1,0 +1,67 @@
+# Meatus 服务端配置示例
+# 复制为 server.toml 后按需修改；配置值里的环境变量占位符会在启动时展开，缺失即报错。
+
+[server]
+bind_addr = "0.0.0.0"
+control_port = 7000
+# TLS 1.3 证书（M1 必需；缺失或只有一项都会拒绝启动）
+# 自签测试：
+#   openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+#     -keyout certs/server.key -out certs/server.crt \
+#     -subj "/CN=tunnel.example.com" \
+#     -addext "subjectAltName=DNS:tunnel.example.com,IP:127.0.0.1"
+tls_cert = "certs/server.crt"
+tls_key = "certs/server.key"
+
+[tenant]
+default = "default"
+
+[auth]
+mode = "hmac"
+provider = "local"
+# 多客户端：每个客户端各自一把 token，服务端只存 sha256（`meatus gen-token` 输出）。
+# 下面的 64 个 0 是占位值，务必替换。
+clients = [
+  { id = "home-nas", tenant = "default", token_sha256 = "0000000000000000000000000000000000000000000000000000000000000000" },
+]
+
+[ports]
+range = [20000, 30000]
+
+[http]
+# M3：打开后同时监听 80（Host 路由）与 443（SNI 透传 / ACME 终止）；任一端口绑定失败都会拒绝启动
+enabled = false
+bind = "0.0.0.0:80"
+https_bind = "0.0.0.0:443"
+# 仅配置校验用；实际域名来自客户端 proxy.custom_domains
+domain = "*.tunnel.example.com"
+
+[acme]
+# M3：HTTP-01 自动签发 / 续期，只支持精确域名；必须同时开启 [http] enabled = true。
+# 开启后，type = "http" 的代理域名在 443 做 TLS 终止；type = "https" 仍走 SNI 透传。
+# 泛域名需要 DNS-01，当前不自动签发，请用自带证书 + type = "https"。
+enabled = false
+email = "ops@example.com"
+challenge = "http-01" # http-01 | tls-alpn-01 | dns-01（泛域名必须 dns-01）
+# dns_provider = "cloudflare"
+# dns_api_token = "REPLACE_WITH_DNS_API_TOKEN"
+staging = true # 先打 staging，避免打光配额
+
+[socks5]
+enabled = false # D5：默认关闭；开启后仅 CONNECT，目标默认限内网 CIDR
+bind = "0.0.0.0:2080"
+
+[admin]
+bind = "127.0.0.1:7400" # /metrics /healthz /api/v1/status /settings /certificates /logs + 内嵌面板；非 loopback 必须配 admin_token
+panel = true # false 时面板静态资源返回 404
+# 非 loopback 绑定时必须设置；设置后除 /healthz 外均要求会话 Cookie 或 Bearer
+# admin_token = "REPLACE_WITH_ADMIN_TOKEN"
+
+# 可选：外部控制面扩展；V1 完全开源版不启用
+# [ctrl]
+# url = "https://ctrl.example.com"
+# relay_id = "relay-nj-1"
+
+[log]
+level = "info"
+format = "text" # text | json

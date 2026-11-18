@@ -1,0 +1,150 @@
+syntax = "proto3";
+
+package meatus.v1;
+
+// MEATUS/1 线协议。版本由 Hello.protocol_version 协商，未知字段一律忽略以便向前兼容。
+
+message Hello {
+  uint32 protocol_version = 1;
+  string client_version   = 2;
+  string client_id        = 3;
+  repeated string caps    = 4;
+  string tenant_id        = 5;
+  string token_id         = 6;
+}
+
+message Challenge {
+  bytes nonce = 1; // 32B 随机数，每次连接新生成
+}
+
+message Auth {
+  bytes hmac = 1; // HMAC-SHA256(token, nonce)
+}
+
+message Welcome {
+  string run_id          = 1;
+  uint32 heartbeat_secs  = 2;
+  int64  server_time_ms  = 3;
+}
+
+enum ProxyType {
+  TCP    = 0;
+  UDP    = 1;
+  HTTP   = 2;
+  HTTPS  = 3;
+  SOCKS5 = 4;
+}
+
+message ProxyOptions {
+  uint64 rate_limit_bps    = 1;
+  uint32 idle_timeout_s    = 2;
+  uint32 max_conns         = 3;
+  bool   enable_compression = 4;
+  repeated string allow_cidrs = 5;
+}
+
+message NewProxy {
+  string name           = 1;
+  ProxyType proxy_type  = 2;
+  string local_addr     = 3;
+  uint32 remote_port    = 4; // 0 表示由服务端端口池分配
+  repeated string custom_domains = 5;
+  ProxyOptions options  = 6;
+}
+
+message ProxyOk {
+  string name        = 1;
+  uint32 remote_port = 2;
+  repeated string domains = 3;
+}
+
+message RemoveProxy {
+  string name = 1;
+}
+
+// 管理面下发：server -> client，把一条 proxy 规格写入客户端运行表。
+// 客户端只保存 name -> local_addr 映射，不监听本地端口。
+message AdminAddProxy {
+  uint64 request_id  = 1;
+  NewProxy proxy     = 2;
+}
+
+// 管理面下发：server -> client，从客户端运行表移除 proxy。
+message AdminRemoveProxy {
+  uint64 request_id = 1;
+  string name       = 2;
+}
+
+// 客户端对管理下发的确认。
+message AdminProxyAck {
+  uint64 request_id = 1;
+  bool   ok         = 2;
+  string error      = 3;
+}
+
+message Ping {
+  uint64 seq   = 1;
+  int64  ts_ms = 2;
+}
+
+message Pong {
+  uint64 seq   = 1;
+  int64  ts_ms = 2;
+}
+
+message Stats {
+  string proxy_name         = 1;
+  uint64 bytes_in           = 2;
+  uint64 bytes_out          = 3;
+  uint32 active_conns       = 4;
+  uint64 connections_total  = 5;
+  uint64 local_connect_fail = 6;
+}
+
+message Error {
+  uint32 code    = 1;
+  string message = 2;
+  bool   fatal   = 3;
+}
+
+message ControlMsg {
+  oneof kind {
+    Hello       hello        = 1;
+    Challenge   challenge    = 2;
+    Auth        auth         = 3;
+    Welcome     welcome      = 4;
+    NewProxy    new_proxy    = 5;
+    ProxyOk     proxy_ok     = 6;
+    RemoveProxy remove_proxy = 7;
+    Ping        ping         = 8;
+    Pong        pong         = 9;
+    Stats       stats        = 10;
+    Error       error        = 11;
+    AdminAddProxy    admin_add_proxy    = 12;
+    AdminRemoveProxy admin_remove_proxy = 13;
+    AdminProxyAck    admin_proxy_ack    = 14;
+  }
+}
+
+enum StreamKind {
+  USER_CONN   = 0;
+  UDP_SESSION = 1;
+  HTTP_REQ    = 2;
+}
+
+// 数据流首帧：写完后该 stream 内即为裸字节。
+message StreamHeader {
+  string proxy_name    = 1;
+  StreamKind kind      = 2;
+  string src_addr      = 3;
+  string dst_hint      = 4;
+  int64  created_ms    = 5;
+  string trace_id      = 6;
+  uint32 udp_session_id = 7;
+}
+
+// UDP 专用单流承载的报文帧。
+message UdpPacket {
+  uint32 session_id = 1;
+  bytes  payload    = 2;
+}

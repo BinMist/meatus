@@ -1,0 +1,33 @@
+#![forbid(unsafe_code)]
+//! Meatus 内核：配置模型、租户命名空间、以及为多租户与外部控制面预留的五个扩展接缝。
+
+pub mod auth;
+pub mod config;
+pub mod config_edit;
+pub mod multiplex;
+pub mod net;
+pub mod pin;
+pub mod rate;
+pub mod seams;
+pub mod tenant;
+pub mod wire;
+
+pub use auth::{proof, token_key, verify_proof_with_key};
+pub use config::{
+    AcmeChallenge, AcmeSection, AdminSection, AuthMode, AuthSection, ClientConfig, ClientEntry,
+    ClientSection, ConfigError, ConfigKind, CtrlSection, HttpSection, LogFormat, LogSection,
+    PortsSection, ProxyOptions, ProxySpec, ProxyType, ServerConfig, ServerSection, Socks5Section,
+    detect_kind, load_client_config, load_server_config, parse_client_config, parse_server_config,
+};
+pub use config_edit::{remove_client_proxy, upsert_client_proxy, write_server_config};
+pub use multiplex::{Inbound, MultiplexError, MultiplexedStream, OpenHandle};
+pub use net::TargetPolicy;
+pub use pin::parse_spki_pin;
+pub use rate::{RateLimiter, copy_bidirectional_limited};
+pub use seams::{
+    AllocError, AllowAllQuota, AuthError, AuthProvider, ClientIdentity, ConfigSnapshot,
+    ConfigSource, FileConfigSource, LocalPortAllocator, LocalTokenAuth, NameAllocator,
+    NullUsageSink, QuotaError, QuotaPolicy, QuotaRequest, StaticQuota, UsageRecord, UsageSink,
+};
+pub use tenant::{DEFAULT_TENANT, scoped_key};
+pub use wire::{WireError, read_frame, write_frame};

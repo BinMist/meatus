@@ -1,0 +1,31 @@
+[package]
+name = "meatus-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+meatus-proto.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures-io.workspace = true
+hex.workspace = true
+hmac.workspace = true
+prost.workspace = true
+serde.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tracing.workspace = true
+yamux.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

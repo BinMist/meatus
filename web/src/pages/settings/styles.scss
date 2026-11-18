@@ -1,0 +1,95 @@
+.mt-settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.85fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.mt-settings-main,
+.mt-settings-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.mt-switch-cell {
+  display: flex;
+  min-width: 0;
+}
+
+.mt-switch-cell .sl-switch-card {
+  width: 100%;
+  height: 100%;
+  min-height: 72px;
+}
+
+.mt-form-grid--four .sl-form-item__body,
+.mt-form-grid--four .sl-form-item__control,
+.mt-form-grid--four .sl-input-field,
+.mt-form-grid--four .sl-sel,
+.mt-form-grid--four .sl-num {
+  width: 100%;
+}
+
+.mt-port-range {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.mt-port-range__sep {
+  color: var(--mt-ink-3);
+  font-size: 12px;
+}
+
+/* 四列窄格下，步进按钮会挤占数字输入区，20000 / 30000 只剩前两位 */
+@media (min-width: 1281px) and (max-width: 1599px) {
+  .mt-port-range .sl-num__step {
+    display: none;
+  }
+}
+
+.mt-readonly-facts .sl-descriptions__label {
+  width: 96px;
+  color: var(--mt-ink-3);
+  font-size: 11.5px;
+}
+
+.mt-readonly-facts .sl-descriptions__value {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.mt-settings-foot {
+  padding: 0 4px;
+  color: var(--mt-ink-3);
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1100px) {
+  .mt-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.mt-dialog-summary {
+  margin: 0;
+  color: var(--mt-ink-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.mt-dialog-summary code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(46, 58, 62, 0.05);
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--mt-ink-2);
+}

@@ -1,0 +1,13 @@
+# 只把构建需要的文件送进 Docker 上下文，避免 target / node_modules 拖慢构建。
+target/
+web/node_modules/
+web/dist/
+.git/
+.env
+.env.*
+!.env.example
+*.log
+*.pid
+certs/
+acme/
+.DS_Store

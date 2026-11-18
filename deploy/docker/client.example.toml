@@ -1,0 +1,16 @@
+# 容器化 client 示例：复制为 client.toml，按实际值修改。
+# Docker Desktop / OrbStack 用 host.docker.internal 访问宿主机；
+# Linux 可用 --add-host host.docker.internal:host-gateway，或把 server_addr 改成服务端地址。
+[client]
+server_addr = "host.docker.internal:7000"
+server_name = "localhost"       # 必须与服务端证书 SAN 一致
+client_id = "home-nas"          # 必须与服务端 clients[].id 一致
+tenant = "default"
+token = "REPLACE_WITH_CLIENT_TOKEN"
+server_ca_cert = "/data/server.crt"
+
+[[proxy]]
+name = "web"
+type = "tcp"
+local_addr = "host.docker.internal:8080"
+remote_port = 20022

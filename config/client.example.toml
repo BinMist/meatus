@@ -1,0 +1,63 @@
+# Meatus 客户端配置示例
+# 复制为 client.toml 后按需修改；token 从 `meatus gen-token` 获取。
+
+[client]
+server_addr = "tunnel.example.com:7000"
+server_name = "tunnel.example.com"
+client_id = "home-nas"          # 必须与服务端 clients[].id 一致
+tenant = "default"
+token = "${MEATUS_CLIENT_TOKEN}"
+# 自签 / 私有 CA：指向服务端证书（PEM）；公网 CA 留空用系统根证书
+# server_ca_cert = "certs/server.crt"
+# 可选 SPKI pin：先校验证书链，再固定叶子证书公钥；格式 sha256:<64hex> 或裸 64 hex
+# server_public_key_pin = "sha256:..."
+
+[[proxy]]
+name = "ssh"
+type = "tcp" # tcp / udp / http / https / socks5
+local_addr = "127.0.0.1:22"
+remote_port = 20022
+
+# HTTP（M3）：server 需开启 [http]；remote_port 必须为 0（不占端口池）
+# custom_domains 支持精确域名与 *.example.com 泛域名；精确优先
+# server 开 [acme] enabled = true 时，精确域名会走 ACME HTTP-01 + TLS 终止
+# [[proxy]]
+# name = "nas-web"
+# type = "http"
+# local_addr = "127.0.0.1:8080"
+# remote_port = 0
+# custom_domains = ["nas.tunnel.example.com", "*.apps.tunnel.example.com"]
+
+# HTTPS（M3）：SNI 透传兜底，local_addr 指向你自己的 TLS 服务
+# 证书由本地服务提供，server 不持私钥；需要自动签发请改用 type = "http" 并开启 [acme]
+# [[proxy]]
+# name = "nas-https"
+# type = "https"
+# local_addr = "127.0.0.1:8443"
+# remote_port = 0
+# custom_domains = ["secure.tunnel.example.com"]
+
+# SOCKS5（M4）：server 必须 [socks5] enabled = true；只支持 IP 目标、CONNECT
+# 目标默认白名单为内网（10/8、100.64/10、127/8、169.254/16、172.16/12、192.168/16、
+# ::1/128、fc00::/7、fe80::/10）；显式 options.allow_cidrs 会替换默认集合
+# local_addr 仅作配置占位，实际目标来自 SOCKS5 请求；remote_port 必须为 0
+# [[proxy]]
+# name = "socks"
+# type = "socks5"
+# local_addr = "127.0.0.1:0"
+# options.allow_cidrs = ["10.0.0.0/8", "192.168.1.0/24", "127.0.0.1/32"]
+
+# UDP（M2 已支持）
+# 单包 ≤1500B；会话空闲 60s 回收（可用 options.idle_timeout_s 调整）
+# [[proxy]]
+# name = "dns"
+# type = "udp"
+# local_addr = "127.0.0.1:53"
+# remote_port = 20053
+# options.rate_limit_bps = 0      # 0 = 不限速
+# options.idle_timeout_s = 60
+# options.max_conns = 2048        # UDP 会话上限
+
+[log]
+level = "info"
+format = "text"

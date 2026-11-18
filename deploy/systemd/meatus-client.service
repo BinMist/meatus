@@ -1,0 +1,29 @@
+[Unit]
+Description=Meatus client (intranet tunnel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meatus
+Group=meatus
+ExecStart=/usr/local/bin/meatus client --config /etc/meatus/client.toml
+Restart=always
+RestartSec=5s
+TimeoutStopSec=30s
+LimitNOFILE=1048576
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/meatus
+
+[Install]
+WantedBy=multi-user.target

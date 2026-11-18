@@ -1,0 +1,37 @@
+[package]
+name = "meatus-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+meatus-core.workspace = true
+meatus-proto.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+rustls.workspace = true
+rustls-acme.workspace = true
+rustls-pemfile.workspace = true
+rust-embed.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+yamux.workspace = true
+x509-parser.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
+tracing-subscriber.workspace = true
+meatus-client = { path = "../meatus-client" }
+rcgen = "0.14"
