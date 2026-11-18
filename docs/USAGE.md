@@ -4,6 +4,7 @@
 > 发布状态：`1.1.0` 已发布，Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>；当前镜像发布到阿里云 ACR，GHCR / GitHub Release 暂缓
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
 > 依赖：单二进制 + TOML（默认）/ YAML（只读）；**零 PostgreSQL、零 Redis、零 Node 运行时**
+> 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 
 本教程覆盖：本机跑通、公网部署、systemd、Docker Compose、纯 `docker run`、配置项、YAML、管理面 TLS、TCP / UDP / HTTP / HTTPS / ACME / SOCKS5、管理面板、指标与日志、热重载、升级备份、故障排查和安全基线。
 

@@ -193,6 +193,7 @@ Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `TH
 ## 文档
 
 - 完整使用教程：`docs/USAGE.md`（含 V1.1 更新、升级、管理面 TLS、YAML 与 Docker 示例）
+- 新手教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 - 安装部署：`docs/INSTALL.md`
 - 版本发布：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>
 - 开发规划与验收记录：已归档到内部资料目录，不随开源仓库发布
