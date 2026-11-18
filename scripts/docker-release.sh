@@ -64,6 +64,17 @@ if [[ "$PUSH" -eq 1 ]]; then
         --build-arg VERSION="$VERSION" \
         "${TAGS[@]}" \
         --push .
+elif [[ "$PLATFORMS" == *,* ]]; then
+    # 多平台产物无法 --load 到本地 docker，改为导出 OCI 归档。
+    mkdir -p dist
+    OCI="dist/meatus-$VERSION-multi.oci.tar"
+    rm -f "$OCI"
+    docker buildx build \
+        --platform "$PLATFORMS" \
+        --build-arg VERSION="$VERSION" \
+        "${TAGS[@]}" \
+        --output "type=oci,dest=$OCI" .
+    echo "OCI archive: $OCI"
 else
     docker buildx build \
         --platform "$PLATFORMS" \
