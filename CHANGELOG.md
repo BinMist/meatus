@@ -2,6 +2,41 @@
 
 本文件记录 Meatus 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.1.0] - Unreleased
+
+V1.1：公网可用性加固 + 双仓库发布 + YAML 配置。
+
+### Added
+
+- 管理面独立 TLS：`[admin.tls]` 支持 `enabled` / `cert` / `key` / `hsts`，不复用隧道 `[server] tls_cert` / `tls_key`。
+- `admin.trust_forwarded_proto`：默认 `false`，仅在可信反向代理后识别 `X-Forwarded-Proto: https`。
+- YAML 配置：`.yaml` / `.yml` 只读解析；`meatus server|client|check --format auto|toml|yaml`。
+- `config/server.example.yaml`、`config/client.example.yaml`，均可直接 `meatus check`。
+- GHCR + 阿里云 ACR 双仓库发布脚本 `scripts/docker-release.sh`：多架构、三标签、digest 比对、可选 SBOM。
+- GitHub Actions `docker` job：GHCR/ACR 登录、双推、SPDX SBOM、随 Release 上传。
+- `meatus check` 输出实际配置格式；YAML 解析错误报告文件、行、列。
+
+### Changed
+
+- 版本升至 `1.1.0`；发布包与镜像同时包含 TOML / YAML 示例。
+- 管理面 HTTPS 下登录/登出 Cookie 自动带 `Secure`，并发送 HSTS。
+- 管理面 CSP 从 `style-src 'self' 'unsafe-inline'` 收紧为 `style-src 'self'`。
+- 管理面板系统设置、client proxy 写回遇到 YAML 配置时返回只读错误，不尝试写回。
+- 文档 `README.md`、`docs/USAGE.md`、`docs/INSTALL.md`、`SECURITY.md` 更新为 V1.1 行为。
+
+### Security
+
+- 管理面 TLS 与隧道 TLS 证书生命周期解耦。
+- 非 loopback 仍强制 `admin_token`，开启 TLS 不放宽认证。
+- 反向代理协议头默认不信任，避免伪造 `X-Forwarded-Proto` 绕过 Cookie 策略。
+- YAML 配置整体只读，避免管理面破坏用户注释与格式。
+
+### Known limitations
+
+- YAML 不支持写回、格式互转、`!include`、远程引用或模板执行。
+- 管理面 HTTPS 的可信反代场景需显式设置 `trust_forwarded_proto = true`；默认不支持任意代理链。
+- 1.1.0 尚未正式发布，发布前仍需完成双仓库匿名拉取、digest 比对与 24h soak / 20% 丢包回归记录。
+
 ## [1.0.0] - 2026-11-18
 
 V1 首个正式版本：完全开源、Apache-2.0、面向个人 / 小团队的自托管内网穿透工具。

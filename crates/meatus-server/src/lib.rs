@@ -108,9 +108,14 @@ impl ServerState {
         if self.config.socks5.enabled {
             listeners.push(format!("socks5 tcp://{}", self.config.socks5.bind));
         }
-        listeners.push(format!("admin  http://{}", self.config.admin.bind));
+        let scheme = if self.config.admin.tls.enabled {
+            "https"
+        } else {
+            "http"
+        };
+        listeners.push(format!("admin  {scheme}://{}", self.config.admin.bind));
         listeners.push(format!(
-            "metrics  http://{}/metrics",
+            "metrics  {scheme}://{}/metrics",
             self.config.admin.bind
         ));
 
@@ -180,7 +185,12 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
         .await
         .with_context(|| format!("bind admin listener {}", state.config.admin.bind))?;
     let admin_local = admin_listener.local_addr().context("admin local_addr")?;
-    info!(%admin_local, "admin listener ready: panel + /metrics /healthz /api/v1/*");
+    let admin_scheme = if state.config.admin.tls.enabled {
+        "https"
+    } else {
+        "http"
+    };
+    info!(%admin_local, scheme = admin_scheme, "admin listener ready: panel + /metrics /healthz /api/v1/*");
     let config_path = state.config_path.clone();
     let state = Arc::new(state);
     let admin_state = admin::AdminState::new(

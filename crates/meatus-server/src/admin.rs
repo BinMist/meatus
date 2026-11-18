@@ -12,13 +12,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use meatus_core::{LogFormat, ServerConfig};
+use meatus_core::{ConfigFormat, LogFormat, ServerConfig};
 use meatus_proto::v1::{NewProxy, ProxyOptions, ProxyType};
 use rust_embed::RustEmbed;
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::time::timeout;
+use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use x509_parser::prelude::{GeneralName, parse_x509_certificate};
@@ -27,8 +28,10 @@ use crate::admin_bus::{AdminBus, AdminProxyCommand};
 use crate::logbuf::LogBuffer;
 use crate::metrics::Metrics;
 use crate::status::StatusRegistry;
+use crate::tls;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HEAD: usize = 8 * 1024;
 const MAX_BODY: usize = 16 * 1024;
 const SETTINGS_RESTART_DELAY: Duration = Duration::from_secs(1);
@@ -124,6 +127,7 @@ struct HttpRequest {
     query: String,
     headers: String,
     body: Vec<u8>,
+    secure: bool,
 }
 
 struct HttpResponse {
@@ -186,11 +190,17 @@ pub async fn serve(
     state: AdminState,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
+    let tls_acceptor = if state.config.admin.tls.enabled {
+        Some(TlsAcceptor::from(tls::load_admin(&state.config)?))
+    } else {
+        None
+    };
+
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             accepted = listener.accept() => {
-                let (stream, peer) = match accepted {
+                let (mut stream, peer) = match accepted {
                     Ok(pair) => pair,
                     Err(err) => {
                         warn!(error = %err, "admin accept failed");
@@ -198,37 +208,66 @@ pub async fn serve(
                     }
                 };
                 let state = state.clone();
-                tokio::spawn(async move {
-                    if let Err(err) = handle(stream, peer.ip(), state).await {
-                        debug!(%peer, error = %err, "admin connection ended");
-                    }
-                });
+                if let Some(acceptor) = tls_acceptor.clone() {
+                    tokio::spawn(async move {
+                        match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+                            Ok(Ok(mut tls_stream)) => {
+                                if let Err(err) = handle(&mut tls_stream, peer.ip(), state.clone(), true).await {
+                                    debug!(%peer, error = %err, "admin TLS connection ended");
+                                }
+                            }
+                            Ok(Err(err)) => debug!(%peer, error = %err, "admin TLS handshake failed"),
+                            Err(_) => debug!(%peer, "admin TLS handshake timed out"),
+                        }
+                    });
+                } else {
+                    tokio::spawn(async move {
+                        if let Err(err) = handle(&mut stream, peer.ip(), state, false).await {
+                            debug!(%peer, error = %err, "admin connection ended");
+                        }
+                    });
+                }
             }
         }
     }
     Ok(())
 }
 
-async fn handle(mut stream: TcpStream, peer_ip: IpAddr, state: AdminState) -> anyhow::Result<()> {
-    let request = match read_request(&mut stream).await {
+async fn handle<S>(
+    stream: &mut S,
+    peer_ip: IpAddr,
+    state: AdminState,
+    tls: bool,
+) -> anyhow::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut request = match read_request(stream).await {
         Ok(Some(request)) => request,
         Ok(None) => return Ok(()),
         Err(response) => {
-            let bytes = render(response);
+            let bytes = render(response, tls, state.config.admin.tls.hsts);
             stream.write_all(&bytes).await?;
             stream.shutdown().await?;
             return Ok(());
         }
     };
+    request.secure = tls || forwarded_https(&request.headers, &state.config);
 
     let response = route(&request, peer_ip, &state).await;
-    let bytes = render(response);
+    let bytes = render(response, request.secure, state.config.admin.tls.hsts);
     stream.write_all(&bytes).await?;
     stream.shutdown().await?;
     Ok(())
 }
 
-fn render(response: HttpResponse) -> Vec<u8> {
+fn forwarded_https(head: &str, config: &ServerConfig) -> bool {
+    config.admin.trust_forwarded_proto
+        && header_value(head, "x-forwarded-proto")
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"))
+}
+
+fn render(response: HttpResponse, secure: bool, hsts: bool) -> Vec<u8> {
     let reason = match response.status {
         200 => "OK",
         201 => "Created",
@@ -244,12 +283,15 @@ fn render(response: HttpResponse) -> Vec<u8> {
         _ => "Internal Server Error",
     };
     let mut head = format!(
-        "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: {}\r\nX-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'\r\n",
+        "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: {}\r\nX-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'\r\n",
         response.status,
         response.content_type,
         response.body.len(),
         response.cache_control
     );
+    if secure && hsts {
+        head.push_str("Strict-Transport-Security: max-age=31536000; includeSubDomains\r\n");
+    }
     if let Some(cookie) = response.cookie {
         head.push_str("Set-Cookie: ");
         head.push_str(&cookie);
@@ -262,7 +304,10 @@ fn render(response: HttpResponse) -> Vec<u8> {
 }
 
 /// 读取请求头；body 大小受限。返回 `None` 表示连接被对端提前关闭。
-async fn read_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, HttpResponse> {
+async fn read_request<S>(stream: &mut S) -> Result<Option<HttpRequest>, HttpResponse>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut raw = Vec::with_capacity(1024);
     let mut buffer = [0u8; 1024];
     let head_end = loop {
@@ -324,6 +369,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, Htt
         query,
         headers: head,
         body,
+        secure: false,
     }))
 }
 
@@ -552,6 +598,12 @@ async fn settings_write(request: &HttpRequest, state: &AdminState) -> HttpRespon
             json!({"error": "server was started without a config path; online edit is disabled"}),
         );
     };
+    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
+        return HttpResponse::json(
+            409,
+            json!({"error": "YAML config is read-only; edit server.yaml manually and restart"}),
+        );
+    }
     let body: Value = match serde_json::from_slice(&request.body) {
         Ok(value) => value,
         Err(_) => return HttpResponse::json(400, json!({"error": "invalid json"})),
@@ -1024,9 +1076,10 @@ fn login(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResp
         200,
         json!({"authenticated": true, "csrf": csrf, "mode": "session"}),
     )
-    .with_cookie(format!(
-        "{COOKIE_NAME}={session_id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
-        SESSION_TTL.as_secs()
+    .with_cookie(session_cookie(
+        &session_id,
+        request.secure,
+        SESSION_TTL.as_secs(),
     ))
 }
 
@@ -1044,9 +1097,25 @@ fn logout(request: &HttpRequest, state: &AdminState) -> HttpResponse {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id);
     }
-    HttpResponse::json(200, json!({"authenticated": false})).with_cookie(format!(
-        "{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
-    ))
+    HttpResponse::json(200, json!({"authenticated": false}))
+        .with_cookie(clear_session_cookie(request.secure))
+}
+
+fn session_cookie(session_id: &str, secure: bool, max_age: u64) -> String {
+    let mut cookie =
+        format!("{COOKIE_NAME}={session_id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn clear_session_cookie(secure: bool) -> String {
+    let mut cookie = format!("{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
 }
 
 fn login_lock(state: &AdminState, peer_ip: IpAddr) -> Option<Duration> {
@@ -1132,6 +1201,10 @@ fn settings_json(state: &AdminState) -> Value {
             "panel": config.admin.panel,
             "loopback": auth.loopback,
             "token_configured": auth.token_configured,
+            "tls_enabled": config.admin.tls.enabled,
+            "tls_configured": config.admin.tls.cert.is_some() && config.admin.tls.key.is_some(),
+            "hsts": config.admin.tls.hsts,
+            "trust_forwarded_proto": config.admin.trust_forwarded_proto,
         },
         "http": {
             "enabled": config.http.enabled,

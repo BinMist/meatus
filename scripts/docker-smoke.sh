@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Docker 部署冒烟：用镜像起一个 server，验证首启配置、面板、Bearer API 与 SIGTERM 退出。
-# 用法：IMAGE=meatus:1.0.0 ./scripts/docker-smoke.sh
+# 用法：IMAGE=meatus:1.1.0 ./scripts/docker-smoke.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE="${IMAGE:-meatus:1.0.0}"
+IMAGE="${IMAGE:-meatus:1.1.0}"
 CONTROL_PORT="${CONTROL_PORT:-7800}"
 ADMIN_PORT="${ADMIN_PORT:-7801}"
 NAME="${NAME:-meatus-docker-smoke}"

@@ -1,10 +1,10 @@
-# Meatus 完整使用教程（V1.0.0）
+# Meatus 完整使用教程（V1.1）
 
-> 适用版本：Meatus `1.0.0`（完全开源、Apache-2.0、自托管）
+> 适用版本：Meatus `1.1.0`（完全开源、Apache-2.0、自托管）
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
-> 依赖：单二进制 + TOML；**零 PostgreSQL、零 Redis、零 Node 运行时**
+> 依赖：单二进制 + TOML（默认）/ YAML（只读）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 
-本教程覆盖：本机跑通、公网部署、systemd、Docker Compose、纯 `docker run`、配置项、TCP / UDP / HTTP / HTTPS / ACME / SOCKS5、管理面板、指标与日志、热重载、升级备份、故障排查和安全基线。
+本教程覆盖：本机跑通、公网部署、systemd、Docker Compose、纯 `docker run`、配置项、YAML、管理面 TLS、TCP / UDP / HTTP / HTTPS / ACME / SOCKS5、管理面板、指标与日志、热重载、升级备份、故障排查和安全基线。
 
 ---
 
@@ -200,9 +200,9 @@ ssh -p 20022 <user>@127.0.0.1
 ### 2.1 方式 A：release 包 + systemd（推荐 Linux）
 
 ```bash
-VERSION=1.0.0
+VERSION=1.1.0
 TARGET=x86_64-unknown-linux-musl
-curl -LO "https://your-release-host/meatus-${VERSION}-${TARGET}.tar.gz"
+curl -LO "https://gitee.com/binsail/meatus/releases/download/v${VERSION}/meatus-${VERSION}-${TARGET}.tar.gz"
 sha256sum -c "meatus-${VERSION}-${TARGET}.tar.gz.sha256"
 tar xzf "meatus-${VERSION}-${TARGET}.tar.gz"
 cd "meatus-${VERSION}-${TARGET}"
@@ -268,7 +268,7 @@ ssh -L 7400:127.0.0.1:7400 <user>@<server>
 
 ### 2.3 方式 C：纯 `docker run`（不装 Compose）
 
-以下 Docker 示例中的 `registry.example.com` 为占位地址，请替换为实际公开镜像仓库。
+以下 Docker 示例使用 GHCR；国内网络可换成 `registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0`。
 
 #### server
 
@@ -287,7 +287,7 @@ docker run -d --name meatus-server \
   --health-timeout 5s \
   --health-start-period 10s \
   --health-retries 3 \
-  registry.example.com/meatus:1.0.0-panel \
+  ghcr.io/binsail/meatus:1.1.0 \
   server --config /data/server.toml
 ```
 
@@ -332,7 +332,7 @@ docker run -d --name meatus-client \
   -v "$PWD/client.toml:/data/client.toml" \
   -v "$PWD/server.crt:/data/server.crt:ro" \
   --add-host host.docker.internal:host-gateway \
-  registry.example.com/meatus-client:1.0.0 \
+  ghcr.io/binsail/meatus:1.1.0 \
   client --config /data/client.toml
 
 docker logs -f meatus-client
@@ -345,11 +345,13 @@ docker logs -f meatus-client
 ### 2.4 预构建镜像
 
 ```bash
-docker pull registry.example.com/meatus:1.0.0
-docker pull registry.example.com/meatus-client:1.0.0
+# GHCR canonical
+docker pull ghcr.io/binsail/meatus:1.1.0
+# 阿里云 ACR 国内镜像
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0
 ```
 
-当前示例使用带面板响应式修复的 server 镜像标签 `1.0.0-panel`（`linux/amd64` 已实测）；实际可用标签以发布仓库为准。ARM 服务器请使用 `1.0.0` 或自行构建。启动参数同上，只替换镜像名。
+server / client 使用同一镜像，启动参数同上，只替换镜像名。多架构 manifest 同时覆盖 `linux/amd64` 与 `linux/arm64`。
 
 ### 2.5 防火墙 / 安全组
 
@@ -480,6 +482,13 @@ bind = "0.0.0.0:2080"
 bind = "127.0.0.1:7400"
 panel = true
 admin_token = "<64 hex>"
+trust_forwarded_proto = false
+
+[admin.tls]
+enabled = true
+cert = "/data/certs/admin.crt"
+key = "/data/certs/admin.key"
+hsts = true
 ```
 
 | 字段 | 说明 |
@@ -487,6 +496,11 @@ admin_token = "<64 hex>"
 | `bind` | 面板 / metrics / API 监听地址 |
 | `panel` | 是否提供静态面板；`false` 时静态资源返回 404 |
 | `admin_token` | 非 loopback 必填；loopback 为空时自动免登录 |
+| `trust_forwarded_proto` | 仅当管理面在可信反向代理之后时开启；默认 `false`，不信任 `X-Forwarded-Proto` |
+| `tls.enabled` | 开启管理面 HTTPS；开启后必须同时提供 `cert` / `key` |
+| `tls.cert` | 管理面证书 PEM；与隧道 `[server] tls_cert` 独立 |
+| `tls.key` | 管理面私钥 PEM；权限建议 0600 |
+| `tls.hsts` | HTTPS 响应是否发送 HSTS；默认 `true` |
 
 生成 admin token：
 
@@ -494,10 +508,18 @@ admin_token = "<64 hex>"
 openssl rand -hex 32
 ```
 
+管理面 TLS 的边界：
+
+- 不复用隧道 `[server] tls_cert` / `tls_key`，避免业务证书轮换影响面板；
+- 非 loopback 仍必须设置 `admin_token`，开启 TLS 不会放宽认证；
+- HTTPS 下会话 Cookie 自动带 `Secure`；HTTP 只建议 loopback 或 SSH 隧道；
+- 反向代理场景确认代理会覆盖 `X-Forwarded-Proto` 后，才可打开 `trust_forwarded_proto`；
+- 证书加载失败会直接拒绝启动，不做 HTTP 降级。
+
 安全建议：
 
-- 公网服务器保持 `bind = "127.0.0.1:7400"`，通过 SSH 隧道访问。
-- 不要把 7400 直接映射到公网。
+- 公网服务器优先使用 `[admin.tls]` 绑定非 loopback，或保持 `127.0.0.1:7400` 通过 SSH 隧道访问。
+- 不要把 7400 直接暴露到公网而不启用 TLS。
 - `admin_token` 只放配置文件 / `/data/admin.token`，权限 0600。
 
 #### `[log]`
@@ -510,6 +532,36 @@ format = "text"
 
 - `level`：`trace` / `debug` / `info` / `warn` / `error`。
 - `format`：`text` 或 `json`；接日志系统时用 `json`。
+
+### 3.1.1 YAML 配置（只读）
+
+V1.1 起支持 `.yaml` / `.yml`，但 **YAML 只读**：服务启动后管理面板不会写回 YAML，proxy 在线增删也只支持 TOML。
+
+```bash
+meatus server --config server.yaml
+meatus check --config server.yaml
+meatus check --config server.yaml --format yaml
+```
+
+等价示例见仓库 `config/server.example.yaml`、`config/client.example.yaml`。TOML 仍是默认格式；扩展名无法识别时按 TOML 解析，可用 `--format auto|toml|yaml` 强制。
+
+```yaml
+admin:
+  bind: "0.0.0.0:7400"
+  admin_token: "REPLACE_WITH_ADMIN_TOKEN"
+  tls:
+    enabled: true
+    cert: "/data/certs/admin.crt"
+    key: "/data/certs/admin.key"
+    hsts: true
+```
+
+边界：
+
+- 不写回、不互转、不提供 `!include` / 远程引用 / 模板执行；
+- 解析失败直接拒绝启动，并报告文件、行、列与实际格式；
+- Docker / systemd 参数不变，只把路径换成 `.yaml`；
+- 需要面板在线改配置时继续用 TOML。
 
 ### 3.2 client.toml
 
@@ -565,18 +617,21 @@ export MEATUS_CLIENT_TOKEN='...'
 ### 3.3 校验配置
 
 ```bash
-# 自动识别 server / client
+# 自动识别 server / client 与 TOML / YAML
 meatus check -c server.toml
+meatus check -c server.yaml
 meatus check -c client.toml
 
-# 强制类型
-meatus check -c server.toml --kind server
-meatus check -c client.toml --kind client
+# 强制类型与格式
+meatus check -c server.yaml --kind server --format yaml
+meatus check -c client.toml --kind client --format toml
 
 # 只打印启动计划，不真正监听
-meatus server -c server.toml --dry-run
+meatus server -c server.yaml --dry-run
 meatus client -c client.toml --dry-run
 ```
+
+`check` 会打印实际使用的格式，例如 `OK  server.yaml (server, yaml)`。YAML 解析错误会报告 `文件: line N, column M`。
 
 ---
 
@@ -1221,18 +1276,38 @@ curl --socks5 <server>:2080 http://10.0.0.12:8080/
 
 ### 6.1 访问方式
 
-面板默认绑定 `127.0.0.1:7400`，公网服务器通过 SSH 隧道：
+默认 HTTPS 关闭，面板绑定 `127.0.0.1:7400`，公网服务器通过 SSH 隧道：
 
 ```bash
 ssh -N -L 7400:127.0.0.1:7400 <user>@<server>
 # 浏览器打开 http://127.0.0.1:7400/
 ```
 
+如果确实需要从内网或公网直接访问，开启管理面 TLS：
+
+```toml
+[admin]
+bind = "0.0.0.0:7400"
+admin_token = "<64 hex>"
+
+[admin.tls]
+enabled = true
+cert = "/data/certs/admin.crt"
+key = "/data/certs/admin.key"
+hsts = true
+```
+
+```bash
+# 浏览器打开
+https://<server>:7400/
+# 自签证书需要客户端信任，或先用 SSH 隧道
+```
+
 不要：
 
-- 把 `7400` 直接映射到公网；
+- 把 7400 直接映射到公网而不启用 TLS；
 - 把 `admin.bind` 改成 `0.0.0.0` 后不加 token；
-- 在不可信网络使用面板。
+- 在不可信网络使用 HTTP 面板。
 
 ### 6.2 登录
 
@@ -1255,7 +1330,7 @@ docker exec meatus-server cat /data/admin.token
 | Proxy 管理 | 新增 / 编辑 / 删除运行中的 proxy | 通过 server 下发管理帧，等待 client ack；client 带 `--config` 时**同步写回 client.toml**，重启后保留 |
 | 证书状态 | ACME 证书 SAN、到期、剩余天数、序列号、链长度 | 读取 `acme.cert_dir` |
 | 实时日志 | 最近 300 行日志 | 2 秒轮询；进程内 2000 行环形缓冲，重启清空，不落盘 |
-| 系统设置 | 在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志 | 保存写回 `server.toml` 并自动重启；TLS、admin、token、会话策略只读 |
+| 系统设置 | 在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志 | 保存写回 `server.toml` 并自动重启；TLS、admin、token、会话策略只读；YAML 配置整体只读 |
 | 登录 | token 换会话 | 失败限流 |
 
 ### 6.4 Proxy 管理的重要边界
@@ -1266,6 +1341,7 @@ docker exec meatus-server cat /data/admin.token
 - client 应用成功后返回 ack；
 - 失败回滚上一份 runtime；
 - client 启动时带 `--config` 会把变更 upsert / remove 到 `client.toml`，保留其它配置和注释；客户端重启或 SIGHUP 后仍生效；
+- 如果 client 使用 `client.yaml`，配置整体只读：面板增删 proxy 会返回错误，需手工编辑 YAML 后重启；
 - 容器内配置挂载需要让 `meatus` 用户可写（官方 entrypoint 会先 `chown -R meatus:meatus /data`）。
 - 不在面板操作、直接编辑 `client.toml` 后，可用 `SIGHUP` 让客户端重新读取。
 
@@ -1285,16 +1361,18 @@ sudo systemctl kill -s HUP meatus-client
 ### 6.5 健康检查与指标
 
 ```bash
-# 公开
+# 公开；管理面开启 TLS 时换成 https
 curl -fsS http://127.0.0.1:7400/healthz
+curl -fsS https://127.0.0.1:7400/healthz
 
-# 配置 admin_token 后需要 Bearer
+# 配置 admin_token 后需要 Bearer；TLS 下换成 https
 curl -fsS \
   -H "Authorization: Bearer $MEATUS_ADMIN_TOKEN" \
   http://127.0.0.1:7400/metrics | head
 
 # 状态表格
 meatus status --admin http://127.0.0.1:7400 --token "$MEATUS_ADMIN_TOKEN"
+meatus status --admin https://127.0.0.1:7400 --token "$MEATUS_ADMIN_TOKEN"
 ```
 
 `/metrics` 是 Prometheus 文本格式；`/api/v1/status` 返回 clients / proxies 等 JSON。除 `/healthz` 外，配置 `admin_token` 后都需要 Cookie 会话或 Bearer。
@@ -1342,7 +1420,7 @@ curl -fsS http://127.0.0.1:7400/healthz
 Docker：
 
 ```bash
-docker pull registry.example.com/meatus:1.0.0-panel
+docker pull ghcr.io/binsail/meatus:1.1.0
 docker stop meatus-server
 docker rm meatus-server
 # 用原来的 docker run 命令重新启动，保留 meatus-data 卷
@@ -1369,7 +1447,7 @@ Docker 命名卷：
 docker stop meatus-server
 docker run --rm --entrypoint sh \
   -v meatus-data:/data -v "$PWD:/backup" \
-  registry.example.com/meatus:1.0.0-panel \
+  ghcr.io/binsail/meatus:1.1.0 \
   -c 'tar czf /backup/meatus-data.tgz -C /data .'
 docker start meatus-server
 ```
@@ -1577,16 +1655,19 @@ A：不需要。V1 零数据库、零 Redis，配置和状态都在本地文件 
 A：不需要。client 主动外拨 server，内网只要出站能访问 7000。
 
 **Q：面板能直接公网访问吗？**  
-A：不建议。默认只绑 loopback；公网通过 SSH 隧道。非 loopback 必须设置 admin token，但当前 panel 仍未实现 HTTPS/Secure Cookie，公网暴露风险高。
+A：不建议直接裸奔。默认只绑 loopback；公网通过 SSH 隧道。确需非 loopback 时，必须同时设置 `admin_token` 并开启 `[admin.tls]`；HTTPS 下 Cookie 带 `Secure`，并发送 HSTS。
 
 **Q：`remote_port` 怎么选？**  
 A：TCP / UDP 写实际端口，确保在 `[ports].range` 内且未被占用；HTTP / HTTPS / SOCKS5 写 `0`，由 server 按域名或全局路由处理。
+
+**Q：`remote_port` 会每次变化吗？**  
+A：不会。显式 `remote_port` 是固定端口；只有写 `0` 且服务端支持动态分配时才由端口池分配。每次映射不需要新开服务器端口，但 Docker 部署必须把实际用到的端口逐个 `-p` 出去。
 
 **Q：改完 client.toml 必须重启吗？**  
 A：proxy 变更可以 `SIGHUP` 热重载；`server_addr`、`token` 等连接级字段变更需要重启。
 
 **Q：面板改了 proxy 为什么不持久化？**  
-A：面板是运行时管理，不写 TOML。长期配置请改 client.toml；面板适合临时排障 / 验证。
+A：面板是运行时管理，TOML 配置下会写回 `client.toml`；YAML 配置整体只读，面板增删会返回错误，需手工编辑后重启。长期配置仍建议直接改配置文件。
 
 **Q：自签证书浏览器报警告怎么办？**  
 A：自签只适合内网 / 测试。公网终端用户访问请用公网 CA 或 ACME；或让本地 HTTPS 服务使用受信任证书并走 `type = "https"` SNI 透传。

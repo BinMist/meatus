@@ -18,6 +18,8 @@ pub enum ConfigError {
     },
     #[error("invalid TOML: {0}")]
     Toml(#[from] toml::de::Error),
+    #[error("invalid YAML: {0}")]
+    Yaml(String),
     #[error("missing environment variable: {0}")]
     MissingEnv(String),
     #[error("invalid configuration: {0}")]
@@ -33,6 +35,39 @@ fn invalid(msg: impl Into<String>) -> ConfigError {
 pub enum ConfigKind {
     Server,
     Client,
+}
+
+/// 配置格式；`Auto` 按扩展名和内容识别，默认回退 TOML。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFormat {
+    Auto,
+    Toml,
+    Yaml,
+}
+
+impl ConfigFormat {
+    #[must_use]
+    pub fn from_path(path: &Path) -> Self {
+        match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("yaml" | "yml") => Self::Yaml,
+            Some("toml") => Self::Toml,
+            _ => Self::Auto,
+        }
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Toml => "toml",
+            Self::Yaml => "yaml",
+        }
+    }
 }
 
 fn default_tenant() -> String {
@@ -321,6 +356,37 @@ pub struct AdminSection {
     #[serde(default = "default_panel")]
     pub panel: bool,
     pub admin_token: Option<String>,
+    #[serde(default)]
+    pub tls: AdminTlsSection,
+    /// 仅当管理面位于可信反向代理之后时开启；默认不信任转发头。
+    #[serde(default)]
+    pub trust_forwarded_proto: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminTlsSection {
+    #[serde(default)]
+    pub enabled: bool,
+    pub cert: Option<PathBuf>,
+    pub key: Option<PathBuf>,
+    #[serde(default = "default_hsts")]
+    pub hsts: bool,
+}
+
+fn default_hsts() -> bool {
+    true
+}
+
+impl Default for AdminTlsSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert: None,
+            key: None,
+            hsts: default_hsts(),
+        }
+    }
 }
 
 fn default_admin_bind() -> String {
@@ -337,6 +403,8 @@ impl Default for AdminSection {
             bind: default_admin_bind(),
             panel: default_panel(),
             admin_token: None,
+            tls: AdminTlsSection::default(),
+            trust_forwarded_proto: false,
         }
     }
 }
@@ -444,6 +512,20 @@ impl ServerConfig {
             return Err(invalid(
                 "admin.bind is not loopback; admin_token is required in that case",
             ));
+        }
+        if self.admin.tls.enabled {
+            if self.admin.tls.cert.is_none() || self.admin.tls.key.is_none() {
+                return Err(invalid(
+                    "admin.tls.cert and admin.tls.key are required when admin.tls.enabled = true",
+                ));
+            }
+        } else if self.admin.tls.cert.is_some() || self.admin.tls.key.is_some() {
+            return Err(invalid(
+                "admin.tls.cert/key are set but admin.tls.enabled = false",
+            ));
+        }
+        if self.admin.tls.enabled && !self.admin.bind.contains(':') {
+            return Err(invalid("admin.bind must be host:port"));
         }
 
         if let Some(ctrl) = &self.ctrl
@@ -736,45 +818,185 @@ impl ClientConfig {
 // ---------------------------------------------------------------------------
 
 pub fn load_server_config(path: impl AsRef<Path>) -> Result<ServerConfig, ConfigError> {
+    load_server_config_with_format(path, ConfigFormat::Auto)
+}
+
+pub fn load_server_config_with_format(
+    path: impl AsRef<Path>,
+    format: ConfigFormat,
+) -> Result<ServerConfig, ConfigError> {
     let path = path.as_ref();
     let raw = fs::read_to_string(path).map_err(|source| ConfigError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    parse_server_config(&raw)
+    let format = resolve_format(&raw, path, format);
+    parse_server_config_at(&raw, format, Some(path))
 }
 
 pub fn load_client_config(path: impl AsRef<Path>) -> Result<ClientConfig, ConfigError> {
+    load_client_config_with_format(path, ConfigFormat::Auto)
+}
+
+pub fn load_client_config_with_format(
+    path: impl AsRef<Path>,
+    format: ConfigFormat,
+) -> Result<ClientConfig, ConfigError> {
     let path = path.as_ref();
     let raw = fs::read_to_string(path).map_err(|source| ConfigError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    parse_client_config(&raw)
+    let format = resolve_format(&raw, path, format);
+    parse_client_config_at(&raw, format, Some(path))
 }
 
 pub fn parse_server_config(raw: &str) -> Result<ServerConfig, ConfigError> {
+    parse_server_config_at(raw, ConfigFormat::Toml, None)
+}
+
+pub fn parse_server_config_with_format(
+    raw: &str,
+    format: ConfigFormat,
+) -> Result<ServerConfig, ConfigError> {
+    let format = if format == ConfigFormat::Auto {
+        detect_format(raw)
+    } else {
+        format
+    };
+    parse_server_config_at(raw, format, None)
+}
+
+pub fn parse_client_config(raw: &str) -> Result<ClientConfig, ConfigError> {
+    parse_client_config_at(raw, ConfigFormat::Toml, None)
+}
+
+pub fn parse_client_config_with_format(
+    raw: &str,
+    format: ConfigFormat,
+) -> Result<ClientConfig, ConfigError> {
+    let format = if format == ConfigFormat::Auto {
+        detect_format(raw)
+    } else {
+        format
+    };
+    parse_client_config_at(raw, format, None)
+}
+
+fn parse_server_config_at(
+    raw: &str,
+    format: ConfigFormat,
+    path: Option<&Path>,
+) -> Result<ServerConfig, ConfigError> {
     let expanded = expand_env(raw)?;
-    let config: ServerConfig = toml::from_str(&expanded)?;
+    let config: ServerConfig = match format {
+        ConfigFormat::Toml | ConfigFormat::Auto => toml::from_str(&expanded)?,
+        ConfigFormat::Yaml => {
+            serde_yaml::from_str(&expanded).map_err(|err| yaml_error(err, path))?
+        }
+    };
     config.validate()?;
     Ok(config)
 }
 
-pub fn parse_client_config(raw: &str) -> Result<ClientConfig, ConfigError> {
+fn parse_client_config_at(
+    raw: &str,
+    format: ConfigFormat,
+    path: Option<&Path>,
+) -> Result<ClientConfig, ConfigError> {
     let expanded = expand_env(raw)?;
-    let config: ClientConfig = toml::from_str(&expanded)?;
+    let config: ClientConfig = match format {
+        ConfigFormat::Toml | ConfigFormat::Auto => toml::from_str(&expanded)?,
+        ConfigFormat::Yaml => {
+            serde_yaml::from_str(&expanded).map_err(|err| yaml_error(err, path))?
+        }
+    };
     config.validate()?;
     Ok(config)
+}
+
+fn yaml_error(err: serde_yaml::Error, path: Option<&Path>) -> ConfigError {
+    let location = err.location().map(|loc| (loc.line(), loc.column()));
+    let source = path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<input>".to_string());
+    let location = location.map_or_else(
+        || source.clone(),
+        |(line, column)| format!("{source}: line {line}, column {column}"),
+    );
+    ConfigError::Yaml(format!("{location}: {err}"))
+}
+
+fn resolve_format(raw: &str, path: &Path, requested: ConfigFormat) -> ConfigFormat {
+    if requested != ConfigFormat::Auto {
+        return requested;
+    }
+    match ConfigFormat::from_path(path) {
+        ConfigFormat::Auto => detect_format(raw),
+        format => format,
+    }
+}
+
+/// 返回实际使用的配置格式；用于 `meatus check` 输出和错误信息。
+#[must_use]
+pub fn resolve_config_format(raw: &str, path: &Path, requested: ConfigFormat) -> ConfigFormat {
+    resolve_format(raw, path, requested)
+}
+
+fn detect_format(raw: &str) -> ConfigFormat {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            return ConfigFormat::Toml;
+        }
+        if !line.starts_with(char::is_whitespace)
+            && (trimmed == "server:"
+                || trimmed == "client:"
+                || trimmed.starts_with("server: ")
+                || trimmed.starts_with("client: "))
+        {
+            return ConfigFormat::Yaml;
+        }
+        break;
+    }
+    ConfigFormat::Toml
 }
 
 #[must_use]
 pub fn detect_kind(raw: &str) -> Option<ConfigKind> {
+    detect_kind_with_format(raw, ConfigFormat::Auto)
+}
+
+/// 按指定格式识别配置顶层类型；`Auto` 时按内容猜测。
+#[must_use]
+pub fn detect_kind_with_format(raw: &str, format: ConfigFormat) -> Option<ConfigKind> {
+    let format = if format == ConfigFormat::Auto {
+        detect_format(raw)
+    } else {
+        format
+    };
     let mut kind = None;
     for line in raw.lines() {
-        match line.trim() {
-            "[server]" => kind = Some(ConfigKind::Server),
-            "[client]" => kind = Some(ConfigKind::Client),
-            _ => {}
+        let trimmed = line.trim();
+        match format {
+            ConfigFormat::Toml | ConfigFormat::Auto => match trimmed {
+                "[server]" => kind = Some(ConfigKind::Server),
+                "[client]" => kind = Some(ConfigKind::Client),
+                _ => {}
+            },
+            ConfigFormat::Yaml => {
+                if line.starts_with(char::is_whitespace) {
+                    continue;
+                }
+                if trimmed == "server:" || trimmed.starts_with("server: ") {
+                    kind = Some(ConfigKind::Server);
+                } else if trimmed == "client:" || trimmed.starts_with("client: ") {
+                    kind = Some(ConfigKind::Client);
+                }
+            }
         }
         if kind.is_some() {
             break;
@@ -1127,5 +1349,70 @@ custom_domains = ["socks.example.com"]
         assert_eq!(detect_kind("[server]\n"), Some(ConfigKind::Server));
         assert_eq!(detect_kind("[client]\n"), Some(ConfigKind::Client));
         assert_eq!(detect_kind("[log]\n"), None);
+        assert_eq!(
+            detect_kind("server:\n  control_port: 7000\n"),
+            Some(ConfigKind::Server)
+        );
+        assert_eq!(
+            detect_kind("client:\n  server_addr: x:7000\n"),
+            Some(ConfigKind::Client)
+        );
+    }
+
+    #[test]
+    fn parse_yaml_server_is_semantically_equal() {
+        let yaml = r#"
+server:
+  control_port: 7000
+auth:
+  token_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ports:
+  range: [20000, 20100]
+admin:
+  bind: "127.0.0.1:7400"
+  tls:
+    enabled: true
+    cert: "/tmp/admin.crt"
+    key: "/tmp/admin.key"
+"#;
+        let config =
+            parse_server_config_with_format(yaml, ConfigFormat::Yaml).expect("valid YAML server");
+        assert_eq!(config.server.control_port, 7000);
+        assert_eq!(config.ports.range, [20000, 20100]);
+        assert!(config.admin.tls.enabled);
+        assert_eq!(
+            config.admin.tls.cert.as_deref(),
+            Some(Path::new("/tmp/admin.crt"))
+        );
+    }
+
+    #[test]
+    fn yaml_error_reports_line_and_column() {
+        let yaml = "server:\n  control_port: 7000\n   broken: [\n";
+        let err =
+            parse_server_config_with_format(yaml, ConfigFormat::Yaml).expect_err("invalid YAML");
+        let message = err.to_string();
+        assert!(message.contains("line "), "{message}");
+        assert!(message.contains("column "), "{message}");
+    }
+
+    #[test]
+    fn admin_tls_requires_cert_and_key() {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[admin]
+bind = "0.0.0.0:7400"
+admin_token = "admin-secret"
+
+[admin.tls]
+enabled = true
+"#;
+        let err = parse_server_config(toml).expect_err("missing admin TLS files");
+        assert!(err.to_string().contains("admin.tls.cert"));
     }
 }

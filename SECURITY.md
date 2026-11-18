@@ -6,11 +6,12 @@ Meatus 是一个会把内网服务暴露到公网的工具，安全边界比普�
 
 | 版本 / 分支 | 是否接受安全修复 |
 |---|---|
+| `1.1.x` 最新发布 | 是 |
 | `1.0.x` 最新发布 | 是 |
 | `main` 分支最新提交 | 是（开发分支） |
 | `1.0.0` 以前的版本 | 否，请升级到最新版本 |
 
-V1 处于 `1.0.x` 维护阶段，不承诺长期 LTS。安全修复会进入最新版本，并在 `CHANGELOG.md` 中记录。
+V1 处于 `1.0.x` / `1.1.x` 维护阶段，不承诺长期 LTS。安全修复会进入最新版本，并在 `CHANGELOG.md` 中记录。
 
 ## 报告漏洞
 
@@ -57,7 +58,8 @@ V1 处于 `1.0.x` 维护阶段，不承诺长期 LTS。安全修复会进入最�
 部署和使用时请至少遵守：
 
 - 管理面板默认只绑 `127.0.0.1:7400`，通过 SSH 隧道访问；不要把面板直接暴露到公网；
-- 非 loopback 部署必须使用 TLS 与额外访问控制；当前面板自身尚未实现非 loopback 的 HTTPS / `Secure` Cookie；
+- 非 loopback 部署必须设置 `admin_token`，并建议开启 `[admin.tls]`；HTTPS 下 Cookie 自动带 `Secure` 并发送 HSTS；
+- 反向代理场景默认不信任 `X-Forwarded-Proto`；只有可信代理明确覆盖该头时才设置 `admin.trust_forwarded_proto = true`；
 - `admin_token` 使用足够随机的值，不写入仓库、不写进截图、不通过聊天工具明文传播；
 - server 只保存 client token 的 SHA-256；明文 token 只放在 client 侧；
 - SOCKS5 默认关闭；开启后默认拒绝公网目标，按需配置 `allow_cidrs`；

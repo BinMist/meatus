@@ -56,6 +56,11 @@ chmod 0750 "$STATE_DIR"
 install -m 0755 "$BIN" "$PREFIX/meatus"
 echo "installed $PREFIX/meatus"
 
+# YAML 示例只读分发到文档目录；实际 YAML 配置需手工复制并改路径。
+DOC_DIR="/usr/share/doc/meatus/config"
+install -d -m 0755 "$DOC_DIR"
+install -m 0644 config/server.example.yaml config/client.example.yaml "$DOC_DIR/"
+
 SERVER_CONF="$CONF_DIR/server.toml"
 if [[ -f "$SERVER_CONF" ]]; then
     echo "keep existing $SERVER_CONF"

@@ -1,15 +1,20 @@
 #![forbid(unsafe_code)]
 //! M5 admin 面板：静态资源、会话 Cookie、CSRF 与只读 API 的集成测试。
 
+use std::io::Cursor;
 use std::net::TcpListener as StdTcpListener;
+use std::sync::Arc;
 use std::time::Duration;
 
 use meatus_client::ClientState;
 use meatus_core::{parse_client_config, parse_server_config};
 use meatus_server::ServerState;
+use rustls::RootCertStore;
+use rustls::pki_types::ServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, copy};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::sleep;
+use tokio_rustls::TlsConnector;
 use tokio_util::sync::CancellationToken;
 
 fn free_port() -> u16 {
@@ -48,6 +53,135 @@ fn cookie_from(head: &str) -> String {
         })
         .unwrap_or_default()
         .to_string()
+}
+
+async fn tls_request(port: u16, raw: &str, trust_der: &[u8]) -> (u16, String, String) {
+    let mut roots = RootCertStore::empty();
+    roots
+        .add(rustls::pki_types::CertificateDer::from(trust_der.to_vec()))
+        .expect("trust test certificate");
+    let config = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = TlsConnector::from(Arc::new(config));
+    let stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect admin TLS");
+    let mut stream = connector
+        .connect(
+            ServerName::try_from("localhost").expect("server name"),
+            stream,
+        )
+        .await
+        .expect("TLS handshake");
+    stream
+        .write_all(raw.as_bytes())
+        .await
+        .expect("write request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .await
+        .expect("read response");
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
+    (status, head.to_string(), body.to_string())
+}
+
+#[tokio::test]
+async fn admin_tls_sets_secure_cookie_hsts_and_strict_csp() {
+    let control_port = free_port();
+    let admin_port = free_port();
+    let dir = std::env::temp_dir().join(format!("meatus-admin-tls-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    let cert_pem = certified.cert.pem();
+    let key_pem = certified.signing_key.serialize_pem();
+    std::fs::write(&cert_path, &cert_pem).expect("write cert");
+    std::fs::write(&key_path, &key_pem).expect("write key");
+    let cert_der = rustls_pemfile::certs(&mut Cursor::new(cert_pem.as_bytes()))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("parse cert")
+        .into_iter()
+        .next()
+        .expect("certificate");
+
+    let config = parse_server_config(&format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{}"
+tls_key = "{}"
+
+[auth]
+clients = [
+  {{ id = "client", tenant = "default", token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b" }},
+]
+
+[ports]
+range = [24100, 24110]
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+admin_token = "admin-secret"
+
+[admin.tls]
+enabled = true
+cert = "{}"
+key = "{}"
+hsts = true
+"#,
+        cert_path.display(),
+        key_path.display(),
+        cert_path.display(),
+        key_path.display()
+    ))
+    .expect("parse config");
+
+    let state = ServerState::new(config).expect("state");
+    let cancel = CancellationToken::new();
+    let run_cancel = cancel.clone();
+    let task = tokio::spawn(async move { meatus_server::run_until(state, run_cancel).await });
+    sleep(Duration::from_millis(300)).await;
+
+    let (status, head, body) = tls_request(
+        admin_port,
+        "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        &cert_der,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(body.contains("Meatus 管理面板"));
+    assert!(head.contains("Strict-Transport-Security:"));
+    assert!(head.contains("style-src 'self'"));
+    assert!(!head.contains("unsafe-inline"));
+
+    let (status, head, _) = tls_request(
+        admin_port,
+        "POST /api/v1/session HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 24\r\n\r\n{\"token\":\"admin-secret\"}",
+        &cert_der,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let set_cookie = head
+        .lines()
+        .find(|line| line.starts_with("Set-Cookie:"))
+        .expect("Set-Cookie");
+    assert!(set_cookie.contains("Secure"));
+    assert!(set_cookie.contains("HttpOnly"));
+    assert!(set_cookie.contains("SameSite=Strict"));
+
+    cancel.cancel();
+    let _ = task.await;
 }
 
 #[tokio::test]

@@ -1,0 +1,27 @@
+# Meatus 客户端 YAML 配置示例
+# 复制为 client.yaml 后按需修改；token 从 `meatus gen-token` 获取。
+# YAML 只读，管理面板不会写回 YAML。
+
+client:
+  server_addr: "tunnel.example.com:7000"
+  server_name: "tunnel.example.com"
+  client_id: "home-nas"
+  tenant: "default"
+  token: "${MEATUS_CLIENT_TOKEN}"
+
+proxy:
+  - name: "ssh"
+    type: "tcp"
+    local_addr: "127.0.0.1:22"
+    remote_port: 20022
+
+  # HTTP 代理示例
+  # - name: "nas-web"
+  #   type: "http"
+  #   local_addr: "127.0.0.1:8080"
+  #   remote_port: 0
+  #   custom_domains: ["nas.tunnel.example.com"]
+
+log:
+  level: "info"
+  format: "text"

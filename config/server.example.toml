@@ -56,6 +56,15 @@ bind = "127.0.0.1:7400" # /metrics /healthz /api/v1/status /settings /certificat
 panel = true # false 时面板静态资源返回 404
 # 非 loopback 绑定时必须设置；设置后除 /healthz 外均要求会话 Cookie 或 Bearer
 # admin_token = "REPLACE_WITH_ADMIN_TOKEN"
+# 仅当管理面在可信反向代理之后时开启；默认不信任 X-Forwarded-Proto
+trust_forwarded_proto = false
+
+# 可选：管理面独立 HTTPS；与隧道 [server] tls_cert / tls_key 相互独立
+# [admin.tls]
+# enabled = true
+# cert = "/var/lib/meatus/certs/admin.crt"
+# key = "/var/lib/meatus/certs/admin.key"
+# hsts = true
 
 # 可选：外部控制面扩展；V1 完全开源版不启用
 # [ctrl]

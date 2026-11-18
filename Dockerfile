@@ -17,6 +17,7 @@ ARG RUST_VERSION=1.96.0
 ARG NODE_VERSION=22
 # 可选 crates 镜像（如 https://rsproxy.cn/index/），用于 crates.io 不可达的环境
 ARG CARGO_REGISTRY=""
+ARG VERSION=1.1.0
 
 FROM ${BASE_REGISTRY}node:${NODE_VERSION}-alpine AS web
 WORKDIR /src/web
@@ -42,12 +43,13 @@ RUN cargo build --release --locked --bin meatus \
     && strip target/release/meatus
 
 FROM ${BASE_REGISTRY}alpine:3.22
+ARG VERSION=1.1.0
 RUN apk add --no-cache ca-certificates tzdata su-exec \
     && addgroup -S meatus \
     && adduser -S -G meatus -h /data meatus
 COPY --from=build /src/target/release/meatus /usr/local/bin/meatus
-COPY config/server.example.toml /etc/meatus/server.example.toml
-COPY config/client.example.toml /etc/meatus/client.example.toml
+COPY config/server.example.toml config/client.example.toml /etc/meatus/
+COPY config/server.example.yaml config/client.example.yaml /etc/meatus/
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/meatus/
 COPY docs/THIRD_PARTY_LICENSES.md docs/THIRD_PARTY_LICENSE_TEXTS.txt /usr/share/doc/meatus/
 COPY deploy/docker/entrypoint.sh /usr/local/bin/meatus-entrypoint
@@ -60,7 +62,7 @@ WORKDIR /data
 STOPSIGNAL SIGTERM
 EXPOSE 7000 7400 80 443 2080
 LABEL org.opencontainers.image.title="meatus" \
-      org.opencontainers.image.version="1.0.0" \
+      org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.description="Self-hosted reverse tunnel: server + client + web panel" \
       org.opencontainers.image.licenses="Apache-2.0"
 ENTRYPOINT ["/usr/local/bin/meatus-entrypoint"]

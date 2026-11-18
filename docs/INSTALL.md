@@ -16,7 +16,7 @@ V1 交付**完全开源（Apache-2.0）自托管版**：一台公网 server + �
 ## 2. 从 release 包安装（推荐）
 
 ```bash
-VERSION=1.0.0
+VERSION=1.1.0
 TARGET=x86_64-unknown-linux-musl
 curl -LO "https://your-release-host/meatus-${VERSION}-${TARGET}.tar.gz"
 sha256sum -c "meatus-${VERSION}-${TARGET}.tar.gz.sha256"
@@ -35,6 +35,7 @@ sudo ./scripts/install.sh \
 - 创建系统用户 `meatus`、`/etc/meatus`、`/var/lib/meatus`；
 - 首次安装时生成自签证书（`/var/lib/meatus/certs`）、client token、admin token；
 - 写入 `/etc/meatus/server.toml` 与 `/etc/meatus/client.toml`，**已存在则不覆盖**；
+- 同时安装 `config/*.example.yaml` 到 `/usr/share/doc/meatus/config/`，需要 YAML 时手工复制。
 - 安装并启动 `meatus-server.service`。
 
 装完后：
@@ -72,6 +73,8 @@ sudo install -d -m 0755 /etc/meatus /var/lib/meatus /var/lib/meatus/certs /var/l
 sudo install -m 0755 meatus /usr/local/bin/meatus
 sudo install -m 0600 config/server.example.toml /etc/meatus/server.toml
 sudo install -m 0600 config/client.example.toml /etc/meatus/client.toml
+# 需要 YAML 时改用：
+# sudo install -m 0600 config/server.example.yaml /etc/meatus/server.yaml
 
 # 证书
 sudo /usr/local/bin/meatus gen-cert --domain tunnel.example.com --domain 127.0.0.1 \
@@ -141,7 +144,7 @@ docker compose cp meatus:/data/client.token ./client.token
 docker compose cp meatus:/data/certs/server.crt ./server.crt
 ```
 
-面板只发布到宿主机 `127.0.0.1:7400`，登录需要 admin token；不要把 7400 直接暴露公网。
+面板默认只发布到宿主机 `127.0.0.1:7400`，登录需要 admin token；不要把 7400 直接暴露公网。若确需非 loopback 访问，在 `server.toml` 中配置 `[admin.tls]` 并只发布 TLS 端口，同时保持 `admin_token`。
 
 修改配置：
 
@@ -151,6 +154,18 @@ docker compose cp meatus:/data/server.toml ./server.toml
 docker compose cp ./server.toml meatus:/data/server.toml
 docker compose restart meatus
 ```
+
+YAML 变体（只读，挂载后启动命令需指向 YAML）：
+
+```bash
+docker run -d --name meatus \
+  -v "$PWD/server.yaml:/data/server.yaml:ro" \
+  -v meatus-data:/data \
+  ghcr.io/binsail/meatus:1.1.0 \
+  server --config /data/server.yaml
+```
+
+YAML 配置下管理面板的系统设置和 client proxy 写回均禁用；修改后重启容器生效。
 
 默认配置只发布 7000（控制面）与 7400（面板）。client 申请的 `remote_port` 必须逐个映射；开启 `[http]` 后再映射 80/443。在 `docker-compose.yml` 的 `ports` 中追加：
 
@@ -215,7 +230,7 @@ docker compose up -d --build
 多架构构建用 Buildx：
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t meatus:1.0.0 .
+docker buildx build --platform linux/amd64,linux/arm64 -t meatus:1.1.0 .
 ```
 
 构建后做一次部署冒烟（首启、面板、Bearer API、SIGTERM）：
@@ -341,14 +356,17 @@ docker start meatus
 
 ### 4.7 使用预构建镜像
 
-已构建并实跑 `linux/amd64` 镜像；以下 `registry.example.com` 为占位地址，发布时请替换为实际公开镜像仓库：
+V1.1 起镜像同时发布到 GHCR（canonical）与阿里云 ACR（国内镜像）：
 
 ```bash
-docker pull registry.example.com/meatus:1.0.0
-docker pull registry.example.com/meatus-client:1.0.0
+# GHCR
+docker pull ghcr.io/binsail/meatus:1.1.0
+
+# 阿里云 ACR 国内镜像
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0
 ```
 
-server / client 的启动参数与 4.6 相同，把镜像名替换为上面的仓库地址即可。推送与真实服务器测试记录已归档到内部资料目录，不随开源仓发布。
+server / client 使用同一镜像，启动参数与 4.6 相同，把镜像名替换为上面的仓库地址即可。发布流水线会同时生成 SBOM，并校验两仓库的 manifest digest 一致。
 
 ## 5. 升级与回滚
 
@@ -367,7 +385,7 @@ server / client 的启动参数与 4.6 相同，把镜像名替换为上面的�
 | 7000/tcp | 控制面 TLS + yamux | 公网（client 连接） |
 | 80/tcp、443/tcp | HTTP / HTTPS / ACME | 公网（开启 `[http]` 时） |
 | 20000–30000/tcp+udp | 动态 proxy 端口池 | 公网（按需） |
-| 7400/tcp | 面板 / metrics | 仅本机或内网 |
+| 7400/tcp | 面板 / metrics | 仅本机、内网或 `[admin.tls]` 保护下 |
 | 2080/tcp | SOCKS5（默认关闭） | 仅显式开启时 |
 
 ## 7. 验收清单
@@ -384,7 +402,8 @@ systemctl is-active meatus-server
 
 ## 8. 安全基线
 
-- 面板默认只绑 loopback；非 loopback 必须设置 `admin_token`。
+- 面板默认只绑 loopback；非 loopback 必须设置 `admin_token`，并建议开启 `[admin.tls]`。
+- 管理面 HTTPS 下 Cookie 带 `Secure`，并发送 HSTS；反向代理场景默认不信任 `X-Forwarded-Proto`。
 - `server.key`、`client.token`、`admin.token` 权限 0600。
 - 不要把 `server.toml`、token、证书私钥提交到仓库。
 - 公网只开放 7000 与业务端口；7400 不要暴露。

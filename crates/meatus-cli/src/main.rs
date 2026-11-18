@@ -13,8 +13,8 @@ use base64::Engine;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use meatus_client::ClientState;
 use meatus_core::{
-    ClientConfig, ConfigKind, LogFormat, ServerConfig, detect_kind, load_client_config,
-    load_server_config, parse_client_config, parse_server_config,
+    ClientConfig, ConfigFormat, ConfigKind, LogFormat, ServerConfig, detect_kind_with_format,
+    load_client_config_with_format, load_server_config_with_format,
 };
 use meatus_server::ServerState;
 use meatus_server::logbuf::LogBuffer;
@@ -49,6 +49,9 @@ struct ServerArgs {
     /// 服务端配置文件
     #[arg(short, long, default_value = "server.toml")]
     config: PathBuf,
+    /// 配置格式；默认按扩展名识别
+    #[arg(long, value_enum, default_value_t = FormatArg::Auto)]
+    format: FormatArg,
     /// 只打印解析与监听计划，不启动
     #[arg(long)]
     dry_run: bool,
@@ -59,6 +62,9 @@ struct ClientArgs {
     /// 客户端配置文件
     #[arg(short, long, default_value = "client.toml")]
     config: PathBuf,
+    /// 配置格式；默认按扩展名识别
+    #[arg(long, value_enum, default_value_t = FormatArg::Auto)]
+    format: FormatArg,
     /// 只打印解析与代理清单，不启动
     #[arg(long)]
     dry_run: bool,
@@ -72,12 +78,32 @@ struct CheckArgs {
     /// 强制按指定类型解析
     #[arg(long, value_enum)]
     kind: Option<KindArg>,
+    /// 配置格式；默认按扩展名识别
+    #[arg(long, value_enum, default_value_t = FormatArg::Auto)]
+    format: FormatArg,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
 enum KindArg {
     Server,
     Client,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum FormatArg {
+    Auto,
+    Toml,
+    Yaml,
+}
+
+impl From<FormatArg> for ConfigFormat {
+    fn from(value: FormatArg) -> Self {
+        match value {
+            FormatArg::Auto => Self::Auto,
+            FormatArg::Toml => Self::Toml,
+            FormatArg::Yaml => Self::Yaml,
+        }
+    }
 }
 
 impl From<KindArg> for ConfigKind {
@@ -125,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
-    let config = load_server_config(&args.config)
+    let config = load_server_config_with_format(&args.config, args.format.into())
         .with_context(|| format!("load server config {}", args.config.display()))?;
     let logs = Arc::new(LogBuffer::default());
     init_logging(
@@ -150,7 +176,7 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
 }
 
 async fn run_client(args: ClientArgs) -> anyhow::Result<()> {
-    let config = load_client_config(&args.config)
+    let config = load_client_config_with_format(&args.config, args.format.into())
         .with_context(|| format!("load client config {}", args.config.display()))?;
     init_logging(&config.log.level, config.log.format, None);
 
@@ -166,10 +192,12 @@ async fn run_client(args: ClientArgs) -> anyhow::Result<()> {
 fn run_check(args: CheckArgs) -> anyhow::Result<()> {
     let raw = fs::read_to_string(&args.config)
         .with_context(|| format!("read config {}", args.config.display()))?;
+    let requested = args.format.into();
+    let actual = meatus_core::resolve_config_format(&raw, &args.config, requested);
 
     let kind = match args.kind {
         Some(kind) => ConfigKind::from(kind),
-        None => detect_kind(&raw).with_context(|| {
+        None => detect_kind_with_format(&raw, requested).with_context(|| {
             format!(
                 "cannot detect config type in {} (expected [server] or [client])",
                 args.config.display()
@@ -179,10 +207,10 @@ fn run_check(args: CheckArgs) -> anyhow::Result<()> {
 
     match kind {
         ConfigKind::Server => {
-            let config = parse_server_config(&raw)?;
+            let config = load_server_config_with_format(&args.config, requested)?;
             let state = ServerState::new(config)?;
             state.config.validate_runtime()?;
-            println!("OK  {} (server)", args.config.display());
+            println!("OK  {} (server, {})", args.config.display(), actual.label());
             print!("{}", server_summary(&state.config));
             println!("\nplanned listeners:");
             for listener in state.planned_listeners() {
@@ -190,9 +218,9 @@ fn run_check(args: CheckArgs) -> anyhow::Result<()> {
             }
         }
         ConfigKind::Client => {
-            let config = parse_client_config(&raw)?;
+            let config = load_client_config_with_format(&args.config, requested)?;
             let state = ClientState::new(config)?;
-            println!("OK  {} (client)", args.config.display());
+            println!("OK  {} (client, {})", args.config.display(), actual.label());
             print!("{}", client_summary(&state.config));
         }
     }
@@ -450,15 +478,36 @@ fn server_summary(config: &ServerConfig) -> String {
     );
     let _ = writeln!(
         out,
-        "admin    bind={} panel={} admin_token={}",
+        "admin    bind={} panel={} admin_token={} tls={}",
         config.admin.bind,
         config.admin.panel,
         if config.admin.admin_token.is_some() {
             "set"
         } else {
             "unset"
-        }
+        },
+        config.admin.tls.enabled
     );
+    if config.admin.tls.enabled {
+        let _ = writeln!(
+            out,
+            "  tls cert={} key={} hsts={} trust_forwarded_proto={}",
+            config
+                .admin
+                .tls
+                .cert
+                .as_ref()
+                .map_or_else(|| "unset".to_string(), |path| path.display().to_string()),
+            config
+                .admin
+                .tls
+                .key
+                .as_ref()
+                .map_or_else(|| "unset".to_string(), |path| path.display().to_string()),
+            config.admin.tls.hsts,
+            config.admin.trust_forwarded_proto
+        );
+    }
     out
 }
 
@@ -502,7 +551,7 @@ fn client_summary(config: &ClientConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use meatus_core::parse_client_config;
+    use meatus_core::{parse_client_config, parse_server_config};
 
     #[test]
     fn client_summary_redacts_token() {

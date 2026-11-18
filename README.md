@@ -11,11 +11,11 @@
 Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**完全开源（Apache-2.0）、面向个人 / 小团队自托管**。核心代码、协议、面板和部署脚本都在本仓库中。
 
 - **传输**：TCP + TLS 1.3 + yamux（QUIC 留 v2）
-- **配置**：单二进制 + TOML；服务端只存 token 的 SHA-256
+- **配置**：单二进制 + TOML（默认）/ YAML（V1.1 支持，只读）；服务端只存 token 的 SHA-256
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，HTTP proxy 的精确域名由 server 用 Let's Encrypt HTTP-01 自动签发、TLS 终止并缓存/续期
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **状态**：V1 已完成并发布，完全开源自托管版 `1.0.0`；macOS aarch64、Linux x86_64 musl 静态包、linux/arm64 与 linux/amd64 Docker 镜像均已实跑；公开镜像仓库地址在发布时替换为实际地址（文档暂用 `registry.example.com` 占位）。V1 验收记录已归档到内部资料目录（不随开源仓库发布）：fuzz 5 分钟 × 2 target、netem 20% 丢包、ZAP baseline 0 FAIL、cargo audit 无漏洞均通过；24h fuzz 作为持续巡检项。安装见 `docs/INSTALL.md`，Docker 部署见第 4 节。
+- **状态**：V1.0 已完成并发布，完全开源自托管版 `1.0.0`；V1.1 正在开发（YAML、管理面 TLS、GHCR + ACR 双仓库、严格 CSP）。macOS aarch64、Linux x86_64 musl 静态包、linux/arm64 与 linux/amd64 Docker 镜像均已实跑。V1 验收记录已归档到内部资料目录（不随开源仓库发布）：fuzz 5 分钟 × 2 target、netem 20% 丢包、ZAP baseline 0 FAIL、cargo audit 无漏洞均通过；24h fuzz 作为持续巡检项。安装见 `docs/INSTALL.md`，Docker 部署见第 4 节。
 
 ## 目录结构
 
@@ -47,8 +47,9 @@ MEATUS_DOMAIN=tunnel.example.com docker compose up -d --build
 docker compose exec meatus cat /data/admin.token
 # 面板：http://127.0.0.1:7400 ；client 配置与 token 见 docs/INSTALL.md 第 4 节
 # 不用 Compose 的纯 docker run 命令见 docs/INSTALL.md 4.6
-# 预构建镜像（registry.example.com 为占位，请替换为实际公开镜像仓库）：
-# docker pull registry.example.com/meatus:1.0.0
+# 预构建镜像：
+# docker pull ghcr.io/binsail/meatus:1.1.0
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0
 ```
 
 ## 快速开始（TCP / UDP / HTTP / HTTPS 隧道）
@@ -65,7 +66,7 @@ mkdir -p certs
 cargo run -p meatus-cli -- gen-cert \
   --domain tunnel.example.com --domain 127.0.0.1 --out certs
 
-# 3. 配置
+# 3. 配置（TOML 默认；需要 YAML 时用 config/*.example.yaml，YAML 只读）
 cp config/server.example.toml server.toml
 cp config/client.example.toml client.toml
 # server.toml：tls_cert / tls_key、clients[].token_sha256
@@ -141,20 +142,27 @@ cd .. && cargo build --release
 bind = "127.0.0.1:7400"
 panel = true
 admin_token = "REPLACE_WITH_ADMIN_TOKEN" # 非 loopback 必填；为空时配置校验会拒绝
+trust_forwarded_proto = false
+
+[admin.tls]                              # 可选：管理面独立 HTTPS
+enabled = false
+# cert = "/data/certs/admin.crt"
+# key = "/data/certs/admin.key"
+hsts = true
 ```
 
 六个页面：登录、总览、Proxy 管理、证书状态、实时日志、系统设置。
 
 - 总览：5 秒轮询 `/api/v1/status`，展示客户端 / proxy / 活跃连接 / uptime 与累计流量曲线。
-- Proxy 管理：通过 admin API 新增、编辑、删除运行中的 proxy；server 下发管理帧到指定 `run_id` 的 client，等待 ack 后生效，失败回滚上一份 runtime。client 启动时带 `--config` 会把变更写回 `client.toml`，重启后仍保留。写操作走 CSRF 校验，表单支持类型、域名、本地地址、端口、连接数 / 限速 / 空闲 / CIDR 高级项。
+- Proxy 管理：通过 admin API 新增、编辑、删除运行中的 proxy；server 下发管理帧到指定 `run_id` 的 client，等待 ack 后生效，失败回滚上一份 runtime。client 启动时带 `--config` 会把变更写回 `client.toml`，重启后仍保留；YAML client 配置整体只读。写操作走 CSRF 校验，表单支持类型、域名、本地地址、端口、连接数 / 限速 / 空闲 / CIDR 高级项。
 - 证书状态：读取 `acme.cert_dir` 中的 PEM，解析叶证书 SAN、到期时间、剩余天数、序列号、签发者与链长度；状态区分 managed / expiring / expired / pending / not-configured。
 - 实时日志：2 秒拉取 `/api/v1/logs?limit=300`，页脚显示总行数与当前展示行数；内容来自进程内 2000 行环形缓冲，重启即清空，不落盘、不包含 admin token。
-- 系统设置：在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志并写回 `server.toml`；保存前校验配置和端口预检，成功后自动重启生效。TLS、admin 绑定、认证 token 与会话策略保持只读。
+- 系统设置：在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志并写回 `server.toml`；保存前校验配置和端口预检，成功后自动重启生效。TLS、admin 绑定、认证 token 与会话策略保持只读；YAML 配置不写回。
 
 安全边界：
 
-- 面板静态资源与 API 同一 admin listener，默认只绑 loopback；非 loopback 的 HTTPS / `Secure` Cookie 尚未实现，当前只建议本机或 SSH 隧道访问。
-- 所有响应带 `X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` 与 CSP（`script-src 'self'`）；`admin.panel = false` 时静态资源返回 404。
+- 面板静态资源与 API 同一 admin listener，默认只绑 loopback；非 loopback 建议开启 `[admin.tls]`，HTTPS 下 Cookie 自动带 `Secure` 并发送 HSTS。
+- 所有响应带 `X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` 与 CSP（`script-src 'self'`、`style-src 'self'`，不含 `unsafe-inline`）；`admin.panel = false` 时静态资源返回 404。
 - `admin_token` 不写浏览器存储，只用于换会话；Cookie HttpOnly、SameSite=Strict、12 小时过期；登录失败按 IP 限流。
 - 未授权 `/api/v1/*` 统一 401 JSON；`/healthz` 保持公开供探活。
 

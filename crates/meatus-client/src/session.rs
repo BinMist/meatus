@@ -9,8 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use meatus_core::{
-    ClientConfig, MultiplexedStream, ProxySpec, ProxyType as ConfigProxyType, TargetPolicy,
-    WireError, multiplex, read_frame, write_frame,
+    ClientConfig, ConfigFormat, MultiplexedStream, ProxySpec, ProxyType as ConfigProxyType,
+    TargetPolicy, WireError, multiplex, read_frame, write_frame,
 };
 use meatus_proto::{
     PROTOCOL_VERSION,
@@ -409,7 +409,9 @@ async fn control_loop(
                         match result {
                             Ok(spec) => {
                                 let persisted = config_path.map_or(Ok(()), |path| {
-                                    meatus_core::upsert_client_proxy(path, &spec)
+                                    ensure_writable_config(path).and_then(|()| {
+                                        meatus_core::upsert_client_proxy(path, &spec)
+                                    })
                                 });
                                 if let Err(error) = persisted {
                                     warn!(%error, "admin add proxy config write failed");
@@ -464,7 +466,9 @@ async fn control_loop(
                     Some(control_msg::Kind::AdminRemoveProxy(cmd)) => {
                         let name = cmd.name;
                         let persisted = config_path.map_or(Ok(()), |path| {
-                            meatus_core::remove_client_proxy(path, &name)
+                            ensure_writable_config(path).and_then(|()| {
+                                meatus_core::remove_client_proxy(path, &name)
+                            })
                         });
                         if let Err(error) = persisted {
                             warn!(%error, "admin remove proxy config write failed");
@@ -900,6 +904,13 @@ fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
+fn ensure_writable_config(path: &Path) -> Result<(), String> {
+    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
+        return Err("YAML config is read-only; edit client.yaml manually and restart".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

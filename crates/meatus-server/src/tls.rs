@@ -3,6 +3,7 @@
 
 use std::fs::File;
 use std::io::BufReader;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
@@ -21,7 +22,26 @@ pub fn load(config: &ServerConfig) -> anyhow::Result<Arc<RustlsServerConfig>> {
         .tls_key
         .as_ref()
         .context("server.tls_key is required in M1")?;
+    load_pair(cert_path, key_path)
+}
 
+pub fn load_admin(config: &ServerConfig) -> anyhow::Result<Arc<RustlsServerConfig>> {
+    let cert_path = config
+        .admin
+        .tls
+        .cert
+        .as_ref()
+        .context("admin.tls.cert is required when admin.tls.enabled = true")?;
+    let key_path = config
+        .admin
+        .tls
+        .key
+        .as_ref()
+        .context("admin.tls.key is required when admin.tls.enabled = true")?;
+    load_pair(cert_path, key_path)
+}
+
+fn load_pair(cert_path: &Path, key_path: &Path) -> anyhow::Result<Arc<RustlsServerConfig>> {
     let cert_file =
         File::open(cert_path).with_context(|| format!("open tls cert {}", cert_path.display()))?;
     let certs = certs(&mut BufReader::new(cert_file))
