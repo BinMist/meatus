@@ -15,7 +15,7 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，HTTP proxy 的精确域名由 server 用 Let's Encrypt HTTP-01 自动签发、TLS 终止并缓存/续期
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **状态**：M0–M6 已完成并提交，V1 完全开源自托管版 `1.0.0`；macOS aarch64、Linux x86_64 musl 静态包、linux/arm64 与 linux/amd64 Docker 镜像均已实跑；公开镜像仓库地址在发布时替换为实际地址（文档暂用 `registry.example.com` 占位）。M6 验收记录见 `docs/M6_ACCEPTANCE.md`：fuzz 5 分钟 × 2 target、netem 20% 丢包、ZAP baseline 0 FAIL、cargo audit 无漏洞均通过；24h fuzz 作为持续巡检项。安装见 `docs/INSTALL.md`，Docker 部署见第 4 节。
+- **状态**：V1 已完成并发布，完全开源自托管版 `1.0.0`；macOS aarch64、Linux x86_64 musl 静态包、linux/arm64 与 linux/amd64 Docker 镜像均已实跑；公开镜像仓库地址在发布时替换为实际地址（文档暂用 `registry.example.com` 占位）。V1 验收记录见 `docs/M6_ACCEPTANCE.md`：fuzz 5 分钟 × 2 target、netem 20% 丢包、ZAP baseline 0 FAIL、cargo audit 无漏洞均通过；24h fuzz 作为持续巡检项。安装见 `docs/INSTALL.md`，Docker 部署见第 4 节。
 
 ## 目录结构
 
@@ -86,11 +86,11 @@ curl -H "Host: nas.tunnel.example.com" http://127.0.0.1:80/
 # 7. UDP：client.toml 增加 type = "udp" 的 proxy 后
 dig @127.0.0.1 -p <remote_port> example.com
 
-# 8. SOCKS5（M4）：server.toml 打开 [socks5] enabled = true，
+# 8. SOCKS5：server.toml 打开 [socks5] enabled = true，
 #    client.toml 增加 type = "socks5" 的 proxy 后：
 curl --socks5 127.0.0.1:2080 http://10.0.0.12:8080/
 # 只支持 IP 目标与 CONNECT；目标默认限定内网 CIDR，可用 options.allow_cidrs 覆盖
-# 当前 M4 仅登记一个全局 SOCKS5 路由，多 client 路由策略留待后续
+# 当前仅登记一个全局 SOCKS5 路由，多 client 路由策略留待后续
 
 # 9. 指标 / 健康检查 / 状态（默认只绑本机）
 curl -s http://127.0.0.1:7400/metrics
@@ -103,7 +103,7 @@ meatus status --admin http://127.0.0.1:7400 --token "$MEATUS_ADMIN_TOKEN"
 kill -HUP <client_pid>
 ```
 
-当前行为边界（M2–M5）：
+当前行为边界：
 
 - 控制面：客户端先连 control 端口，TLS 1.3 握手后由客户端打开 control stream 并发 `Hello`；服务端回 `Challenge`，客户端用 `HMAC-SHA256(key=sha256(token), nonce)` 应答。
 - 数据面：TCP 每个公网连接一条 yamux stream，先写 `StreamHeader` 再双向拷贝；UDP 每个 proxy 一条专用 stream，帧为 `UdpPacket{session_id,payload}`，空闲 60s 回收会话，单包 ≤1500B，默认上限 2048 会话/proxy。
@@ -120,7 +120,7 @@ kill -HUP <client_pid>
 - 管理面板：`meatus server` 启动后访问 `http://127.0.0.1:7400/`；登录用 `admin_token` 换 HttpOnly、SameSite=Strict 会话 Cookie，登出校验 `X-Meatus-CSRF`；连续失败 5 次锁 10 分钟。详见下方面板章节。
 
 
-## M5 面板
+## Web 管理面板
 
 `web/` 是 Vue 3 + TypeScript + Vite 8 工程，UI 全部来自 `@sailonix/ui`，按子路径按需导入，主题走 `var(--sl-*)` 语义 token。构建产物 `web/dist` 由 `rust-embed` 编进 `meatus-server`，因此运行期不依赖 Node、不需要额外部署前端。
 
