@@ -62,6 +62,7 @@ if [[ "$PUSH" -eq 1 ]]; then
     docker buildx build \
         --platform "$PLATFORMS" \
         --build-arg VERSION="$VERSION" \
+        --attest "type=sbom" \
         "${TAGS[@]}" \
         --push .
 elif [[ "$PLATFORMS" == *,* ]]; then

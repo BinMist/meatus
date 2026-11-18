@@ -178,7 +178,7 @@ chmod 600 .env
 
 ## 许可证
 
-Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。
+Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。发布包内 `SBOM.spdx.json` 为 SPDX 源码依赖清单；预构建镜像附带 SBOM attestation。
 
 ## 文档
 

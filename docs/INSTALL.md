@@ -239,6 +239,15 @@ docker buildx build --platform linux/amd64,linux/arm64 -t meatus:1.1.0 .
 IMAGE=meatus:local ./scripts/docker-smoke.sh
 ```
 
+生成发布包时会自动生成 SPDX SBOM 并放入包内 `SBOM.spdx.json`：
+
+```bash
+brew install syft                 # 或把 syft 放到 PATH
+./scripts/build-release.sh
+# 仅本地快速打包、不需要 SBOM 时：
+./scripts/build-release.sh --no-sbom
+```
+
 > 离线环境无法拉取 node / rust / alpine 基础镜像时，请使用 `scripts/build-release.sh` 产出的静态二进制配合 systemd，或提前 `docker load` 离线镜像。
 
 ### 4.5 备份 / 恢复
@@ -366,7 +375,7 @@ docker pull ghcr.io/binsail/meatus:1.1.0
 docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0
 ```
 
-server / client 使用同一镜像，启动参数与 4.6 相同，把镜像名替换为上面的仓库地址即可。发布流水线会同时生成 SBOM，并校验两仓库的 manifest digest 一致。
+server / client 使用同一镜像，启动参数与 4.6 相同，把镜像名替换为上面的仓库地址即可。发布流水线会同时生成 SPDX SBOM，镜像附带 SBOM attestation，并校验两仓库的 manifest digest 一致。
 
 ## 5. 升级与回滚
 
