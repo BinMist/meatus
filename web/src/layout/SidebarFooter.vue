@@ -21,6 +21,6 @@ withDefaults(
     mode: SessionMode
     version?: string
   }>(),
-  { version: 'v0.1.0' },
+  { version: 'v1.1.0' },
 )
 </script>

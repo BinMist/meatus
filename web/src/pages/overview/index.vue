@@ -115,7 +115,7 @@ const specItems = computed(() => [
   { key: 'bind', label: 'bind', value: '127.0.0.1' },
   { key: 'mode', label: 'mode', value: session.mode === 'loopback' ? 'LOOPBACK' : 'SESSION' },
   { key: 'sampling', label: 'sampling', value: '5s' },
-  { key: 'version', label: 'version', value: '0.1.0' },
+  { key: 'version', label: 'version', value: '1.1.0' },
 ])
 
 const dashFacts = computed(() => [
