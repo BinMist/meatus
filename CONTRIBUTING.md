@@ -7,10 +7,10 @@
 ## 1. 先读这些文档
 
 - [README.md](README.md)：项目定位、能力边界与快速开始
-- [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md)：V1 范围、架构、协议与安全设计
 - [docs/USAGE.md](docs/USAGE.md)：部署、配置、面板与故障排查
-- [docs/M6_ACCEPTANCE.md](docs/M6_ACCEPTANCE.md)：V1 发布门禁与已知遗留
 - [SECURITY.md](SECURITY.md)：漏洞报告渠道与安全边界
+
+> V1 范围、架构、协议、安全设计与发布门禁已归档到内部资料目录，不随开源仓库发布；公开接入规范以 README、ADR 和 SECURITY 为准。
 
 ## 2. 环境要求
 
@@ -114,7 +114,7 @@ npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
 | `web/` | Vue 3 + TypeScript + Vite 8 管理面板 | 保持按需引入与语义 token；不要引入运行期 Node 依赖 |
 | `deploy/`、`scripts/` | systemd、Docker、发布与测试脚本 | 脚本改动需要实际跑一次 |
 
-协议、配置模型或安全边界发生实质变化时，请同时更新 `docs/DEVELOPMENT_PLAN.md` 和相应 ADR，不要只改代码。
+协议、配置模型或安全边界发生实质变化时，请同时更新内部开发规划与相应 ADR，不要只改代码。
 
 ## 6. 提交与 PR
 
@@ -168,7 +168,7 @@ chore: update release script
 维护者发布 V1 版本时：
 
 1. 确认 `Cargo.toml` 与 `web/package.json` 版本一致；
-2. 跑完第 4 节门禁与 `docs/M6_ACCEPTANCE.md` 对应验收；
+2. 跑完第 4 节门禁与内部验收清单；
 3. 更新 `CHANGELOG.md`；
 4. 打 `vX.Y.Z` tag；
 5. 由 release workflow 生成静态包、校验和与 GitHub Release。

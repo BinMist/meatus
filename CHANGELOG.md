@@ -24,7 +24,7 @@ V1 首个正式版本：完全开源、Apache-2.0、面向个人 / 小团队的�
 - 单二进制 + TOML：`rust-embed` 将面板静态资源编入 server；V1 零 PostgreSQL、零 Redis，运行期不需要 Node。
 - 发布产物：macOS aarch64、Linux x86_64 musl 静态包；Docker `linux/amd64`、`linux/arm64` 镜像；每个包附带 `.sha256`。
 - 安装与部署：release 包 + `install.sh`、systemd、Docker Compose、纯 `docker run`。
-- 文档：README、`docs/INSTALL.md`、`docs/USAGE.md`、`docs/M6_ACCEPTANCE.md`、ADR 0001 / 0002。
+- 文档：README、`docs/INSTALL.md`、`docs/USAGE.md`、内部 V1 验收记录、ADR 0001 / 0002。
 
 ### Security
 

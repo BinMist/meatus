@@ -15,7 +15,7 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，HTTP proxy 的精确域名由 server 用 Let's Encrypt HTTP-01 自动签发、TLS 终止并缓存/续期
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **状态**：V1 已完成并发布，完全开源自托管版 `1.0.0`；macOS aarch64、Linux x86_64 musl 静态包、linux/arm64 与 linux/amd64 Docker 镜像均已实跑；公开镜像仓库地址在发布时替换为实际地址（文档暂用 `registry.example.com` 占位）。V1 验收记录见 `docs/M6_ACCEPTANCE.md`：fuzz 5 分钟 × 2 target、netem 20% 丢包、ZAP baseline 0 FAIL、cargo audit 无漏洞均通过；24h fuzz 作为持续巡检项。安装见 `docs/INSTALL.md`，Docker 部署见第 4 节。
+- **状态**：V1 已完成并发布，完全开源自托管版 `1.0.0`；macOS aarch64、Linux x86_64 musl 静态包、linux/arm64 与 linux/amd64 Docker 镜像均已实跑；公开镜像仓库地址在发布时替换为实际地址（文档暂用 `registry.example.com` 占位）。V1 验收记录已归档到内部资料目录（不随开源仓库发布）：fuzz 5 分钟 × 2 target、netem 20% 丢包、ZAP baseline 0 FAIL、cargo audit 无漏洞均通过；24h fuzz 作为持续巡检项。安装见 `docs/INSTALL.md`，Docker 部署见第 4 节。
 
 ## 目录结构
 
@@ -175,7 +175,7 @@ Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `TH
 ## 文档
 
 - 完整使用教程：`docs/USAGE.md`
-- 开发规划（v1.8）：`docs/DEVELOPMENT_PLAN.md`
+- 开发规划与验收记录：已归档到内部资料目录，不随开源仓库发布
 - ADR：`docs/adr/0001-transport-tcp-tls-yamux.md`、`docs/adr/0002-dual-mode-self-host-first.md`
 - 贡献指南：`CONTRIBUTING.md`
 - 行为准则：`CODE_OF_CONDUCT.md`

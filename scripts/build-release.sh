@@ -64,7 +64,7 @@ install -m 0755 "$BIN" "$PKG/meatus"
 install -m 0644 config/server.example.toml config/client.example.toml "$PKG/config/"
 install -m 0644 deploy/systemd/*.service "$PKG/deploy/systemd/"
 install -m 0755 scripts/install.sh "$PKG/scripts/install.sh"
-install -m 0644 README.md docs/DEVELOPMENT_PLAN.md docs/INSTALL.md "$PKG/"
+install -m 0644 README.md docs/INSTALL.md "$PKG/"
 install -m 0644 LICENSE THIRD_PARTY_NOTICES.md "$PKG/"
 install -m 0644 docs/THIRD_PARTY_LICENSES.md docs/THIRD_PARTY_LICENSE_TEXTS.txt "$PKG/"
 

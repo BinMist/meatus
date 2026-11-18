@@ -69,9 +69,9 @@ V1 处于 `1.0.x` 维护阶段，不承诺长期 LTS。安全修复会进入最�
 
 ## 安全相关文档
 
-- [docs/M6_ACCEPTANCE.md](docs/M6_ACCEPTANCE.md)：V1 安全扫描与验收记录
+- V1 安全扫描与验收记录：已归档到内部资料目录，不随开源仓库发布；公开摘要见本文件
 - [docs/security/zap-baseline-2026-11-18.md](docs/security/zap-baseline-2026-11-18.md)：ZAP baseline 报告
-- [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md)：安全设计与十条安全铁律
+- 安全设计与十条安全铁律：已归档到内部资料目录，不随开源仓库发布；公开边界见本文件
 
 ## 致谢
 

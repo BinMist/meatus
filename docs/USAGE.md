@@ -1597,7 +1597,7 @@ A：自签只适合内网 / 测试。公网终端用户访问请用公网 CA 或
 
 - 安装与长期运行：`docs/INSTALL.md`
 - Docker 镜像推送与真实服务器测试：已归档到内部资料目录，不随开源仓发布
-- 开发规划：`docs/DEVELOPMENT_PLAN.md`
+- 开发规划：已归档到内部资料目录，不随开源仓发布
 - 传输架构 ADR：`docs/adr/0001-transport-tcp-tls-yamux.md`
 - 自托管定位 ADR：`docs/adr/0002-dual-mode-self-host-first.md`
 - 安全基线：`docs/security/`
