@@ -12,7 +12,7 @@ V1.1：公网可用性加固 + 双仓库发布 + YAML 配置。
 - `admin.trust_forwarded_proto`：默认 `false`，仅在可信反向代理后识别 `X-Forwarded-Proto: https`。
 - YAML 配置：`.yaml` / `.yml` 只读解析；`meatus server|client|check --format auto|toml|yaml`。
 - `config/server.example.yaml`、`config/client.example.yaml`，均可直接 `meatus check`。
-- GHCR + 阿里云 ACR 双仓库发布脚本 `scripts/docker-release.sh`：多架构、三标签、digest 比对、镜像 SBOM attestation。
+- GHCR + 阿里云 ACR 双仓库发布脚本 `scripts/docker-release.sh`：多架构、三标签、digest 比对；GHCR 保留镜像 SBOM attestation，ACR 因不支持 OCI 1.1 empty descriptor 改为 syft 单独扫描。
 - `scripts/sbom.sh`：从 `Cargo.lock` 与 `web/package-lock.json` 生成 SPDX SBOM；`build-release.sh` 将其作为 `SBOM.spdx.json` 打入发布包。
 - GitHub Actions `docker` job：GHCR/ACR 登录、双推、SPDX SBOM、随 Release 上传。
 - `meatus check` 输出实际配置格式；YAML 解析错误报告文件、行、列。
@@ -20,7 +20,7 @@ V1.1：公网可用性加固 + 双仓库发布 + YAML 配置。
 ### Changed
 
 - 版本升至 `1.1.0`；发布包与镜像同时包含 TOML / YAML 示例。
-- 发布包包含 `SBOM.spdx.json`；镜像发布附带 SBOM attestation。
+- 发布包包含 `SBOM.spdx.json`；GHCR 镜像附带 SBOM attestation，ACR 镜像 SBOM 单独输出。
 - 管理面 HTTPS 下登录/登出 Cookie 自动带 `Secure`，并发送 HSTS。
 - 管理面 CSP 从 `style-src 'self' 'unsafe-inline'` 收紧为 `style-src 'self'`。
 - 管理面板系统设置、client proxy 写回遇到 YAML 配置时返回只读错误，不尝试写回。

@@ -375,7 +375,7 @@ docker pull ghcr.io/binsail/meatus:1.1.0
 docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0
 ```
 
-server / client 使用同一镜像，启动参数与 4.6 相同，把镜像名替换为上面的仓库地址即可。发布流水线会同时生成 SPDX SBOM，镜像附带 SBOM attestation，并校验两仓库的 manifest digest 一致。
+server / client 使用同一镜像，启动参数与 4.6 相同，把镜像名替换为上面的仓库地址即可。发布流水线会同时生成 SPDX SBOM；GHCR 镜像附带 SBOM attestation，ACR 改为推送后 syft 扫描生成镜像 SBOM；两仓库同时推送时校验 manifest digest 一致。
 
 ## 5. 升级与回滚
 

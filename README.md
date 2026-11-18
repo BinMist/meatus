@@ -178,7 +178,7 @@ chmod 600 .env
 
 ## 许可证
 
-Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。发布包内 `SBOM.spdx.json` 为 SPDX 源码依赖清单；预构建镜像附带 SBOM attestation。
+Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。发布包内 `SBOM.spdx.json` 为 SPDX 源码依赖清单；镜像 SBOM 单独输出为 `dist/sbom-meatus-<version>-image.spdx.json`。GHCR 推送保留 SBOM attestation；ACR 不接受 buildx 的 OCI 1.1 attestation manifest，改为推送后再用 syft 扫描生成镜像 SBOM。
 
 ## 文档
 

@@ -23,6 +23,7 @@ PUSH=1
 PUSH_GHCR=1
 PUSH_ACR=1
 SBOM=1
+SYFT_BIN="${SYFT:-syft}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -57,12 +58,20 @@ if [[ ${#TAGS[@]} -eq 0 ]]; then
     exit 2
 fi
 
+# ACR 不接受 buildx 的 OCI 1.1 attestation manifest（unknown manifest class
+# application/vnd.oci.empty.v1+json）。因此只要推 ACR，就关闭 provenance / SBOM
+# attestation，改为构建后用 syft 单独生成镜像 SBOM；仅推 GHCR 时保留 SBOM attestation。
+ATTEST_ARGS=(--provenance=false --sbom=false)
+if [[ "$PUSH_GHCR" -eq 1 && "$PUSH_ACR" -eq 0 ]]; then
+    ATTEST_ARGS=(--provenance=false --attest "type=sbom")
+fi
+
 echo "== buildx image: version=$VERSION platforms=$PLATFORMS =="
 if [[ "$PUSH" -eq 1 ]]; then
     docker buildx build \
         --platform "$PLATFORMS" \
         --build-arg VERSION="$VERSION" \
-        --attest "type=sbom" \
+        "${ATTEST_ARGS[@]}" \
         "${TAGS[@]}" \
         --push .
 elif [[ "$PLATFORMS" == *,* ]]; then
@@ -110,9 +119,9 @@ if [[ "$SBOM" -eq 1 ]]; then
     elif [[ "$PUSH_ACR" -eq 1 ]]; then
         SBOM_IMAGE="$ACR:$VERSION"
     fi
-    if command -v syft >/dev/null 2>&1 && [[ "$PUSH" -eq 1 && -n "$SBOM_IMAGE" ]]; then
+    if command -v "$SYFT_BIN" >/dev/null 2>&1 && [[ "$PUSH" -eq 1 && -n "$SBOM_IMAGE" ]]; then
         echo "== SBOM: $SBOM_IMAGE =="
-        syft "$SBOM_IMAGE" -o "spdx-json=dist/sbom-meatus-$VERSION-image.spdx.json"
+        "$SYFT_BIN" "$SBOM_IMAGE" -o "spdx-json=dist/sbom-meatus-$VERSION-image.spdx.json"
     else
         echo "WARN: syft not installed or image not pushed; SBOM skipped" >&2
     fi
