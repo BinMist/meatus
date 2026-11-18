@@ -104,9 +104,15 @@ fi
 
 if [[ "$SBOM" -eq 1 ]]; then
     mkdir -p dist
-    if command -v syft >/dev/null 2>&1 && [[ "$PUSH" -eq 1 ]]; then
-        echo "== SBOM: $GHCR:$VERSION =="
-        syft "$GHCR:$VERSION" -o "spdx-json=dist/sbom-meatus-$VERSION.spdx.json"
+    SBOM_IMAGE=""
+    if [[ "$PUSH_GHCR" -eq 1 ]]; then
+        SBOM_IMAGE="$GHCR:$VERSION"
+    elif [[ "$PUSH_ACR" -eq 1 ]]; then
+        SBOM_IMAGE="$ACR:$VERSION"
+    fi
+    if command -v syft >/dev/null 2>&1 && [[ "$PUSH" -eq 1 && -n "$SBOM_IMAGE" ]]; then
+        echo "== SBOM: $SBOM_IMAGE =="
+        syft "$SBOM_IMAGE" -o "spdx-json=dist/sbom-meatus-$VERSION-image.spdx.json"
     else
         echo "WARN: syft not installed or image not pushed; SBOM skipped" >&2
     fi

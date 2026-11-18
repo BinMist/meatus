@@ -99,7 +99,7 @@ jobs:
         with:
           image: ghcr.io/binsail/meatus:${{ env.VERSION }}
           format: spdx-json
-          output-file: dist/sbom-meatus-${{ env.VERSION }}.spdx.json
+          output-file: dist/sbom-meatus-${{ env.VERSION }}-image.spdx.json
           upload-artifact: false
 
       - uses: actions/upload-artifact@v4
