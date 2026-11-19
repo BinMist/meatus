@@ -106,8 +106,13 @@ async fn handle_http(
         return Ok(());
     }
     let Some(route) = state.domains.resolve(&host, RouteKind::Http) else {
-        write_http_error(&mut client, 404, "Not Found").await?;
-        debug!(%peer, %host, "http route not found");
+        if state.domains.is_offline(&host, RouteKind::Http) {
+            write_http_error(&mut client, 503, "Service Unavailable").await?;
+            debug!(%peer, %host, "http route offline");
+        } else {
+            write_http_error(&mut client, 404, "Not Found").await?;
+            debug!(%peer, %host, "http route not found");
+        }
         return Ok(());
     };
     let permit = match Arc::clone(&route.connections).try_acquire_owned() {
@@ -131,7 +136,8 @@ async fn handle_https(
         .acme
         .as_ref()
         .is_some_and(|acme| acme.has_domain(&host))
-        && state.domains.resolve(&host, RouteKind::Http).is_some();
+        && (state.domains.resolve(&host, RouteKind::Http).is_some()
+            || state.domains.is_offline(&host, RouteKind::Http));
     if terminate {
         let acceptor = tls_acceptor.context("acme enabled without tls acceptor")?;
         let stream = PrefixedStream::new(client, hello);
@@ -174,8 +180,13 @@ where
         }
     };
     let Some(route) = state.domains.resolve(&host, RouteKind::Http) else {
-        write_http_error(client, 404, "Not Found").await?;
-        debug!(%peer, %host, "https terminated route not found");
+        if state.domains.is_offline(&host, RouteKind::Http) {
+            write_http_error(client, 503, "Service Unavailable").await?;
+            debug!(%peer, %host, "https terminated route offline");
+        } else {
+            write_http_error(client, 404, "Not Found").await?;
+            debug!(%peer, %host, "https terminated route not found");
+        }
         return Ok(());
     };
     let permit = match Arc::clone(&route.connections).try_acquire_owned() {

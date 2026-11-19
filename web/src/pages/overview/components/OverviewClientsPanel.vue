@@ -28,6 +28,8 @@
         </span>
         <span v-else-if="column.key === 'run_id'" class="mt-mono-cell">{{ row.run_id }}</span>
         <span v-else-if="column.key === 'connected'" class="mt-mono-cell">{{ row.connected }}</span>
+        <span v-else-if="column.key === 'heartbeat'" class="mt-mono-cell">{{ row.heartbeat }}</span>
+        <span v-else-if="column.key === 'proxies'" class="mt-mono-cell">{{ row.proxiesText }}</span>
         <template v-else>{{ row[column.key] }}</template>
       </template>
     </sl-data-table>
@@ -51,7 +53,9 @@ const emit = defineEmits<{ refresh: [] }>()
 const clientColumns = [
   { key: 'client_id', header: '客户端', type: 'text' as const },
   { key: 'tenant_id', header: '租户', type: 'text' as const },
-  { key: 'proxy_count', header: 'Proxy', type: 'number' as const, align: 'end' as const },
+  { key: 'proxies', header: 'Proxy', type: 'text' as const },
+  { key: 'traffic', header: '流量', type: 'text' as const, align: 'end' as const, width: 100 },
+  { key: 'heartbeat', header: '最后心跳', type: 'text' as const, width: 110 },
   { key: 'connected', header: '连接时间', type: 'text' as const, width: 120 },
   { key: 'run_id', header: 'Run ID', type: 'text' as const, width: 140 },
 ]

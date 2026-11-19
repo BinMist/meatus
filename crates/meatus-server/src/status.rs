@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 //! 管理面状态快照：连接中的 client、已注册 proxy 与实时流量计数。
+//!
+//! proxy 名称按 `tenant + name` 全局唯一：注册前先 claim，冲突时明确返回当前
+//! owner，避免两个 client 同时占用同名 proxy 导致指标与路由归属不清。
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -15,7 +18,15 @@ struct ClientEntry {
     client_id: String,
     run_id: String,
     connected_at_ms: i64,
+    last_heartbeat_ms: i64,
     caps: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ClaimEntry {
+    tenant_id: String,
+    client_id: String,
+    run_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -39,11 +50,47 @@ pub struct ProxyEntry {
 struct Inner {
     clients: HashMap<String, ClientEntry>,
     proxies: HashMap<String, ProxyEntry>,
+    claims: HashMap<String, ClaimEntry>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct StatusRegistry {
     inner: Arc<RwLock<Inner>>,
+}
+
+/// 已成功 claim、尚未提交的 proxy 名称。未提交即 Drop 时自动释放 claim。
+#[derive(Debug)]
+pub struct ProxyClaim {
+    registry: StatusRegistry,
+    key: String,
+    committed: bool,
+}
+
+impl ProxyClaim {
+    pub fn commit(mut self, entry: ProxyEntry) {
+        let mut inner = self
+            .registry
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.proxies.insert(self.key.clone(), entry);
+        inner.claims.remove(&self.key);
+        self.committed = true;
+    }
+}
+
+impl Drop for ProxyClaim {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        self.registry
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .claims
+            .remove(&self.key);
+    }
 }
 
 impl StatusRegistry {
@@ -54,52 +101,112 @@ impl StatusRegistry {
         run_id: &str,
         caps: &[String],
     ) {
-        let key = format!("{tenant_id}\0{client_id}\0{run_id}");
+        let now = now_ms();
         self.inner
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clients
             .insert(
-                key,
+                client_key(tenant_id, client_id, run_id),
                 ClientEntry {
                     tenant_id: tenant_id.to_string(),
                     client_id: client_id.to_string(),
                     run_id: run_id.to_string(),
-                    connected_at_ms: now_ms(),
+                    connected_at_ms: now,
+                    last_heartbeat_ms: now,
                     caps: caps.to_vec(),
                 },
             );
     }
 
-    pub fn client_disconnected(&self, tenant_id: &str, client_id: &str, run_id: &str) {
-        let key = format!("{tenant_id}\0{client_id}\0{run_id}");
-        self.inner
+    /// 任意控制帧都算一次心跳；用于面板“最后心跳”和离线判断。
+    pub fn client_heartbeat(&self, tenant_id: &str, client_id: &str, run_id: &str) {
+        if let Some(entry) = self
+            .inner
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clients
-            .remove(&key);
+            .get_mut(&client_key(tenant_id, client_id, run_id))
+        {
+            entry.last_heartbeat_ms = now_ms();
+        }
     }
 
-    pub fn register_proxy(&self, entry: ProxyEntry) {
-        let key = proxy_key(
-            &entry.tenant_id,
-            &entry.client_id,
-            &entry.run_id,
-            &entry.name,
-        );
-        self.inner
+    pub fn client_disconnected(&self, tenant_id: &str, client_id: &str, run_id: &str) {
+        let mut inner = self
+            .inner
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .proxies
-            .insert(key, entry);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner
+            .clients
+            .remove(&client_key(tenant_id, client_id, run_id));
+        // 会话结束时先摘除归属该 run 的状态；ProxyRuntime 的 Drop 仍负责
+        // 释放监听与端口，这里的删除是幂等的。
+        inner.proxies.retain(|_, proxy| {
+            !(proxy.tenant_id == tenant_id
+                && proxy.client_id == client_id
+                && proxy.run_id == run_id)
+        });
+        inner.claims.retain(|_, claim| {
+            !(claim.tenant_id == tenant_id
+                && claim.client_id == client_id
+                && claim.run_id == run_id)
+        });
+    }
+
+    /// 全局 claim `tenant + proxy name`。同一名称只允许一个活跃 owner。
+    pub fn claim_proxy(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        run_id: &str,
+        name: &str,
+    ) -> Result<ProxyClaim, String> {
+        let key = proxy_key(tenant_id, name);
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = inner.proxies.get(&key) {
+            return Err(owner_conflict(name, &existing.client_id, &existing.run_id));
+        }
+        if let Some(existing) = inner.claims.get(&key) {
+            return Err(owner_conflict(name, &existing.client_id, &existing.run_id));
+        }
+        inner.claims.insert(
+            key.clone(),
+            ClaimEntry {
+                tenant_id: tenant_id.to_string(),
+                client_id: client_id.to_string(),
+                run_id: run_id.to_string(),
+            },
+        );
+        drop(inner);
+        Ok(ProxyClaim {
+            registry: self.clone(),
+            key,
+            committed: false,
+        })
     }
 
     pub fn unregister_proxy(&self, tenant_id: &str, client_id: &str, run_id: &str, name: &str) {
-        self.inner
+        let key = proxy_key(tenant_id, name);
+        let mut inner = self
+            .inner
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .proxies
-            .remove(&proxy_key(tenant_id, client_id, run_id, name));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owned = inner.proxies.get(&key).is_some_and(|entry| {
+            entry.tenant_id == tenant_id && entry.client_id == client_id && entry.run_id == run_id
+        });
+        if owned {
+            inner.proxies.remove(&key);
+        }
+        let claimed = inner.claims.get(&key).is_some_and(|entry| {
+            entry.tenant_id == tenant_id && entry.client_id == client_id && entry.run_id == run_id
+        });
+        if claimed {
+            inner.claims.remove(&key);
+        }
     }
 
     #[must_use]
@@ -126,6 +233,7 @@ impl StatusRegistry {
     }
 
     pub fn render(&self, metrics: &Metrics) -> Value {
+        let now = now_ms();
         let inner = self
             .inner
             .read()
@@ -133,7 +241,7 @@ impl StatusRegistry {
 
         let mut clients: Vec<Value> = Vec::new();
         for entry in inner.clients.values() {
-            let proxy_count = inner
+            let owned: Vec<&ProxyEntry> = inner
                 .proxies
                 .values()
                 .filter(|proxy| {
@@ -141,13 +249,31 @@ impl StatusRegistry {
                         && proxy.client_id == entry.client_id
                         && proxy.run_id == entry.run_id
                 })
-                .count();
+                .collect();
+            let mut active_conns = 0u64;
+            let mut bytes_in = 0u64;
+            let mut bytes_out = 0u64;
+            let mut proxy_names = Vec::with_capacity(owned.len());
+            for proxy in &owned {
+                let snapshot = metrics.proxy(&proxy.name).snapshot();
+                active_conns += snapshot.active_conns;
+                bytes_in += snapshot.bytes_in;
+                bytes_out += snapshot.bytes_out;
+                proxy_names.push(proxy.name.clone());
+            }
+            proxy_names.sort();
             clients.push(json!({
                 "tenant_id": entry.tenant_id,
                 "client_id": entry.client_id,
                 "run_id": entry.run_id,
                 "connected_at_ms": entry.connected_at_ms,
-                "proxy_count": proxy_count,
+                "last_heartbeat_ms": entry.last_heartbeat_ms,
+                "heartbeat_age_ms": now.saturating_sub(entry.last_heartbeat_ms),
+                "proxy_count": owned.len(),
+                "proxies": proxy_names,
+                "active_conns": active_conns,
+                "bytes_in": bytes_in,
+                "bytes_out": bytes_out,
             }));
         }
         clients.sort_by(|a, b| {
@@ -155,6 +281,7 @@ impl StatusRegistry {
                 .as_str()
                 .cmp(&b["tenant_id"].as_str())
                 .then_with(|| a["client_id"].as_str().cmp(&b["client_id"].as_str()))
+                .then_with(|| a["run_id"].as_str().cmp(&b["run_id"].as_str()))
         });
 
         let mut proxies: Vec<Value> = Vec::new();
@@ -207,12 +334,137 @@ impl StatusRegistry {
     }
 }
 
-fn proxy_key(tenant_id: &str, client_id: &str, run_id: &str, name: &str) -> String {
-    format!("{tenant_id}\0{client_id}\0{run_id}\0{name}")
+fn client_key(tenant_id: &str, client_id: &str, run_id: &str) -> String {
+    format!("{tenant_id}\0{client_id}\0{run_id}")
+}
+
+fn proxy_key(tenant_id: &str, name: &str) -> String {
+    format!("{tenant_id}\0{name}")
+}
+
+fn owner_conflict(name: &str, client_id: &str, run_id: &str) -> String {
+    format!(
+        "proxy {name} is already owned by client {client_id} (run {})",
+        &run_id[..run_id.len().min(12)]
+    )
 }
 
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(tenant: &str, client: &str, run: &str, name: &str) -> ProxyEntry {
+        ProxyEntry {
+            name: name.to_string(),
+            proxy_type: "tcp".to_string(),
+            remote_port: 0,
+            domains: Vec::new(),
+            tenant_id: tenant.to_string(),
+            client_id: client.to_string(),
+            run_id: run.to_string(),
+            local_addr: "127.0.0.1:8080".to_string(),
+            rate_limit_bps: 0,
+            max_conns: 0,
+            idle_timeout_s: 0,
+            allow_cidrs: Vec::new(),
+            allow_domains: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn ten_clients_do_not_overwrite_each_other() {
+        let status = StatusRegistry::default();
+        let metrics = Metrics::new();
+        for index in 0..10 {
+            let client = format!("client-{index}");
+            let run = format!("run-{index}");
+            status.client_connected("default", &client, &run, &[]);
+            let claim = status
+                .claim_proxy("default", &client, &run, &format!("proxy-{index}"))
+                .expect("claim");
+            claim.commit(entry("default", &client, &run, &format!("proxy-{index}")));
+        }
+        let snapshot = status.render(&metrics);
+        assert_eq!(snapshot["totals"]["clients"], 10);
+        assert_eq!(snapshot["totals"]["proxies"], 10);
+        for client in snapshot["clients"].as_array().expect("clients") {
+            assert_eq!(client["proxy_count"], 1);
+        }
+    }
+
+    #[test]
+    fn duplicate_proxy_claim_is_rejected_with_owner() {
+        let status = StatusRegistry::default();
+        status.client_connected("default", "nas-a", "run-a", &[]);
+        status.client_connected("default", "nas-b", "run-b", &[]);
+        let claim = status
+            .claim_proxy("default", "nas-a", "run-a", "web")
+            .expect("first claim");
+        claim.commit(entry("default", "nas-a", "run-a", "web"));
+
+        let error = status
+            .claim_proxy("default", "nas-b", "run-b", "web")
+            .expect_err("must reject duplicate owner");
+        assert!(error.contains("nas-a"), "{error}");
+        assert!(error.contains("web"), "{error}");
+
+        status.unregister_proxy("default", "nas-a", "run-a", "web");
+        assert!(
+            status
+                .claim_proxy("default", "nas-b", "run-b", "web")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn uncommitted_claim_is_released_on_drop() {
+        let status = StatusRegistry::default();
+        let claim = status
+            .claim_proxy("default", "nas", "run", "web")
+            .expect("claim");
+        drop(claim);
+        assert!(status.claim_proxy("default", "nas", "run", "web").is_ok());
+    }
+
+    #[test]
+    fn heartbeat_and_traffic_are_exposed_per_client() {
+        let status = StatusRegistry::default();
+        let metrics = Metrics::new();
+        status.client_connected("default", "nas", "run", &[]);
+        let claim = status
+            .claim_proxy("default", "nas", "run", "web")
+            .expect("claim");
+        claim.commit(entry("default", "nas", "run", "web"));
+        metrics.proxy("web").add_bytes(120, 80);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        status.client_heartbeat("default", "nas", "run");
+        let snapshot = status.render(&metrics);
+        let client = &snapshot["clients"][0];
+        assert_eq!(client["bytes_in"], 120);
+        assert_eq!(client["bytes_out"], 80);
+        assert!(client["last_heartbeat_ms"].as_i64().unwrap() > 0);
+        assert!(client["heartbeat_age_ms"].as_i64().unwrap() < 1000);
+    }
+
+    #[test]
+    fn disconnect_removes_proxies_and_claims_for_run() {
+        let status = StatusRegistry::default();
+        let metrics = Metrics::new();
+        status.client_connected("default", "nas", "run", &[]);
+        let claim = status
+            .claim_proxy("default", "nas", "run", "web")
+            .expect("claim");
+        claim.commit(entry("default", "nas", "run", "web"));
+        status.client_disconnected("default", "nas", "run");
+        let snapshot = status.render(&metrics);
+        assert_eq!(snapshot["totals"]["clients"], 0);
+        assert_eq!(snapshot["totals"]["proxies"], 0);
+        assert!(status.claim_proxy("default", "nas", "run-2", "web").is_ok());
+    }
 }

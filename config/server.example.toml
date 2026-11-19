@@ -27,6 +27,10 @@ clients = [
 
 [ports]
 range = [20000, 30000]
+# 客户端离线后端口释放策略：immediate = 立即释放；hold = 保留 hold_secs 秒，
+# 原客户端重连时优先取回，保留期内 HTTP 域名返回 503。
+release_policy = "immediate"
+hold_secs = 300
 
 [http]
 # M3：打开后同时监听 80（Host 路由）与 443（SNI 透传 / ACME 终止）；任一端口绑定失败都会拒绝启动

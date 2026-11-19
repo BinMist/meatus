@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use meatus_core::{OpenHandle, RateLimiter};
 use tokio::sync::Semaphore;
@@ -45,6 +46,8 @@ pub struct DomainRoute {
 
 pub struct DomainRouter {
     routes: RwLock<HashMap<String, Arc<DomainRoute>>>,
+    /// 刚离线、仍处于保留期的域名；HTTP 入口对命中项返回 503。
+    offline: RwLock<HashMap<String, Instant>>,
 }
 
 impl DomainRouter {
@@ -52,6 +55,7 @@ impl DomainRouter {
     pub fn new() -> Self {
         Self {
             routes: RwLock::new(HashMap::new()),
+            offline: RwLock::new(HashMap::new()),
         }
     }
 
@@ -84,6 +88,10 @@ impl DomainRouter {
             normalized.push(candidate);
         }
         for domain in normalized {
+            self.offline
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&route.kind.key(&domain));
             let mut clone = route.clone();
             clone.domain.clone_from(&domain);
             routes.insert(route.kind.key(&domain), Arc::new(clone));
@@ -113,6 +121,54 @@ impl DomainRouter {
             !belongs
         });
         removed
+    }
+
+    /// 客户端离线且端口保留期内，记录域名，供 HTTP 入口返回明确的 503。
+    pub fn mark_offline(&self, domains: &[String], hold: Duration) {
+        let Some(until) = Instant::now().checked_add(hold) else {
+            return;
+        };
+        let mut offline = self
+            .offline
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for domain in domains {
+            offline.insert(RouteKind::Http.key(domain), until);
+            offline.insert(RouteKind::Https.key(domain), until);
+        }
+    }
+
+    #[must_use]
+    pub fn is_offline(&self, host: &str, kind: RouteKind) -> bool {
+        let host = normalize_host(host);
+        if host.is_empty() {
+            return false;
+        }
+        let now = Instant::now();
+        let mut offline = self
+            .offline
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        offline.retain(|_, until| *until > now);
+        if offline.contains_key(&kind.key(&host)) {
+            return true;
+        }
+        let prefix = match kind {
+            RouteKind::Http => "http:",
+            RouteKind::Https => "https:",
+        };
+        for key in offline.keys() {
+            let Some(domain) = key.strip_prefix(prefix) else {
+                continue;
+            };
+            let Some(suffix) = domain.strip_prefix("*.") else {
+                continue;
+            };
+            if host.len() > suffix.len() && host.ends_with(&format!(".{suffix}")) {
+                return true;
+            }
+        }
+        false
     }
 
     /// 精确匹配优先，其次取最长泛域名后缀。
@@ -235,5 +291,20 @@ mod tests {
         assert!(!overlaps("api.example.com", "*.example.com"));
         assert!(overlaps("*.a.example.com", "*.example.com"));
         assert!(!overlaps("api.other.com", "*.example.com"));
+    }
+
+    #[test]
+    fn offline_domains_are_marked_temporarily() {
+        let router = DomainRouter::new();
+        router.mark_offline(
+            &["app.example.com".to_string(), "*.example.com".to_string()],
+            Duration::from_secs(60),
+        );
+        assert!(router.is_offline("app.example.com:80", RouteKind::Http));
+        assert!(router.is_offline("api.example.com", RouteKind::Http));
+        assert!(!router.is_offline("other.test", RouteKind::Http));
+
+        router.mark_offline(&["gone.other.test".to_string()], Duration::ZERO);
+        assert!(!router.is_offline("gone.other.test", RouteKind::Http));
     }
 }

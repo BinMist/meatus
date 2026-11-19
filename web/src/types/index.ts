@@ -3,7 +3,13 @@ export interface ClientRow {
   client_id: string
   run_id: string
   connected_at_ms: number
+  last_heartbeat_ms: number
+  heartbeat_age_ms: number
   proxy_count: number
+  proxies: string[]
+  active_conns: number
+  bytes_in: number
+  bytes_out: number
 }
 
 export interface ProxyProbeResult {
@@ -94,6 +100,8 @@ export interface SettingsSnapshot {
   }
   ports: {
     range: [number, number]
+    release_policy: 'immediate' | 'hold'
+    hold_secs: number
   }
   session: {
     ttl_s: number

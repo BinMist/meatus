@@ -114,7 +114,7 @@ function onAnchorSelect(key: string) {
 const draft = reactive<SettingsDraft>({
   server: { bind: '', control_port: 7000 },
   tenant: { default: 'default' },
-  ports: { start: 20000, end: 30000 },
+  ports: { start: 20000, end: 30000, release_policy: 'immediate', hold_secs: 300 },
   http: { enabled: false, bind: '0.0.0.0:80', https_bind: '0.0.0.0:443', domain: '' },
   acme: {
     enabled: false,
@@ -192,7 +192,12 @@ function toDraft(current: SettingsSnapshot): SettingsDraft {
   return {
     server: { bind: current.server.bind, control_port: current.server.control_port },
     tenant: { default: current.tenant.default },
-    ports: { start: current.ports.range[0], end: current.ports.range[1] },
+    ports: {
+      start: current.ports.range[0],
+      end: current.ports.range[1],
+      release_policy: current.ports.release_policy,
+      hold_secs: current.ports.hold_secs,
+    },
     http: {
       enabled: current.http.enabled,
       bind: current.http.bind,
@@ -235,6 +240,10 @@ function validateDraft(): string {
   if (draft.ports.start < 1 || draft.ports.start > 65535) return '端口池起始端口无效'
   if (draft.ports.end < 1 || draft.ports.end > 65535) return '端口池结束端口无效'
   if (draft.ports.start > draft.ports.end) return '端口池起始端口不能大于结束端口'
+  if (draft.ports.hold_secs < 0 || draft.ports.hold_secs > 86400) return '离线保留时长必须在 0–86400 秒之间'
+  if (draft.ports.release_policy === 'hold' && draft.ports.hold_secs < 1) {
+    return '端口保留模式下离线保留时长至少 1 秒'
+  }
   if (draft.http.enabled && !draft.http.domain.trim()) return '启用 HTTP 时需要填写默认域名'
   if (draft.acme.enabled && !draft.acme.email.trim()) return '启用 ACME 时需要填写邮箱'
   if (
@@ -280,7 +289,11 @@ async function save() {
     const body = {
       server: { bind: draft.server.bind, control_port: draft.server.control_port },
       tenant: { default: draft.tenant.default },
-      ports: { range: [draft.ports.start, draft.ports.end] },
+      ports: {
+        range: [draft.ports.start, draft.ports.end],
+        release_policy: draft.ports.release_policy,
+        hold_secs: draft.ports.hold_secs,
+      },
       http: {
         enabled: draft.http.enabled,
         bind: draft.http.bind,

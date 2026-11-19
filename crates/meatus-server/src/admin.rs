@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use meatus_core::{AuthMode, ClientEntry, ConfigFormat, LogFormat, ServerConfig};
+use meatus_core::{
+    AuthMode, ClientEntry, ConfigFormat, LogFormat, PortReleasePolicy, ServerConfig,
+};
 use meatus_proto::v1::{NewProxy, ProxyOptions, ProxyType};
 use rust_embed::RustEmbed;
 use serde_json::{Value, json};
@@ -1370,21 +1372,31 @@ fn merge_server_settings(current: &ServerConfig, body: &Value) -> Result<ServerC
         next.tenant.default = non_empty(value, "tenant.default")?;
     }
 
-    if let Some(section) = body.get("ports").and_then(Value::as_object)
-        && let Some(range) = section.get("range").and_then(Value::as_array)
-    {
-        if range.len() != 2 {
-            return Err("ports.range must contain exactly two ports".to_string());
+    if let Some(section) = body.get("ports").and_then(Value::as_object) {
+        if let Some(range) = section.get("range").and_then(Value::as_array) {
+            if range.len() != 2 {
+                return Err("ports.range must contain exactly two ports".to_string());
+            }
+            let start = range[0]
+                .as_u64()
+                .and_then(|value| u16::try_from(value).ok())
+                .ok_or_else(|| "ports.range[0] is invalid".to_string())?;
+            let end = range[1]
+                .as_u64()
+                .and_then(|value| u16::try_from(value).ok())
+                .ok_or_else(|| "ports.range[1] is invalid".to_string())?;
+            next.ports.range = [start, end];
         }
-        let start = range[0]
-            .as_u64()
-            .and_then(|value| u16::try_from(value).ok())
-            .ok_or_else(|| "ports.range[0] is invalid".to_string())?;
-        let end = range[1]
-            .as_u64()
-            .and_then(|value| u16::try_from(value).ok())
-            .ok_or_else(|| "ports.range[1] is invalid".to_string())?;
-        next.ports.range = [start, end];
+        if let Some(value) = section.get("release_policy").and_then(Value::as_str) {
+            next.ports.release_policy = match value.trim().to_ascii_lowercase().as_str() {
+                "immediate" => PortReleasePolicy::Immediate,
+                "hold" => PortReleasePolicy::Hold,
+                _ => return Err("ports.release_policy must be immediate or hold".to_string()),
+            };
+        }
+        if let Some(value) = section.get("hold_secs").and_then(Value::as_u64) {
+            next.ports.hold_secs = value;
+        }
     }
 
     if let Some(section) = body.get("http").and_then(Value::as_object) {
@@ -1998,6 +2010,11 @@ fn settings_json(state: &AdminState) -> Value {
         },
         "ports": {
             "range": config.ports.range,
+            "release_policy": match config.ports.release_policy {
+                PortReleasePolicy::Immediate => "immediate",
+                PortReleasePolicy::Hold => "hold",
+            },
+            "hold_secs": config.ports.hold_secs,
         },
         "session": {
             "ttl_s": SESSION_TTL.as_secs(),

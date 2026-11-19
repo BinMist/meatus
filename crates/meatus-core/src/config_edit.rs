@@ -113,6 +113,21 @@ fn write_server_config_toml(path: &Path, next: &ServerConfig) -> Result<Option<P
             i64::from(next.ports.range[1]),
         ],
     )?;
+    set_string(
+        &mut document,
+        "ports",
+        "release_policy",
+        match next.ports.release_policy {
+            crate::config::PortReleasePolicy::Immediate => "immediate",
+            crate::config::PortReleasePolicy::Hold => "hold",
+        },
+    )?;
+    set_integer(
+        &mut document,
+        "ports",
+        "hold_secs",
+        i64::try_from(next.ports.hold_secs).map_err(|_| "ports.hold_secs is too large")?,
+    )?;
 
     set_bool(&mut document, "http", "enabled", next.http.enabled)?;
     set_string(&mut document, "http", "bind", &next.http.bind)?;
@@ -173,6 +188,16 @@ fn write_server_config_yaml(path: &Path, next: &ServerConfig) -> Result<Option<P
             u64::from(next.ports.range[1]),
         ],
     )?;
+    yaml_set_string(
+        &mut root,
+        "ports",
+        "release_policy",
+        match next.ports.release_policy {
+            crate::config::PortReleasePolicy::Immediate => "immediate",
+            crate::config::PortReleasePolicy::Hold => "hold",
+        },
+    )?;
+    yaml_set_u64(&mut root, "ports", "hold_secs", next.ports.hold_secs)?;
 
     yaml_set_bool(&mut root, "http", "enabled", next.http.enabled)?;
     yaml_set_string(&mut root, "http", "bind", &next.http.bind)?;

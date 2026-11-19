@@ -38,6 +38,20 @@
             />
           </div>
         </sl-form-item>
+        <sl-form-item label="客户端离线端口释放" help="立即释放，或保留一段时间让原客户端重连取回">
+          <sl-select v-model:value="draft.ports.release_policy" :options="releaseOptions" />
+        </sl-form-item>
+        <sl-form-item
+          label="离线保留时长（秒）"
+          help="hold 时保留端口；immediate 时仅保留 HTTP 503 标记；0 表示关闭标记"
+        >
+          <sl-number-field
+            v-model:value="draft.ports.hold_secs"
+            :min="0"
+            :max="86400"
+            :format-options="{ useGrouping: false }"
+          />
+        </sl-form-item>
       </div>
     </sl-form>
   </sl-panel>
@@ -48,8 +62,14 @@ import { SlForm, SlFormItem } from '@sailonix/ui/form'
 import { SlInput } from '@sailonix/ui/input'
 import { SlNumberField } from '@sailonix/ui/number-field'
 import { SlPanel } from '@sailonix/ui/panel'
+import { SlSelect } from '@sailonix/ui/select'
 import type { SettingsDraft } from '../types'
 
 defineOptions({ name: 'SettingsControlSection' })
 defineProps<{ draft: SettingsDraft }>()
+
+const releaseOptions = [
+  { value: 'immediate', label: '立即释放', description: '客户端断开后立刻归还公网端口' },
+  { value: 'hold', label: '保留一段时间', description: '保留端口，原客户端重连时优先取回' },
+]
 </script>

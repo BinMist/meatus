@@ -9,8 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
 use meatus_core::{
-    MultiplexedStream, OpenHandle, RateLimiter, TargetPolicy, UsageRecord, WireError,
-    copy_bidirectional_limited, read_frame, write_frame,
+    MultiplexedStream, OpenHandle, PortReleasePolicy, RateLimiter, TargetPolicy, UsageRecord,
+    WireError, copy_bidirectional_limited, read_frame, write_frame,
 };
 use meatus_proto::{
     ErrorCode, PROTOCOL_VERSION,
@@ -35,8 +35,9 @@ use crate::socks5::Socks5Route;
 use crate::status::ProxyEntry;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const SERVER_PING: Duration = Duration::from_secs(15);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+const SERVER_PING: Duration = Duration::from_secs(10);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(25);
+const IDLE_CHECK: Duration = Duration::from_secs(5);
 const READ_SLICE: Duration = Duration::from_secs(60);
 const UDP_MAX_PACKET: usize = 1500;
 const UDP_DEFAULT_IDLE: Duration = Duration::from_secs(60);
@@ -71,8 +72,34 @@ impl Drop for ProxyRuntime {
         if let Some(task) = self.task.take() {
             task.abort();
         }
+        let hold = self.state.config.ports.release_policy == PortReleasePolicy::Hold;
         if let (Some(port), Some(allocator)) = (self.port, self.allocator.as_ref()) {
-            allocator.release_port(&self.tenant_id, port);
+            if hold {
+                let allocator = Arc::clone(allocator);
+                let tenant_id = self.tenant_id.clone();
+                let proxy_name = self.name.clone();
+                let status = self.state.status.clone();
+                let hold = Duration::from_secs(self.state.config.ports.hold_secs);
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        tokio::time::sleep(hold).await;
+                        // 原 client 在保留期内已重连并重新占用同名 proxy 时，
+                        // 不能由旧租约的延迟任务释放新租约。
+                        if status
+                            .proxy_entries(&proxy_name, None)
+                            .iter()
+                            .any(|entry| entry.tenant_id == tenant_id)
+                        {
+                            return;
+                        }
+                        allocator.release_lease(&tenant_id, &proxy_name, port);
+                    });
+                } else {
+                    allocator.release_lease(&self.tenant_id, &self.name, port);
+                }
+            } else {
+                allocator.release_lease(&self.tenant_id, &self.name, port);
+            }
         }
         self.state
             .socks5
@@ -87,6 +114,14 @@ impl Drop for ProxyRuntime {
             self.state
                 .domains
                 .unregister_proxy(&self.tenant_id, &self.client_id, &self.name);
+        // 域名离线标记独立于端口释放策略：即使端口已立即释放，保留期内
+        // 仍对 HTTP 请求返回 503，避免被误判为“域名从未存在”的 404。
+        if !released.is_empty() {
+            self.state.domains.mark_offline(
+                &released,
+                Duration::from_secs(self.state.config.ports.hold_secs),
+            );
+        }
         if let Some(acme) = &self.state.acme {
             for domain in released {
                 acme.remove_domain(&domain);
@@ -240,6 +275,8 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
     let mut ping_seq = 0u64;
     let mut ping_timer = interval_at(TokioInstant::now() + SERVER_PING, SERVER_PING);
     ping_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut idle_timer = interval(IDLE_CHECK);
+    idle_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let next_trace = Arc::new(AtomicU64::new(1));
 
     loop {
@@ -247,6 +284,11 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
             _ = ctx.cancel.cancelled() => {
                 debug!("control session cancelled");
                 break;
+            }
+            _ = idle_timer.tick() => {
+                if last_rx.elapsed() > IDLE_TIMEOUT {
+                    bail!("control session idle for {:?}", last_rx.elapsed());
+                }
             }
             _ = ping_timer.tick() => {
                 ping_seq += 1;
@@ -286,6 +328,11 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
                     }
                 };
                 last_rx = Instant::now();
+                ctx.state.status.client_heartbeat(
+                    &hello.tenant_id,
+                    &hello.client_id,
+                    &run_id,
+                );
 
                 match msg.kind {
                     Some(control_msg::Kind::Ping(ping)) => {
@@ -300,7 +347,7 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
                         if proxies.contains_key(&name) {
                             let _ = write_frame(
                                 &mut writer,
-                                &ErrorCode::Internal.to_wire(format!("proxy {name} already registered")),
+                                &ErrorCode::ProxyConflict.to_wire(format!("proxy {name} already registered in this session")),
                             ).await;
                             continue;
                         }
@@ -863,6 +910,11 @@ async fn start_proxy(
     if request.name.trim().is_empty() {
         return Err((ErrorCode::Internal, "proxy name is required".to_string()));
     }
+    let claim = ctx
+        .state
+        .status
+        .claim_proxy(tenant_id, client_id, run_id, &request.name)
+        .map_err(|message| (ErrorCode::ProxyConflict, message))?;
     let kind = match request.proxy_type {
         value if value == ProxyType::Tcp as i32 => ProxyType::Tcp,
         value if value == ProxyType::Udp as i32 => ProxyType::Udp,
@@ -955,7 +1007,7 @@ async fn start_proxy(
                 domains = ?request.custom_domains,
                 "domain proxy registered"
             );
-            ctx.state.status.register_proxy(ProxyEntry {
+            claim.commit(ProxyEntry {
                 name: request.name.clone(),
                 proxy_type: proxy_type_name(kind).to_string(),
                 remote_port: 0,
@@ -1096,7 +1148,7 @@ async fn start_proxy(
                 _ => unreachable!(),
             };
 
-            ctx.state.status.register_proxy(ProxyEntry {
+            claim.commit(ProxyEntry {
                 name: request.name.clone(),
                 proxy_type: proxy_type_name(kind).to_string(),
                 remote_port: port,
@@ -1171,7 +1223,7 @@ async fn start_proxy(
                 .register(route)
                 .map_err(|err| (ErrorCode::Internal, err))?;
             info!(proxy = %request.name, client = %client_id, "socks5 proxy registered");
-            ctx.state.status.register_proxy(ProxyEntry {
+            claim.commit(ProxyEntry {
                 name: request.name.clone(),
                 proxy_type: "socks5".to_string(),
                 remote_port: 0,

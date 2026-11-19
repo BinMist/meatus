@@ -225,18 +225,40 @@ impl AuthSection {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PortReleasePolicy {
+    /// 客户端断开后立即释放公网端口。
+    #[default]
+    Immediate,
+    /// 保留端口 `hold_secs` 秒，让原 client 重连时优先取回。
+    Hold,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PortsSection {
     pub range: [u16; 2],
+    /// 客户端离线后公网端口释放策略；默认立即释放。
+    #[serde(default)]
+    pub release_policy: PortReleasePolicy,
+    /// `release_policy = "hold"` 时的保留秒数。
+    #[serde(default = "default_port_hold_secs")]
+    pub hold_secs: u64,
 }
 
 impl Default for PortsSection {
     fn default() -> Self {
         Self {
             range: [20000, 30000],
+            release_policy: PortReleasePolicy::Immediate,
+            hold_secs: default_port_hold_secs(),
         }
     }
+}
+
+fn default_port_hold_secs() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -467,6 +489,13 @@ impl ServerConfig {
             return Err(invalid(format!(
                 "ports.range must satisfy 1024 <= start <= end, got {start}..={end}"
             )));
+        }
+        if self.ports.release_policy == PortReleasePolicy::Hold
+            && !(1..=86_400).contains(&self.ports.hold_secs)
+        {
+            return Err(invalid(
+                "ports.hold_secs must be 1..=86400 when ports.release_policy = \"hold\"",
+            ));
         }
 
         self.auth.validate()?;
@@ -1114,6 +1143,42 @@ token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         assert_eq!(config.server.bind_addr, "0.0.0.0");
         assert_eq!(config.ports.range, [20000, 30000]);
         assert_eq!(config.auth.credential_entries().len(), 1);
+    }
+
+    #[test]
+    fn parse_ports_release_policy() {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[ports]
+range = [20000, 20100]
+release_policy = "hold"
+hold_secs = 120
+"#;
+        let config = parse_server_config(toml).expect("valid");
+        assert_eq!(config.ports.release_policy, PortReleasePolicy::Hold);
+        assert_eq!(config.ports.hold_secs, 120);
+    }
+
+    #[test]
+    fn reject_zero_hold_secs_when_holding() {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[ports]
+range = [20000, 20100]
+release_policy = "hold"
+hold_secs = 0
+"#;
+        assert!(parse_server_config(toml).is_err());
     }
 
     #[test]

@@ -744,11 +744,19 @@ clients = [
 ```
 [ports]
 range = [20000, 30000]
+release_policy = "immediate"   # immediate | hold
+hold_secs = 300                # hold 时保留秒数，1..86400
 ```
 
 
 
 * `start >= 1024`，`start <= end`。
+
+* `release_policy = "immediate"`：客户端断开后立刻释放公网端口。
+
+* `release_policy = "hold"`：端口保留 `hold_secs` 秒，同一 tenant + proxy 名称的客户端重连时优先取回；保留期内对应 HTTP 域名返回 `503 Service Unavailable`。
+
+* 无论端口是否立即释放，对应 HTTP 域名在 `hold_secs` 内都返回 `503`；`hold_secs = 0` 可关闭该离线标记窗口。
 
 * TCP / UDP 的 `remote_port`、端口池分配都受此范围约束。
 

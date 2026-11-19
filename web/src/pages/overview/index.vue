@@ -49,7 +49,7 @@ import OverviewClientsPanel from './components/OverviewClientsPanel.vue'
 import OverviewRuntimePanel from './components/OverviewRuntimePanel.vue'
 import OverviewTrafficChart from './components/OverviewTrafficChart.vue'
 import { notifyError } from '../../services/notifications'
-import { apiGet, formatNumber, relativeTime, session } from '../../services/api'
+import { apiGet, formatBytes, formatNumber, relativeTime, session } from '../../services/api'
 import type { StatusSnapshot } from '../../types'
 import { APP_VERSION } from '../../version'
 
@@ -129,9 +129,21 @@ const clientRows = computed(() =>
   (snapshot.value?.clients ?? []).map((client) => ({
     ...client,
     connected: relativeTime(client.connected_at_ms),
+    heartbeat: heartbeatText(client.heartbeat_age_ms),
+    traffic: formatBytes(client.bytes_in + client.bytes_out),
+    proxiesText: client.proxies.join(', ') || '—',
     run_id: client.run_id.slice(0, 12),
   })),
 )
+
+function heartbeatText(ageMs: number): string {
+  const seconds = Math.max(0, Math.floor(ageMs / 1000))
+  if (seconds < 5) return '刚刚'
+  if (seconds < 60) return `${seconds} 秒前`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟前`
+  return `${Math.floor(minutes / 60)} 小时前`
+}
 
 async function refresh() {
   try {

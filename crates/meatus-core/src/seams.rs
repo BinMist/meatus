@@ -301,7 +301,10 @@ impl NameAllocator for LocalPortAllocator {
             if port < self.start || port > self.end {
                 return Err(AllocError::OutOfRange(port));
             }
-            if inner.leases.contains_key(&port) {
+            if let Some(lease) = inner.leases.get(&port) {
+                if lease.tenant_id == tenant_id && lease.proxy_name == proxy_name {
+                    return Ok(port);
+                }
                 return Err(AllocError::Taken(port));
             }
             inner.leases.insert(
@@ -319,10 +322,27 @@ impl NameAllocator for LocalPortAllocator {
             return Ok(port);
         }
 
+        // 保留期内重连且未指定 remote_port 时，优先取回原租约。
+        for port in self.start..=self.end {
+            if inner
+                .leases
+                .get(&port)
+                .is_some_and(|lease| lease.tenant_id == tenant_id && lease.proxy_name == proxy_name)
+            {
+                return Ok(port);
+            }
+        }
+
         let span = u32::from(self.end) - u32::from(self.start) + 1;
         for offset in 0..span {
             let cursor_offset = (u32::from(inner.cursor) - u32::from(self.start)) % span;
             let port = self.start + ((cursor_offset + offset) % span) as u16;
+            if let Some(lease) = inner.leases.get(&port) {
+                if lease.tenant_id == tenant_id && lease.proxy_name == proxy_name {
+                    return Ok(port);
+                }
+                continue;
+            }
             if let std::collections::hash_map::Entry::Vacant(slot) = inner.leases.entry(port) {
                 slot.insert(Lease {
                     tenant_id: tenant_id.to_string(),
@@ -351,6 +371,18 @@ impl NameAllocator for LocalPortAllocator {
         }
         matches_tenant
     }
+
+    fn release_lease(&self, tenant_id: &str, proxy_name: &str, port: u16) -> bool {
+        let mut inner = self.lock();
+        let matches = inner
+            .leases
+            .get(&port)
+            .is_some_and(|lease| lease.tenant_id == tenant_id && lease.proxy_name == proxy_name);
+        if matches {
+            inner.leases.remove(&port);
+        }
+        matches
+    }
 }
 
 pub trait NameAllocator: Send + Sync {
@@ -362,6 +394,12 @@ pub trait NameAllocator: Send + Sync {
     ) -> Result<u16, AllocError>;
 
     fn release_port(&self, tenant_id: &str, port: u16) -> bool;
+
+    /// 仅当租约仍属于该 tenant + proxy 时释放，避免延迟释放误删新租约。
+    fn release_lease(&self, tenant_id: &str, proxy_name: &str, port: u16) -> bool {
+        let _ = proxy_name;
+        self.release_port(tenant_id, port)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -510,6 +548,32 @@ clients = [
             allocator.alloc_port("default", "b", Some(30000)),
             Err(AllocError::OutOfRange(30000))
         ));
+    }
+
+    #[test]
+    fn allocator_reuses_held_lease_for_same_owner() {
+        let allocator = LocalPortAllocator::new([20000, 20001]).expect("allocator");
+        let port = allocator
+            .alloc_port("default", "web", Some(20000))
+            .expect("first");
+        assert_eq!(
+            allocator
+                .alloc_port("default", "web", Some(20000))
+                .expect("reclaim"),
+            port
+        );
+        assert_eq!(
+            allocator
+                .alloc_port("default", "web", None)
+                .expect("reclaim"),
+            port
+        );
+        assert!(
+            !allocator.release_lease("default", "other", port),
+            "other proxy must not release this lease"
+        );
+        assert!(allocator.release_lease("default", "web", port));
+        assert_eq!(allocator.leased_count(), 0);
     }
 
     #[test]

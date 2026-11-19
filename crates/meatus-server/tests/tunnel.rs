@@ -147,6 +147,325 @@ remote_port = {proxy_port}
     );
 }
 
+#[tokio::test]
+async fn duplicate_proxy_name_is_rejected_and_client_offline_is_removed() {
+    let _guard = TEST_MUTEX.lock().await;
+    let (echo_a, echo_b, control_port, proxy_port, admin_port) = loop {
+        let echo_a = free_port();
+        let echo_b = free_port();
+        let control = free_port();
+        let proxy = free_port();
+        let admin = free_port();
+        if [echo_a, echo_b, control, proxy, admin]
+            .iter()
+            .enumerate()
+            .all(|(index, port)| {
+                [echo_a, echo_b, control, proxy, admin]
+                    .iter()
+                    .skip(index + 1)
+                    .all(|other| port != other)
+            })
+        {
+            break (echo_a, echo_b, control, proxy, admin);
+        }
+    };
+    spawn_echo(echo_a).await;
+    spawn_echo(echo_b).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-it-c2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+
+[auth]
+clients = [
+  {{ id = "nas-a", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+  {{ id = "nas-b", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [{proxy_port}, {proxy_port}]
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+
+    let client_config = |id: &str, local_port: u16| {
+        format!(
+            r#"
+[client]
+server_addr = "127.0.0.1:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "{id}"
+tenant = "default"
+token = "secret"
+
+[[proxy]]
+name = "web"
+type = "tcp"
+local_addr = "127.0.0.1:{local_port}"
+remote_port = {proxy_port}
+"#,
+            cert = cert_path.display(),
+        )
+    };
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let a_state =
+        ClientState::new(parse_client_config(&client_config("nas-a", echo_a)).expect("a"))
+            .expect("a state");
+    let b_state =
+        ClientState::new(parse_client_config(&client_config("nas-b", echo_b)).expect("b"))
+            .expect("b state");
+
+    let server_cancel = CancellationToken::new();
+    let a_cancel = CancellationToken::new();
+    let b_cancel = CancellationToken::new();
+    let server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    let a_task = {
+        let cancel = a_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(a_state, cancel).await })
+    };
+    let b_task = {
+        let cancel = b_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(b_state, cancel).await })
+    };
+
+    let mut snapshot = serde_json::Value::Null;
+    for _ in 0..50 {
+        sleep(Duration::from_millis(200)).await;
+        snapshot = status_json(admin_port)
+            .await
+            .unwrap_or(serde_json::Value::Null);
+        if snapshot["totals"]["clients"] == 2 && snapshot["totals"]["proxies"] == 1 {
+            break;
+        }
+    }
+    assert_eq!(snapshot["totals"]["clients"], 2, "both clients connect");
+    assert_eq!(
+        snapshot["totals"]["proxies"], 1,
+        "same proxy name must be exclusive"
+    );
+    assert!(snapshot["proxies"][0]["client_id"].as_str().is_some());
+
+    a_cancel.cancel();
+    let mut offline = false;
+    for _ in 0..150 {
+        sleep(Duration::from_millis(200)).await;
+        if let Ok(snapshot) = status_json(admin_port).await
+            && snapshot["totals"]["clients"] == 1
+        {
+            offline = true;
+            break;
+        }
+    }
+    assert!(offline, "client must be removed after disconnect");
+
+    b_cancel.cancel();
+    server_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), a_task).await;
+    let _ = timeout(Duration::from_secs(5), b_task).await;
+    let _ = timeout(Duration::from_secs(5), server_task).await;
+}
+
+#[tokio::test]
+async fn offline_http_route_returns_503() {
+    let _guard = TEST_MUTEX.lock().await;
+    let (echo_port, control_port, http_port, https_port, admin_port) = loop {
+        let echo = free_port();
+        let control = free_port();
+        let http = free_port();
+        let https = free_port();
+        let admin = free_port();
+        let ports = [echo, control, http, https, admin];
+        if ports
+            .iter()
+            .enumerate()
+            .all(|(index, port)| ports.iter().skip(index + 1).all(|other| port != other))
+        {
+            break (echo, control, http, https, admin);
+        }
+    };
+    spawn_echo(echo_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-it-http-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [20000, 30000]
+release_policy = "immediate"
+hold_secs = 30
+
+[http]
+enabled = true
+bind = "127.0.0.1:{http_port}"
+https_bind = "127.0.0.1:{https_port}"
+domain = "app.test"
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+
+    let client_config = format!(
+        r#"
+[client]
+server_addr = "127.0.0.1:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+
+[[proxy]]
+name = "web"
+type = "http"
+local_addr = "127.0.0.1:{echo_port}"
+remote_port = 0
+custom_domains = ["app.test"]
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let client_state = ClientState::new(parse_client_config(&client_config).expect("client cfg"))
+        .expect("client state");
+    let server_cancel = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let mut online = false;
+    for _ in 0..50 {
+        sleep(Duration::from_millis(200)).await;
+        if let Ok(snapshot) = status_json(admin_port).await
+            && snapshot["totals"]["proxies"] == 1
+        {
+            online = true;
+            break;
+        }
+    }
+    assert!(online, "http proxy must register");
+
+    client_cancel.cancel();
+    let mut offline = false;
+    for _ in 0..150 {
+        sleep(Duration::from_millis(200)).await;
+        if let Ok(snapshot) = status_json(admin_port).await
+            && snapshot["totals"]["clients"] == 0
+        {
+            offline = true;
+            break;
+        }
+    }
+    assert!(offline, "client must disconnect");
+
+    let (status, _, _) = http_request(http_port, "app.test").await;
+    assert_eq!(status, 503, "offline http route must return 503");
+
+    server_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), server_task).await;
+}
+
+async fn http_request(port: u16, host: &str) -> (u16, String, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect http");
+    stream
+        .write_all(
+            format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .await
+        .expect("write http");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .await
+        .expect("read http");
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
+    (status, head.to_string(), body.to_string())
+}
+
+async fn status_json(port: u16) -> Result<serde_json::Value, String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .map_err(|err| format!("connect admin: {err}"))?;
+    stream
+        .write_all(
+            format!(
+                "GET /api/v1/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .map_err(|err| format!("write: {err}"))?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .await
+        .map_err(|err| format!("read: {err}"))?;
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .ok_or_else(|| "missing response body".to_string())?;
+    serde_json::from_str(body).map_err(|err| format!("json: {err}"))
+}
+
 async fn probe(proxy_port: u16) -> Result<(), String> {
     let mut stream = timeout(
         Duration::from_secs(1),

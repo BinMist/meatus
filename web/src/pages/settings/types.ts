@@ -2,7 +2,7 @@ export interface SettingsDraft {
   [key: string]: unknown
   server: { bind: string; control_port: number }
   tenant: { default: string }
-  ports: { start: number; end: number }
+  ports: { start: number; end: number; release_policy: 'immediate' | 'hold'; hold_secs: number }
   http: { enabled: boolean; domain: string; bind: string; https_bind: string }
   acme: {
     enabled: boolean
