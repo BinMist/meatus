@@ -71,6 +71,17 @@ bind = "127.0.0.1:7400" # /metrics /healthz /api/v1/status /settings /certificat
 panel = true # false 时面板静态资源返回 404
 # 非 loopback 绑定时必须设置；设置后除 /healthz 外均要求会话 Cookie 或 Bearer
 # admin_token = "REPLACE_WITH_ADMIN_TOKEN"
+# V1.3 多用户 RBAC：owner / operator / viewer / auditor；admin_token 固定映射 admin/owner
+# 非 loopback 绑定至少要有 admin_token 或一个 users 条目；token 支持 ${ENV}，也可只存 token_sha256
+# [[admin.users]]
+# name = "alice"
+# role = "operator"
+# token = "${ALICE_TOKEN}"
+#
+# [[admin.users]]
+# name = "auditor"
+# role = "auditor"
+# token_sha256 = "REPLACE_WITH_64_HEX_SHA256"
 # 仅当管理面在可信反向代理之后时开启；默认不信任 X-Forwarded-Proto
 trust_forwarded_proto = false
 

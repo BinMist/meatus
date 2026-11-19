@@ -10,3 +10,4 @@ export interface NavGroup {
 }
 
 export type SessionMode = 'loopback' | 'session'
+export type AdminRole = 'owner' | 'operator' | 'viewer' | 'auditor'

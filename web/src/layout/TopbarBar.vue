@@ -4,7 +4,7 @@
     <TopbarCrumbs :group-label="groupLabel" :page-title="pageTitle" />
     <span class="spacer" />
     <TopbarStatus :mode="mode" :bind-label="bindLabel" />
-    <TopbarAccount :can-logout="canLogout" @logout="emit('logout')" />
+    <TopbarAccount :user="user" :role="role" :can-logout="canLogout" @logout="emit('logout')" />
   </div>
 </template>
 
@@ -13,7 +13,7 @@ import TopbarAccount from './TopbarAccount.vue'
 import TopbarCrumbs from './TopbarCrumbs.vue'
 import TopbarMenuButton from './TopbarMenuButton.vue'
 import TopbarStatus from './TopbarStatus.vue'
-import type { SessionMode } from './types'
+import type { AdminRole, SessionMode } from './types'
 
 defineOptions({ name: 'TopbarBar' })
 
@@ -23,6 +23,8 @@ withDefaults(
     groupLabel: string
     pageTitle: string
     mode: SessionMode
+    user: string
+    role: AdminRole
     canLogout: boolean
     bindLabel?: string
   }>(),

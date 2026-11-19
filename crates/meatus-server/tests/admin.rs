@@ -57,6 +57,25 @@ fn cookie_from(head: &str) -> String {
         .to_string()
 }
 
+async fn login_as(port: u16, token: &str) -> (u16, String, String, String) {
+    let (status, head, body) = request(
+        port,
+        &format!(
+            "POST /api/v1/session HTTP/1.1\r\nHost: localhost\r\n{}\r\n",
+            json_body(&format!(r#"{{"token":"{token}"}}"#))
+        ),
+    )
+    .await;
+    let cookie = cookie_from(&head);
+    let csrf = body
+        .split("\"csrf\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_default()
+        .to_string();
+    (status, cookie, csrf, body)
+}
+
 async fn tls_request(port: u16, raw: &str, trust_der: &[u8]) -> (u16, String, String) {
     let mut roots = RootCertStore::empty();
     roots
@@ -847,6 +866,191 @@ admin_token = "admin-secret"
     assert!(body.contains("\"source\":\"token_sha256\""), "{body}");
     assert!(body.contains("\"restart_required\":false"), "{body}");
     assert!(body.contains("\"config_format\":\"toml\""), "{body}");
+
+    cancel.cancel();
+    let _ = task.await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn admin_rbac_roles_are_enforced_and_audited() {
+    let control_port = free_port();
+    let admin_port = free_port();
+    let dir = std::env::temp_dir().join(format!("meatus-admin-rbac-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+    let config_path = dir.join("server.toml");
+    let config_text = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{}"
+tls_key = "{}"
+
+[auth]
+clients = [{{ id = "client", tenant = "default", token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b" }}]
+
+[ports]
+range = [24300, 24310]
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+admin_token = "admin-secret"
+users = [
+  {{ name = "opa", role = "operator", token = "op-secret" }},
+  {{ name = "vera", role = "viewer", token = "view-secret" }},
+  {{ name = "aud", role = "auditor", token = "audit-secret" }},
+]
+"#,
+        cert_path.display(),
+        key_path.display()
+    );
+    std::fs::write(&config_path, &config_text).expect("write config");
+    let config = parse_server_config(&config_text).expect("parse config");
+    let state = ServerState::new(config)
+        .expect("state")
+        .with_config_path(config_path.clone());
+    let cancel = CancellationToken::new();
+    let run_cancel = cancel.clone();
+    let task = tokio::spawn(async move { meatus_server::run_until(state, run_cancel).await });
+    sleep(Duration::from_millis(300)).await;
+
+    let (status, owner_cookie, owner_csrf, body) = login_as(admin_port, "admin-secret").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"role\":\"owner\""), "{body}");
+    assert!(body.contains("\"user\":\"admin\""), "{body}");
+
+    let (status, viewer_cookie, viewer_csrf, body) = login_as(admin_port, "view-secret").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"role\":\"viewer\""), "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\nCookie: {viewer_cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/audit HTTP/1.1\r\nHost: localhost\r\nCookie: {viewer_cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("audit:read"), "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/proxies HTTP/1.1\r\nHost: localhost\r\nCookie: {viewer_cookie}\r\nX-Meatus-CSRF: {viewer_csrf}\r\n{}\r\n",
+            json_body(r#"{"name":"viewer-proxy","client_id":"client","type":"tcp","local_addr":"127.0.0.1:9000","remote_port":24300}"#)
+        ),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("proxies:write"), "{body}");
+
+    let (status, op_cookie, op_csrf, body) = login_as(admin_port, "op-secret").await;
+    assert_eq!(status, 200, "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "PUT /api/v1/settings HTTP/1.1\r\nHost: localhost\r\nCookie: {op_cookie}\r\nX-Meatus-CSRF: {op_csrf}\r\n{}\r\n",
+            json_body(r#"{"log":{"level":"warn"}}"#)
+        ),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("settings:write"), "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/logs HTTP/1.1\r\nHost: localhost\r\nCookie: {op_cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    let (status, audit_cookie, _, body) = login_as(admin_port, "audit-secret").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"role\":\"auditor\""), "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/audit HTTP/1.1\r\nHost: localhost\r\nCookie: {audit_cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\nCookie: {audit_cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/audit?action=rbac.denied HTTP/1.1\r\nHost: localhost\r\nCookie: {owner_cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"actor\":\"vera\""), "{body}");
+    assert!(body.contains("\"action\":\"rbac.denied\""), "{body}");
+
+    let changed = config_text.replace(
+        r#"{ name = "vera", role = "viewer", token = "view-secret" }"#,
+        r#"{ name = "vera", role = "auditor", token = "view-secret" }"#,
+    );
+    std::fs::write(&config_path, changed).expect("write changed config");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/config/reload HTTP/1.1\r\nHost: localhost\r\nCookie: {owner_cookie}\r\nX-Meatus-CSRF: {owner_csrf}\r\nContent-Length: 0\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/session HTTP/1.1\r\nHost: localhost\r\nCookie: {viewer_cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"role\":\"auditor\""), "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\nCookie: {viewer_cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/audit?action=admin.roles HTTP/1.1\r\nHost: localhost\r\nCookie: {owner_cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"action\":\"admin.roles\""), "{body}");
+    assert!(body.contains("vera=auditor"), "{body}");
 
     cancel.cancel();
     let _ = task.await;

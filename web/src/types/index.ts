@@ -179,8 +179,12 @@ export interface LogsSnapshot {
   total: number
 }
 
+export type AdminRole = 'owner' | 'operator' | 'viewer' | 'auditor'
+
 export interface SessionSnapshot {
   authenticated: boolean
   csrf: string | null
   mode: 'loopback' | 'session'
+  user?: string
+  role?: AdminRole
 }

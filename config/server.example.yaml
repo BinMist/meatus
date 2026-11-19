@@ -50,6 +50,14 @@ admin:
   panel: true
   # 非 loopback 绑定时必须设置
   # admin_token: "REPLACE_WITH_ADMIN_TOKEN"
+  # V1.3 多用户 RBAC；admin_token 固定映射 admin/owner
+  # users:
+  #   - name: alice
+  #     role: operator
+  #     token: "${ALICE_TOKEN}"
+  #   - name: auditor
+  #     role: auditor
+  #     token_sha256: "REPLACE_WITH_64_HEX_SHA256"
   trust_forwarded_proto: false
   tls:
     enabled: false

@@ -29,6 +29,7 @@
 | 可观测性 | 客户端页展示授权摘要与配额；`/metrics` 增加 `meatus_quota_denied_total`、`meatus_quota_throttled_total` |
 | 审计日志 | 登录、配置 / 客户端 / proxy 变更、客户端上下线写入 JSONL；面板“审计日志”可按时间、操作者、client、动作、结果查询最近 90 天 |
 | 配置备份与恢复 | `meatus config backup/restore` 导出脱敏备份、校验版本与校验和；面板支持下载与上传恢复 |
+| 多用户 RBAC | `[admin].users[]` 配置 owner / operator / viewer / auditor 四角色；管理 API 按角色校验，越权 `403` 并写审计；旧 `admin_token` 继续映射 `admin/owner` |
 
 ### V1.2 带来的变化
 
@@ -937,6 +938,41 @@ openssl rand -hex 32
 * 不要把 7400 直接暴露到公网而不启用 TLS。
 
 * `admin_token` 只放配置文件 / `/data/admin.token`，权限 0600。
+
+V1.3 多用户 RBAC：
+
+```toml
+[admin]
+bind = "127.0.0.1:7400"
+admin_token = "legacy-owner-token"   # 可选；固定映射为 admin / owner
+
+[[admin.users]]
+name = "alice"
+role = "operator"                    # owner | operator | viewer | auditor
+token = "${ALICE_TOKEN}"             # 明文，支持环境变量
+
+[[admin.users]]
+name = "auditor"
+role = "auditor"
+token_sha256 = "<64 hex>"            # 也可只存 SHA256
+```
+
+| 角色 | 可读 | 可写 |
+| --- | --- | --- |
+| `owner` | 全部 | 全部（含 settings、reload、backup/restore） |
+| `operator` | status、clients、settings、logs、certificates | clients、proxies、probe |
+| `viewer` | status、clients、settings、logs、certificates | 无 |
+| `auditor` | 仅 audit | 无 |
+
+* `users` 的 `name` 必须非空且唯一；每个用户至少提供 `token` 或 64 位十六进制的 `token_sha256`。
+
+* 非 loopback 绑定时，`admin_token` 与 `users` 至少要配置一个，否则拒绝启动。
+
+* 越权请求返回 `403`，JSON 含 `error=forbidden`、`permission`、`role`、`user`；写操作会记录为 `denied`，只读越权额外记录 `rbac.denied`。
+
+* 角色变更需修改配置文件后执行 `POST /api/v1/config/reload`；服务端热更新权限并写入 `admin.roles` 审计，已登录会话按新角色立即生效。
+
+* 面板按角色隐藏导航：`operator` / `viewer` 不显示系统设置与审计，`auditor` 只显示审计日志；顶栏显示当前用户名与角色。
 
 #### `[log]`
 

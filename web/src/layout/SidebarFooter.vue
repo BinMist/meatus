@@ -5,14 +5,14 @@
       <span class="rail-foot-mono">{{ version }}</span>
     </div>
     <div class="rail-foot-note">
-      {{ mode === 'loopback' ? 'loopback · 本地免登录' : 'session · 已认证' }}
+      {{ mode === 'loopback' ? 'loopback · 本地免登录' : `${user || 'session'} · ${role}` }}
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { SlStatusTag } from '@sailonix/ui/status-tag'
-import type { SessionMode } from './types'
+import type { AdminRole, SessionMode } from './types'
 import { APP_VERSION_TAG } from '../version'
 
 defineOptions({ name: 'SidebarFooter' })
@@ -20,8 +20,10 @@ defineOptions({ name: 'SidebarFooter' })
 withDefaults(
   defineProps<{
     mode: SessionMode
+    user?: string
+    role?: AdminRole
     version?: string
   }>(),
-  { version: APP_VERSION_TAG },
+  { user: 'admin', role: 'owner', version: APP_VERSION_TAG },
 )
 </script>

@@ -6,6 +6,8 @@ export const session = reactive({
   authenticated: false,
   mode: '' as '' | 'loopback' | 'session',
   csrf: '',
+  user: '',
+  role: '' as '' | 'owner' | 'operator' | 'viewer' | 'auditor',
 })
 
 async function parseJson<T>(response: Response): Promise<T> {
@@ -30,6 +32,8 @@ export async function refreshSession(): Promise<SessionSnapshot> {
   session.authenticated = snapshot.authenticated
   session.mode = snapshot.mode
   session.csrf = snapshot.csrf ?? ''
+  session.user = snapshot.user ?? ''
+  session.role = snapshot.role ?? 'owner'
   session.ready = true
   return snapshot
 }
@@ -48,6 +52,8 @@ export async function login(token: string): Promise<SessionSnapshot> {
   session.authenticated = snapshot.authenticated
   session.mode = snapshot.mode
   session.csrf = snapshot.csrf ?? ''
+  session.user = snapshot.user ?? ''
+  session.role = snapshot.role ?? 'owner'
   session.ready = true
   return snapshot
 }
@@ -66,6 +72,8 @@ export async function logout(): Promise<void> {
   }
   session.authenticated = false
   session.csrf = ''
+  session.user = ''
+  session.role = ''
 }
 
 export async function apiWrite<T>(

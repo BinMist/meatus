@@ -13,6 +13,8 @@
         :group-label="groupLabel"
         :page-title="pageTitle"
         :mode="sessionMode"
+        :user="session.user"
+        :role="session.role || 'owner'"
         :can-logout="session.mode !== 'loopback'"
         :sidebar-width="232"
         :collapsed-width="64"
@@ -54,7 +56,7 @@ watch(railCollapsed, (value) => {
   }
 })
 
-const navGroups: NavGroup[] = [
+const allNavGroups: NavGroup[] = [
   {
     label: '监控',
     items: [
@@ -74,11 +76,33 @@ const navGroups: NavGroup[] = [
   },
 ]
 
+const rolePaths: Record<string, string[]> = {
+  owner: allNavGroups.flatMap((group) => group.items.map((item) => item.id)),
+  operator: ['/', '/proxies', '/clients', '/certificates', '/logs'],
+  viewer: ['/', '/proxies', '/clients', '/certificates', '/logs'],
+  auditor: ['/audit'],
+}
+
+const navGroups = computed<NavGroup[]>(() => {
+  const allowed = rolePaths[session.role || 'owner'] ?? rolePaths.owner
+  return allNavGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => allowed.includes(item.id)),
+    }))
+    .filter((group) => group.items.length > 0)
+})
+
+const defaultPath = computed(() => navGroups.value[0]?.items[0]?.id ?? '/')
 const groupLabel = computed(
   () =>
-    navGroups.find((group) => group.items.some((item) => item.id === route.path))?.label ??
-    '控制面',
+    navGroups.value.find((group) => group.items.some((item) => item.id === route.path))
+      ?.label ?? '控制面',
 )
+
+function routeAllowed(path: string): boolean {
+  return navGroups.value.some((group) => group.items.some((item) => item.id === path))
+}
 
 const pageTitle = computed(() => String(route.meta.title ?? '控制面'))
 const sessionMode = computed<SessionMode>(() =>
@@ -98,6 +122,8 @@ onMounted(async () => {
   }
   if (!session.authenticated && !route.meta.public) {
     await router.replace('/login')
+  } else if (session.authenticated && (!routeAllowed(route.path) || route.meta.public)) {
+    await router.replace(defaultPath.value)
   }
 })
 
@@ -110,7 +136,9 @@ watch(
       await router.replace('/login')
     }
     if (session.authenticated && route.meta.public) {
-      await router.replace('/')
+      await router.replace(defaultPath.value)
+    } else if (session.authenticated && !routeAllowed(route.path)) {
+      await router.replace(defaultPath.value)
     }
   },
 )

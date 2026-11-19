@@ -493,11 +493,46 @@ pub struct AdminSection {
     #[serde(default = "default_panel")]
     pub panel: bool,
     pub admin_token: Option<String>,
+    /// 本地用户与角色；旧 `admin_token` 仍映射为 owner。
+    #[serde(default)]
+    pub users: Vec<AdminUser>,
     #[serde(default)]
     pub tls: AdminTlsSection,
     /// 仅当管理面位于可信反向代理之后时开启；默认不信任转发头。
     #[serde(default)]
     pub trust_forwarded_proto: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AdminRole {
+    Owner,
+    Operator,
+    Viewer,
+    Auditor,
+}
+
+impl AdminRole {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Operator => "operator",
+            Self::Viewer => "viewer",
+            Self::Auditor => "auditor",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminUser {
+    pub name: String,
+    pub role: AdminRole,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub token_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -540,6 +575,7 @@ impl Default for AdminSection {
             bind: default_admin_bind(),
             panel: default_panel(),
             admin_token: None,
+            users: Vec::new(),
             tls: AdminTlsSection::default(),
             trust_forwarded_proto: false,
         }
@@ -671,10 +707,43 @@ impl ServerConfig {
         {
             return Err(invalid("admin.admin_token must not be empty"));
         }
-        if !is_loopback_bind(&self.admin.bind) && self.admin.admin_token.is_none() {
+        if !is_loopback_bind(&self.admin.bind)
+            && self.admin.admin_token.is_none()
+            && self.admin.users.is_empty()
+        {
             return Err(invalid(
-                "admin.bind is not loopback; admin_token is required in that case",
+                "admin.bind is not loopback; admin_token or admin.users is required in that case",
             ));
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for user in &self.admin.users {
+            let name = user.name.trim();
+            if name.is_empty() {
+                return Err(invalid("admin.users name must not be empty"));
+            }
+            if !names.insert(name.to_string()) {
+                return Err(invalid(format!("duplicate admin user name: {name}")));
+            }
+            let plain = user
+                .token
+                .as_deref()
+                .filter(|value| !value.trim().is_empty());
+            let hashed = user
+                .token_sha256
+                .as_deref()
+                .filter(|value| !value.trim().is_empty());
+            if plain.is_none() && hashed.is_none() {
+                return Err(invalid(format!(
+                    "admin user {name} requires token or token_sha256"
+                )));
+            }
+            if let Some(hash) = hashed
+                && (hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            {
+                return Err(invalid(format!(
+                    "admin user {name} token_sha256 must be 64 hex characters"
+                )));
+            }
         }
         if self.admin.tls.enabled {
             if self.admin.tls.cert.is_none() || self.admin.tls.key.is_none() {
@@ -1410,6 +1479,65 @@ clients = [
         assert_eq!(policy.monthly_bytes(), 104857600);
         assert_eq!(policy.quota_action(), QuotaAction::Throttle);
         assert_eq!(policy.conn_rate_per_s(), 5);
+    }
+
+    #[test]
+    fn admin_users_roles_and_tokens_are_validated() {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[admin]
+bind = "0.0.0.0:7400"
+users = [
+  { name = "alice", role = "operator", token = "alice-secret" },
+  { name = "audit", role = "auditor", token_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+]
+"#;
+        let config = parse_server_config(toml).expect("valid");
+        assert_eq!(config.admin.users.len(), 2);
+        assert_eq!(config.admin.users[0].role, AdminRole::Operator);
+        assert_eq!(config.admin.users[1].role, AdminRole::Auditor);
+
+        let duplicate = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[admin]
+users = [
+  { name = "dup", role = "viewer", token = "one" },
+  { name = "dup", role = "auditor", token = "two" },
+]
+"#;
+        assert!(
+            parse_server_config(duplicate)
+                .expect_err("duplicate")
+                .to_string()
+                .contains("duplicate")
+        );
+
+        let no_token = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[admin]
+users = [{ name = "empty", role = "viewer" }]
+"#;
+        assert!(
+            parse_server_config(no_token)
+                .expect_err("missing token")
+                .to_string()
+                .contains("requires token")
+        );
     }
 
     #[test]

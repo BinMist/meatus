@@ -9,11 +9,12 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use meatus_core::{
     AuthMode, ClientEntry, ConfigFormat, LogFormat, PortReleasePolicy, ServerConfig,
+    config::AdminRole,
 };
 use meatus_proto::v1::{NewProxy, ProxyOptions, ProxyType};
 use rust_embed::RustEmbed;
@@ -65,7 +66,7 @@ pub struct AdminState {
     logs: Arc<LogBuffer>,
     admin_bus: Arc<AdminBus>,
     acme: Option<Arc<crate::acme::AcmeManager>>,
-    admin_token: Option<Arc<str>>,
+    access: Arc<RwLock<AdminAccess>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     failures: Arc<Mutex<HashMap<IpAddr, LoginFailure>>>,
     probes: Arc<Mutex<HashMap<String, Instant>>>,
@@ -92,12 +93,7 @@ impl AdminState {
         acme: Option<Arc<crate::acme::AcmeManager>>,
         reloader: Option<Arc<crate::ConfigReloader>>,
     ) -> Self {
-        let admin_token = config
-            .admin
-            .admin_token
-            .as_deref()
-            .filter(|token| !token.trim().is_empty())
-            .map(Arc::<str>::from);
+        let access = AdminAccess::from_config(&config);
         Self {
             metrics,
             status,
@@ -109,7 +105,7 @@ impl AdminState {
             logs,
             admin_bus,
             acme,
-            admin_token,
+            access: Arc::new(RwLock::new(access)),
             config_path: None,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             failures: Arc::new(Mutex::new(HashMap::new())),
@@ -121,10 +117,37 @@ impl AdminState {
         self.runtime.config()
     }
 
+    fn refresh_access(&self) {
+        let next = AdminAccess::from_config(&self.current_config());
+        let previous = {
+            let mut access = self
+                .access
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *access == next {
+                None
+            } else {
+                Some(std::mem::replace(&mut *access, next.clone()))
+            }
+        };
+        if let Some(previous) = previous {
+            let old = previous.summary();
+            let new = next.summary();
+            self.audit.record(
+                crate::audit::AuditEvent::new("admin.roles", format!("{old} -> {new}"))
+                    .actor("system"),
+            );
+        }
+    }
+
     #[must_use]
     pub fn auth_summary(&self) -> AuthSummary {
+        let access = self
+            .access
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         AuthSummary {
-            token_configured: self.admin_token.is_some(),
+            token_configured: access.configured(),
             panel: self.config.admin.panel,
             loopback: is_loopback_bind(&self.config.admin.bind),
         }
@@ -135,6 +158,172 @@ impl AdminState {
 struct Session {
     csrf: String,
     last_seen: Instant,
+    user: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdminAccess {
+    legacy_owner: Option<Arc<str>>,
+    users: Vec<AdminAccessUser>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdminAccessUser {
+    name: Arc<str>,
+    role: AdminRole,
+    token: Option<Arc<str>>,
+    token_sha256: Option<Arc<str>>,
+}
+
+#[derive(Debug, Clone)]
+struct AuthContext {
+    user: Arc<str>,
+    role: AdminRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Permission {
+    StatusRead,
+    ClientsRead,
+    ClientsWrite,
+    ProxiesWrite,
+    Probe,
+    SettingsRead,
+    SettingsWrite,
+    LogsRead,
+    CertificatesRead,
+    AuditRead,
+    ConfigBackup,
+    ConfigReload,
+    ConfigRestore,
+}
+
+impl Permission {
+    fn label(self) -> &'static str {
+        match self {
+            Self::StatusRead => "status:read",
+            Self::ClientsRead => "clients:read",
+            Self::ClientsWrite => "clients:write",
+            Self::ProxiesWrite => "proxies:write",
+            Self::Probe => "probe:run",
+            Self::SettingsRead => "settings:read",
+            Self::SettingsWrite => "settings:write",
+            Self::LogsRead => "logs:read",
+            Self::CertificatesRead => "certificates:read",
+            Self::AuditRead => "audit:read",
+            Self::ConfigBackup => "config:backup",
+            Self::ConfigReload => "config:reload",
+            Self::ConfigRestore => "config:restore",
+        }
+    }
+}
+
+fn role_allows(role: AdminRole, permission: Permission) -> bool {
+    match role {
+        AdminRole::Owner => true,
+        AdminRole::Operator => matches!(
+            permission,
+            Permission::StatusRead
+                | Permission::ClientsRead
+                | Permission::ClientsWrite
+                | Permission::ProxiesWrite
+                | Permission::Probe
+                | Permission::SettingsRead
+                | Permission::LogsRead
+                | Permission::CertificatesRead
+        ),
+        AdminRole::Viewer => matches!(
+            permission,
+            Permission::StatusRead
+                | Permission::ClientsRead
+                | Permission::SettingsRead
+                | Permission::LogsRead
+                | Permission::CertificatesRead
+        ),
+        AdminRole::Auditor => permission == Permission::AuditRead,
+    }
+}
+
+impl AdminAccess {
+    fn from_config(config: &ServerConfig) -> Self {
+        Self {
+            legacy_owner: config
+                .admin
+                .admin_token
+                .as_deref()
+                .filter(|token| !token.trim().is_empty())
+                .map(Arc::<str>::from),
+            users: config
+                .admin
+                .users
+                .iter()
+                .map(|user| AdminAccessUser {
+                    name: Arc::from(user.name.trim()),
+                    role: user.role,
+                    token: user
+                        .token
+                        .as_deref()
+                        .filter(|token| !token.trim().is_empty())
+                        .map(Arc::<str>::from),
+                    token_sha256: user
+                        .token_sha256
+                        .as_deref()
+                        .filter(|hash| !hash.trim().is_empty())
+                        .map(Arc::<str>::from),
+                })
+                .collect(),
+        }
+    }
+
+    fn configured(&self) -> bool {
+        self.legacy_owner.is_some() || !self.users.is_empty()
+    }
+
+    fn authenticate(&self, candidate: &str) -> Option<(Arc<str>, AdminRole)> {
+        if self
+            .legacy_owner
+            .as_deref()
+            .is_some_and(|token| constant_time_eq(candidate.as_bytes(), token.as_bytes()))
+        {
+            return Some((Arc::from("admin"), AdminRole::Owner));
+        }
+        self.users.iter().find_map(|user| {
+            let plain = user
+                .token
+                .as_deref()
+                .is_some_and(|token| constant_time_eq(candidate.as_bytes(), token.as_bytes()));
+            let hashed = user.token_sha256.as_deref().is_some_and(|hash| {
+                constant_time_eq(
+                    hex::encode(meatus_core::token_key(candidate)).as_bytes(),
+                    hash.as_bytes(),
+                )
+            });
+            (plain || hashed).then(|| (Arc::clone(&user.name), user.role))
+        })
+    }
+
+    fn role_for(&self, user: &str) -> Option<AdminRole> {
+        if user == "admin" && self.legacy_owner.is_some() {
+            return Some(AdminRole::Owner);
+        }
+        self.users
+            .iter()
+            .find(|candidate| candidate.name.as_ref() == user)
+            .map(|candidate| candidate.role)
+    }
+
+    fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.legacy_owner.is_some() {
+            parts.push("admin=owner".to_string());
+        }
+        parts.extend(
+            self.users
+                .iter()
+                .map(|user| format!("{}={}", user.name, user.role.as_str())),
+        );
+        parts.join(", ")
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -419,10 +608,14 @@ fn cookie_value(head: &str, name: &str) -> Option<String> {
     })
 }
 
-fn bearer_matches(head: &str, token: &str) -> bool {
+fn bearer_value(head: &str) -> Option<String> {
     header_value(head, "authorization")
-        .and_then(|value| value.strip_prefix("Bearer ").map(str::to_string))
-        .is_some_and(|candidate| constant_time_eq(candidate.as_bytes(), token.as_bytes()))
+        .and_then(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .map(|rest| rest.trim().to_string())
+        })
+        .filter(|value| !value.is_empty())
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -445,6 +638,45 @@ fn is_api(path: &str) -> bool {
     path.starts_with("/api/")
 }
 
+fn permission_for_request(request: &HttpRequest) -> Option<Permission> {
+    let method = request.method.as_str();
+    let path = request.path.as_str();
+    if let Some(rest) = path.strip_prefix("/api/v1/clients/")
+        && !rest.is_empty()
+        && !rest.contains('/')
+    {
+        return Some(match method {
+            "GET" => Permission::ClientsRead,
+            "PUT" | "DELETE" => Permission::ClientsWrite,
+            _ => return None,
+        });
+    }
+    if method == "POST"
+        && path
+            .strip_prefix("/api/v1/proxies/")
+            .is_some_and(|rest| rest.ends_with("/probe"))
+    {
+        return Some(Permission::Probe);
+    }
+    Some(match (method, path) {
+        ("GET", "/api/v1/status") | ("GET", "/metrics") => Permission::StatusRead,
+        ("GET", "/api/v1/clients") => Permission::ClientsRead,
+        ("POST", "/api/v1/clients") => Permission::ClientsWrite,
+        ("POST", "/api/v1/proxies")
+        | ("PUT", "/api/v1/proxies")
+        | ("DELETE", "/api/v1/proxies") => Permission::ProxiesWrite,
+        ("GET", "/api/v1/settings") => Permission::SettingsRead,
+        ("PUT", "/api/v1/settings") => Permission::SettingsWrite,
+        ("GET", "/api/v1/logs") => Permission::LogsRead,
+        ("GET", "/api/v1/certificates") => Permission::CertificatesRead,
+        ("GET", "/api/v1/audit") => Permission::AuditRead,
+        ("GET", "/api/v1/config/backup") => Permission::ConfigBackup,
+        ("POST", "/api/v1/config/reload") => Permission::ConfigReload,
+        ("POST", "/api/v1/config/restore") => Permission::ConfigRestore,
+        _ => return None,
+    })
+}
+
 async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResponse {
     let response = route_inner(request, peer_ip, state).await;
     if let Some((action, target, client_id)) = audit_spec(request) {
@@ -453,7 +685,9 @@ async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> Ht
             401 | 403 => "denied",
             _ => "error",
         };
+        let actor = current_actor(request, state).unwrap_or_else(|| Arc::from("anonymous"));
         let mut event = crate::audit::AuditEvent::new(action, target)
+            .actor(actor.as_ref())
             .source_ip(peer_ip)
             .result(result);
         if let Some(client_id) = client_id {
@@ -465,6 +699,30 @@ async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> Ht
 }
 
 async fn route_inner(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResponse {
+    if let Some(permission) = permission_for_request(request) {
+        let Some(context) = auth_context(request, state) else {
+            return HttpResponse::json(401, json!({"error": "unauthorized"}));
+        };
+        if !role_allows(context.role, permission) {
+            if audit_spec(request).is_none() {
+                state.audit.record(
+                    crate::audit::AuditEvent::new("rbac.denied", permission.label())
+                        .actor(context.user.as_ref())
+                        .source_ip(peer_ip)
+                        .result("denied"),
+                );
+            }
+            return HttpResponse::json(
+                403,
+                json!({
+                    "error": "forbidden",
+                    "permission": permission.label(),
+                    "role": context.role.as_str(),
+                    "user": context.user.as_ref(),
+                }),
+            );
+        }
+    }
     if let Some(id) = request.path.strip_prefix("/api/v1/clients/") {
         return clients_item(request, state, id).await;
     }
@@ -1677,7 +1935,7 @@ fn reload_config(state: &AdminState) -> Result<crate::ReloadSnapshot, HttpRespon
             json!({"error": "server was started without a config path; hot reload is disabled"}),
         ));
     };
-    reloader.reload().map_err(|error| {
+    let snapshot = reloader.reload().map_err(|error| {
         HttpResponse::json(
             500,
             json!({
@@ -1686,7 +1944,9 @@ fn reload_config(state: &AdminState) -> Result<crate::ReloadSnapshot, HttpRespon
                 "last_error": error.to_string(),
             }),
         )
-    })
+    })?;
+    state.refresh_access();
+    Ok(snapshot)
 }
 
 fn merge_server_settings(current: &ServerConfig, body: &Value) -> Result<ServerConfig, String> {
@@ -1904,15 +2164,17 @@ async fn test_bind(bind: &str, label: &str) -> Result<(), String> {
 }
 
 fn write_allowed(request: &HttpRequest, state: &AdminState) -> Result<(), HttpResponse> {
-    if !authorized(request, state) {
+    let Some(_context) = auth_context(request, state) else {
         return Err(HttpResponse::json(401, json!({"error": "unauthorized"})));
-    }
-    let Some(token) = state.admin_token.as_deref() else {
-        return Ok(());
     };
-    if bearer_matches(&request.headers, token) {
+    let access = state
+        .access
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !access.configured() || bearer_value(&request.headers).is_some() {
         return Ok(());
     }
+    drop(access);
     let Some(session) = valid_session(request, state) else {
         return Err(HttpResponse::json(401, json!({"error": "unauthorized"})));
     };
@@ -2115,13 +2377,30 @@ fn valid_proxy_name(name: &str) -> bool {
 }
 
 fn authorized(request: &HttpRequest, state: &AdminState) -> bool {
-    let Some(token) = state.admin_token.as_deref() else {
-        return true;
-    };
-    if bearer_matches(&request.headers, token) {
-        return true;
+    auth_context(request, state).is_some()
+}
+
+fn auth_context(request: &HttpRequest, state: &AdminState) -> Option<AuthContext> {
+    let access = state
+        .access
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !access.configured() {
+        return Some(AuthContext {
+            user: Arc::from("loopback"),
+            role: AdminRole::Owner,
+        });
     }
-    valid_session(request, state).is_some()
+    if let Some(candidate) = bearer_value(&request.headers) {
+        return access
+            .authenticate(&candidate)
+            .map(|(user, role)| AuthContext { user, role });
+    }
+    let session = valid_session(request, state)?;
+    access.role_for(&session.user).map(|role| AuthContext {
+        user: session.user,
+        role,
+    })
 }
 
 fn valid_session(request: &HttpRequest, state: &AdminState) -> Option<Session> {
@@ -2139,18 +2418,55 @@ fn valid_session(request: &HttpRequest, state: &AdminState) -> Option<Session> {
     Some(session.clone())
 }
 
+fn current_actor(request: &HttpRequest, state: &AdminState) -> Option<Arc<str>> {
+    if request.method == "POST" && request.path == "/api/v1/session" {
+        let body = serde_json::from_slice::<Value>(&request.body).ok()?;
+        let token = body.get("token").and_then(Value::as_str)?;
+        let access = state
+            .access
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        return access.authenticate(token).map(|(user, _)| user);
+    }
+    auth_context(request, state).map(|context| context.user)
+}
+
 fn session_status(request: &HttpRequest, state: &AdminState) -> HttpResponse {
-    if state.admin_token.is_none() {
+    let access = state
+        .access
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !access.configured() {
         return HttpResponse::json(
             200,
-            json!({"authenticated": true, "csrf": Value::Null, "mode": "loopback"}),
+            json!({
+                "authenticated": true,
+                "csrf": Value::Null,
+                "mode": "loopback",
+                "user": "loopback",
+                "role": "owner",
+            }),
         );
     }
     match valid_session(request, state) {
-        Some(session) => HttpResponse::json(
-            200,
-            json!({"authenticated": true, "csrf": session.csrf, "mode": "session"}),
-        ),
+        Some(session) => {
+            let Some(role) = access.role_for(&session.user) else {
+                return HttpResponse::json(
+                    200,
+                    json!({"authenticated": false, "csrf": Value::Null, "mode": "session"}),
+                );
+            };
+            HttpResponse::json(
+                200,
+                json!({
+                    "authenticated": true,
+                    "csrf": session.csrf,
+                    "mode": "session",
+                    "user": session.user.as_ref(),
+                    "role": role.as_str(),
+                }),
+            )
+        }
         None => HttpResponse::json(
             200,
             json!({"authenticated": false, "csrf": Value::Null, "mode": "session"}),
@@ -2159,12 +2475,22 @@ fn session_status(request: &HttpRequest, state: &AdminState) -> HttpResponse {
 }
 
 fn login(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResponse {
-    let Some(token) = state.admin_token.as_deref() else {
+    let access = state
+        .access
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !access.configured() {
         return HttpResponse::json(
             200,
-            json!({"authenticated": true, "csrf": Value::Null, "mode": "loopback"}),
+            json!({
+                "authenticated": true,
+                "csrf": Value::Null,
+                "mode": "loopback",
+                "user": "loopback",
+                "role": "owner",
+            }),
         );
-    };
+    }
 
     if let Some(lock) = login_lock(state, peer_ip) {
         return HttpResponse::json(
@@ -2181,10 +2507,12 @@ fn login(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResp
         .get("token")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !constant_time_eq(candidate.as_bytes(), token.as_bytes()) {
+    let Some((user, role)) = access.authenticate(candidate) else {
+        drop(access);
         record_login_failure(state, peer_ip);
         return HttpResponse::json(401, json!({"error": "invalid token"}));
-    }
+    };
+    drop(access);
 
     clear_login_failure(state, peer_ip);
     let session_id = random_hex(32);
@@ -2192,6 +2520,7 @@ fn login(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResp
     let session = Session {
         csrf: csrf.clone(),
         last_seen: Instant::now(),
+        user: Arc::clone(&user),
     };
     state
         .sessions
@@ -2201,7 +2530,13 @@ fn login(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResp
 
     HttpResponse::json(
         200,
-        json!({"authenticated": true, "csrf": csrf, "mode": "session"}),
+        json!({
+            "authenticated": true,
+            "csrf": csrf,
+            "mode": "session",
+            "user": user.as_ref(),
+            "role": role.as_str(),
+        }),
     )
     .with_cookie(session_cookie(
         &session_id,

@@ -21,7 +21,7 @@
       </template>
 
       <template #sidebar-footer>
-        <SidebarFooter :mode="mode" />
+        <SidebarFooter :mode="mode" :user="user" :role="role" />
       </template>
 
       <template #header>
@@ -30,6 +30,8 @@
           :group-label="groupLabel"
           :page-title="pageTitle"
           :mode="mode"
+          :user="user"
+          :role="role"
           :can-logout="canLogout"
           @toggle="toggleNavigation"
           @logout="emit('logout')"
@@ -47,7 +49,7 @@ import SidebarBrand from './SidebarBrand.vue'
 import SidebarFooter from './SidebarFooter.vue'
 import SidebarNav from './SidebarNav.vue'
 import TopbarBar from './TopbarBar.vue'
-import type { NavGroup, SessionMode } from './types'
+import type { AdminRole, NavGroup, SessionMode } from './types'
 
 defineOptions({ name: 'AppLayout' })
 
@@ -59,6 +61,8 @@ const props = withDefaults(
     groupLabel: string
     pageTitle: string
     mode: SessionMode
+    user?: string
+    role?: AdminRole
     canLogout?: boolean
     sidebarWidth?: number
     collapsedWidth?: number
@@ -67,6 +71,8 @@ const props = withDefaults(
   }>(),
   {
     title: 'Meatus',
+    user: 'admin',
+    role: 'owner',
     canLogout: false,
     sidebarWidth: 232,
     collapsedWidth: 64,
