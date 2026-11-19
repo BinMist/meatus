@@ -416,6 +416,121 @@ custom_domains = ["app.test"]
     let _ = timeout(Duration::from_secs(5), server_task).await;
 }
 
+#[tokio::test]
+async fn client_policy_rejects_disallowed_proxy_type() {
+    let _guard = TEST_MUTEX.lock().await;
+    let (echo_port, control_port, http_port, https_port, admin_port) = loop {
+        let ports = [
+            free_port(),
+            free_port(),
+            free_port(),
+            free_port(),
+            free_port(),
+        ];
+        if ports
+            .iter()
+            .enumerate()
+            .all(|(index, port)| ports.iter().skip(index + 1).all(|other| port != other))
+        {
+            break (ports[0], ports[1], ports[2], ports[3], ports[4]);
+        }
+    };
+    spawn_echo(echo_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-it-policy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}", allow_types = ["tcp"] }},
+]
+
+[ports]
+range = [20000, 30000]
+
+[http]
+enabled = true
+bind = "127.0.0.1:{http_port}"
+https_bind = "127.0.0.1:{https_port}"
+domain = "app.test"
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+    let client_config = format!(
+        r#"
+[client]
+server_addr = "127.0.0.1:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+
+[[proxy]]
+name = "web"
+type = "http"
+local_addr = "127.0.0.1:{echo_port}"
+remote_port = 0
+custom_domains = ["app.test"]
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let client_state = ClientState::new(parse_client_config(&client_config).expect("client cfg"))
+        .expect("client state");
+    let server_cancel = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let mut rejected = false;
+    for _ in 0..50 {
+        sleep(Duration::from_millis(200)).await;
+        if let Ok(snapshot) = status_json(admin_port).await
+            && snapshot["totals"]["clients"].as_u64().unwrap_or(0) == 1
+            && snapshot["totals"]["proxies"].as_u64().unwrap_or(0) == 0
+        {
+            rejected = true;
+            break;
+        }
+    }
+    assert!(
+        rejected,
+        "http proxy must be rejected for a tcp-only client"
+    );
+
+    client_cancel.cancel();
+    server_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), server_task).await;
+}
+
 async fn http_request(port: u16, host: &str) -> (u16, String, String) {
     let mut stream = TcpStream::connect(("127.0.0.1", port))
         .await
