@@ -1,6 +1,6 @@
 # Meatus 客户端 YAML 配置示例
 # 复制为 client.yaml 后按需修改；token 从 `meatus gen-token` 获取。
-# YAML 只读，管理面板不会写回 YAML。
+# 管理面板可写回，但会规范化重写，注释和键顺序不保证保留。
 
 client:
   server_addr: "tunnel.example.com:7000"

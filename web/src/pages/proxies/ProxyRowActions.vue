@@ -63,13 +63,27 @@ defineEmits<{
 .mt-inline-actions {
   display: flex;
   align-items: center;
-  justify-content: space-evenly;
-  gap: 0;
+  justify-content: flex-start;
+  gap: 6px;
   width: 100%;
   min-width: 0;
 }
 
 .mt-inline-actions > * {
   flex: 0 0 auto;
+}
+
+/* 操作列只保留图标本身，去掉 ghost 按钮的底色、边框和阴影。 */
+.mt-inline-actions :deep(.sl-button) {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.mt-inline-actions :deep(.sl-button:hover:not(.sl-button--disabled)),
+.mt-inline-actions :deep(.sl-button:active:not(.sl-button--disabled)) {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 </style>

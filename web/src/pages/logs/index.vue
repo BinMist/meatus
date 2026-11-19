@@ -1,5 +1,5 @@
 <template>
-  <div class="page">
+  <div class="page page--logs">
     <sl-page-header title="实时日志" sub-title="server 进程内最近日志，不落盘、不包含 admin token">
       <template #extra>
         <PageActionsBar

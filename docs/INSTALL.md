@@ -2,6 +2,8 @@
 
 V1 交付**完全开源（Apache-2.0）自托管版**：一台公网 server + 若干内网 client，单二进制、零数据库、零 Redis。本文覆盖 Linux systemd、Docker Compose、纯 `docker run` 和手工安装四种方式。
 
+> `1.1.1` 是 `1.1.0` 的 YAML 写回补丁，代码已收口；当前安装示例仍指向已发布的 `1.1.0`。补丁发布资产构建后，把下方 `VERSION` 与镜像标签替换为 `1.1.1` 即可。
+
 ## 1. 产物与平台
 
 | 产物 | 平台 | 说明 |
@@ -155,19 +157,19 @@ docker compose cp ./server.toml meatus:/data/server.toml
 docker compose restart meatus
 ```
 
-YAML 变体（只读，挂载后启动命令需指向 YAML）：
+YAML 变体（管理面可写；如需面板写回不要使用 `:ro` 只读挂载）：
 
 ```bash
 docker login registry.cn-hangzhou.aliyuncs.com
 
 docker run -d --name meatus \
-  -v "$PWD/server.yaml:/data/server.yaml:ro" \
+  -v "$PWD/server.yaml:/data/server.yaml" \
   -v meatus-data:/data \
   registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0 \
   server --config /data/server.yaml
 ```
 
-YAML 配置下管理面板的系统设置和 client proxy 写回均禁用；修改后重启容器生效。
+YAML 配置下管理面板同样可以写回系统设置和 client proxy；写回会规范化重写，注释和键顺序不保证保留。若挂载为 `:ro`，面板保存会失败。
 
 默认配置只发布 7000（控制面）与 7400（面板）。client 申请的 `remote_port` 必须逐个映射；开启 `[http]` 后再映射 80/443。在 `docker-compose.yml` 的 `ports` 中追加：
 

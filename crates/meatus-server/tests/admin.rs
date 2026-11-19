@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! M5 admin 面板：静态资源、会话 Cookie、CSRF 与只读 API 的集成测试。
+//! M5 admin 面板：静态资源、会话 Cookie、CSRF 与 API 的集成测试。
 
 use std::io::Cursor;
 use std::net::TcpListener as StdTcpListener;
@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meatus_client::ClientState;
-use meatus_core::{parse_client_config, parse_server_config};
+use meatus_core::{
+    ConfigFormat, parse_client_config, parse_server_config, parse_server_config_with_format,
+};
 use meatus_server::ServerState;
 use rustls::RootCertStore;
 use rustls::pki_types::ServerName;
@@ -185,7 +187,7 @@ hsts = true
 }
 
 #[tokio::test]
-async fn admin_yaml_settings_write_is_rejected() {
+async fn admin_yaml_settings_write_is_supported() {
     let control_port = free_port();
     let admin_port = free_port();
     let dir = std::env::temp_dir().join(format!("meatus-admin-yaml-{}", std::process::id()));
@@ -197,34 +199,45 @@ async fn admin_yaml_settings_write_is_rejected() {
     std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
     std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
 
-    let config = parse_server_config(&format!(
-        r#"
-[server]
-bind_addr = "127.0.0.1"
-control_port = {control_port}
-tls_cert = "{}"
-tls_key = "{}"
+    let yaml_path = dir.join("server.yaml");
+    std::fs::write(
+        &yaml_path,
+        format!(
+            r#"
+server:
+  bind_addr: "127.0.0.1"
+  control_port: {control_port}
+  tls_cert: "{}"
+  tls_key: "{}"
 
-[auth]
-clients = [
-  {{ id = "client", tenant = "default", token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b" }},
-]
+auth:
+  clients:
+    - id: "client"
+      tenant: "default"
+      token_sha256: "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b"
 
-[ports]
-range = [24200, 24210]
+ports:
+  range: [24200, 24210]
 
-[admin]
-bind = "127.0.0.1:{admin_port}"
-admin_token = "admin-secret"
+admin:
+  bind: "127.0.0.1:{admin_port}"
+  admin_token: "admin-secret"
 "#,
-        cert_path.display(),
-        key_path.display()
-    ))
-    .expect("parse config");
+            cert_path.display(),
+            key_path.display()
+        ),
+    )
+    .expect("write yaml config");
+
+    let config = parse_server_config_with_format(
+        &std::fs::read_to_string(&yaml_path).expect("read yaml config"),
+        ConfigFormat::Yaml,
+    )
+    .expect("parse yaml config");
 
     let state = ServerState::new(config)
         .expect("state")
-        .with_config_path(dir.join("server.yaml"));
+        .with_config_path(yaml_path.clone());
     let cancel = CancellationToken::new();
     let run_cancel = cancel.clone();
     let task = tokio::spawn(async move { meatus_server::run_until(state, run_cancel).await });
@@ -247,15 +260,23 @@ admin_token = "admin-secret"
         admin_port,
         &format!(
             "PUT /api/v1/settings HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{}\r\n",
-            json_body("{}")
+            json_body(r#"{"log":{"level":"warn"}}"#)
         ),
     )
     .await;
-    assert_eq!(status, 409);
-    assert!(body.contains("YAML config is read-only"));
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"config_format\":\"yaml\""), "{body}");
+    assert!(body.contains("配置已写入"), "{body}");
+
+    let raw = std::fs::read_to_string(&yaml_path).expect("read written yaml");
+    let parsed =
+        parse_server_config_with_format(&raw, ConfigFormat::Yaml).expect("parse written yaml");
+    assert_eq!(parsed.log.level, "warn");
+    assert!(yaml_path.with_file_name("server.yaml.bak").exists());
 
     cancel.cancel();
     let _ = task.await;
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[tokio::test]

@@ -1,9 +1,9 @@
 # Meatus 完整使用教程（V1.1）
 
-> 适用版本：Meatus `1.1.0`（完全开源、Apache-2.0、自托管）
-> 发布状态：`1.1.0` 已发布，Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>；当前镜像发布到阿里云 ACR，GHCR / GitHub Release 暂缓
+> 适用版本：Meatus `1.1.1`（`1.1.0` 的 YAML 写回补丁；完全开源、Apache-2.0、自托管）
+> 发布状态：`1.1.0` 已发布，Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>；`1.1.1` 代码已收口，发布资产待构建。当前安装示例仍指向已发布的 `1.1.0` 镜像与安装包；GHCR / GitHub Release 暂缓。
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
-> 依赖：单二进制 + TOML（默认）/ YAML（只读）；**零 PostgreSQL、零 Redis、零 Node 运行时**
+> 依赖：单二进制 + TOML（默认）/ YAML（管理面可写，规范化重写）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 > 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 
 本教程覆盖：本机跑通、公网部署、systemd、Docker Compose、纯 `docker run`、配置项、YAML、管理面 TLS、TCP / UDP / HTTP / HTTPS / ACME / SOCKS5、管理面板、指标与日志、热重载、升级备份、故障排查和安全基线。
@@ -17,11 +17,18 @@
 | 能力        | 说明                                                                                               |
 | --------- | ------------------------------------------------------------------------------------------------ |
 | 管理面独立 TLS | `[admin.tls]` 使用独立证书 / 私钥，不复用隧道 `[server] tls_cert` / `tls_key`；开启后 Cookie 自动带 `Secure`，可发送 HSTS |
-| YAML 只读配置 | 支持 `.yaml` / `.yml`；适合 Git 管理、声明式部署，但面板不写回                                                       |
+| YAML 配置 | 支持 `.yaml` / `.yml`；适合 Git 管理、声明式部署；面板可写回，但会规范化重写 |
 | 代理头信任收敛   | `admin.trust_forwarded_proto` 默认 `false`，只在可信反向代理后显式开启                                           |
 | 严格 CSP    | 管理面 `style-src 'self'`，不含 `unsafe-inline`；面板不在运行时注入内联样式                                          |
 | 发布物料      | 发布包内置 `SBOM.spdx.json`、第三方许可证声明与原文；安装到 `/usr/share/doc/meatus`                                   |
 | 多架构镜像     | ACR 提供 linux/amd64、linux/arm64；标签 `1.1.0` / `1.1` / `latest`                                     |
+
+### V1.1.1 补丁
+
+- YAML 配置从只读改为管理面可写：`server.yaml` 系统设置、`client.yaml` proxy 增删都会持久化；写回采用规范化重写，注释和键顺序不保证保留。
+- 管理设置响应新增 `config_format`，设置页底部显示当前配置格式；server YAML 写回前生成 `.bak` 备份。
+- 管理面板补充搜索栏操作按钮、日志页桌面端滚动、操作列与表单栅格细节修正。
+- `1.1.1` 的安装包 / 镜像尚未构建；本文安装命令继续使用已发布的 `1.1.0`，升级补丁后把 `VERSION` 与镜像标签替换为 `1.1.1` 即可。
 
 ### 兼容性
 
@@ -31,7 +38,7 @@
 
 * `[admin.tls]` 是可选能力；不开启时行为与 V1.0 一致，但非 loopback 仍必须配置 `admin_token`。
 
-* YAML 是可选格式，**只读**；需要面板在线改 proxy / 系统设置时继续用 TOML。
+* YAML 是可选格式，**管理面可写**；面板保存会写回 YAML，但会规范化重写，注释和键顺序不保证保留。
 
 * 当前发布仓库是 **阿里云 ACR**；GHCR 与 GitHub Release 暂缓，不要把 `ghcr.io` 当作可用地址。
 
@@ -865,9 +872,9 @@ format = "text"
 
 * `format`：`text` 或 `json`；接日志系统时用 `json`。
 
-### 3.1.1 YAML 配置（只读）
+### 3.1.1 YAML 配置（管理面可写）
 
-V1.1 起支持 `.yaml` / `.yml`，但 **YAML 只读**：服务启动后管理面板不会写回 YAML，proxy 在线增删也只支持 TOML。
+支持 `.yaml` / `.yml`。管理面板可以写回 YAML：系统设置保存到 `server.yaml`，client proxy 增删保存到 `client.yaml`。写回采用规范化重写，未编辑的字段值会保留，但注释和键顺序不保证保留；需要严格保留注释时继续用 TOML。
 
 
 
@@ -946,29 +953,22 @@ log:
 
 * 扩展名决定默认格式；文件名不是 `.yaml/.yml` 时必须加 `--format yaml`。
 
-* Docker 挂载 YAML 时建议只读：`-v "$PWD/server.yaml:/data/server.yaml:ro"`；启动命令用 `--config /data/server.yaml`。
+* Docker 挂载 YAML 时，若需要面板写回必须使用可写挂载；`:ro` 只读挂载下面板保存会失败。启动命令用 `--config /data/server.yaml`。
 
 * `meatus check` 会输出实际格式，例如 `OK  server.yaml (server, yaml)`；解析错误会报告 `文件: line N, column M`。
 
-只读行为：
+写回行为：
 
 
 
-| 操作                       | TOML             | YAML      |
-| ------------------------ | ---------------- | --------- |
-| 面板改 server 系统设置          | 写回并重启            | 拒绝，提示手工编辑 |
-| 面板增删 client proxy        | 写回 `client.toml` | 拒绝，提示手工编辑 |
-| `SIGHUP` 热重载             | 支持               | 支持读取，但不写回 |
-| 配置互转 / `!include` / 远程引用 | 不提供              | 不提供       |
+| 操作                       | TOML                | YAML                    |
+| ------------------------ | ------------------- | ----------------------- |
+| 面板改 server 系统设置          | 写回并重启；保留注释          | 写回并重启；规范化重写，注释不保证保留 |
+| 面板增删 client proxy        | 写回 `client.toml`；保留注释 | 写回 `client.yaml`；规范化重写  |
+| `SIGHUP` 热重载             | 支持                  | 支持                      |
+| 配置互转 / `!include` / 远程引用 | 不提供                 | 不提供                     |
 
-YAML 写回错误文案固定为：
-
-
-
-```
-server: YAML config is read-only; edit server.yaml manually and restart
-client: YAML config is read-only; edit client.yaml manually and restart
-```
+YAML 写回前会先解析并校验；校验失败不会覆盖原文件。成功写回时，服务端会生成 `.bak` 备份并重启，客户端 proxy 写回不生成备份。需要严格保留注释和键顺序时，请继续使用 TOML。
 
 ### 3.2 client.toml
 
@@ -2019,10 +2019,10 @@ docker exec meatus-server cat /data/admin.token
 | 页面       | 用途                                                 | 注意                                                                            |
 | -------- | -------------------------------------------------- | ----------------------------------------------------------------------------- |
 | 总览       | 在线客户端、活跃 proxy、连接数、uptime、累计流量                     | 5 秒轮询 `/api/v1/status`                                                        |
-| Proxy 管理 | 新增 / 编辑 / 删除运行中的 proxy                             | 通过 server 下发管理帧，等待 client ack；client 带 `--config` 时**同步写回 client.toml**，重启后保留 |
+| Proxy 管理 | 新增 / 编辑 / 删除运行中的 proxy                             | 通过 server 下发管理帧，等待 client ack；client 带 `--config` 时**同步写回 client.toml / client.yaml**，重启后保留 |
 | 证书状态     | ACME 证书 SAN、到期、剩余天数、序列号、链长度                        | 读取 `acme.cert_dir`                                                            |
 | 实时日志     | 最近 300 行日志                                         | 2 秒轮询；进程内 2000 行环形缓冲，重启清空，不落盘                                                 |
-| 系统设置     | 在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志 | 保存写回 `server.toml` 并自动重启；TLS、admin、token、会话策略只读；YAML 配置整体只读                   |
+| 系统设置     | 在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志 | 保存写回 `server.toml` / `server.yaml` 并自动重启；TLS、admin、token、会话策略只读；YAML 会规范化重写 |
 | 登录       | token 换会话                                          | 失败限流                                                                          |
 
 ### 6.4 Proxy 管理的重要边界
@@ -2037,9 +2037,9 @@ docker exec meatus-server cat /data/admin.token
 
 * 失败回滚上一份 runtime；
 
-* client 启动时带 `--config` 会把变更 upsert /remove 到 `client.toml`，保留其它配置和注释；客户端重启或 SIGHUP 后仍生效；
+* client 启动时带 `--config` 会把变更 upsert / remove 到 `client.toml` 或 `client.yaml`；TOML 保留其它配置和注释，YAML 会规范化重写；客户端重启或 SIGHUP 后仍生效；
 
-* 如果 client 使用 `client.yaml`，配置整体只读：面板增删 proxy 会返回错误，需手工编辑 YAML 后重启；
+* 如果 client 使用 `client.yaml`，面板增删 proxy 同样会写回 YAML；写回前会校验，成功写回后无需手工改文件；
 
 * 容器内配置挂载需要让 `meatus` 用户可写（官方 entrypoint 会先 `chown -R meatus:meatus /data`）。
 
@@ -2530,7 +2530,7 @@ A：proxy 变更可以 `SIGHUP` 热重载；`server_addr`、`token` 等连接级
 
 **Q：面板改了 proxy 为什么不持久化？**
 
-A：面板是运行时管理，TOML 配置下会写回 `client.toml`；YAML 配置整体只读，面板增删会返回错误，需手工编辑后重启。长期配置仍建议直接改配置文件。
+A：面板是运行时管理，TOML 配置下会写回 `client.toml` 并保留注释；YAML 配置下同样会写回 `client.yaml`，但会规范化重写，注释和键顺序不保证保留。长期配置仍建议直接改配置文件。
 
 **Q：**`docker pull ghcr.io/binsail/meatus`**&#x20;失败？**
 

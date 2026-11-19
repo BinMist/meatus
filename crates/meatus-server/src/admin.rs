@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! 管理面 HTTP：静态面板、登录会话、CSRF 与只读 JSON API。
+//! 管理面 HTTP：静态面板、登录会话、CSRF 与 JSON API。
 //!
 //! 管理面默认只绑定 loopback；配置 `admin.admin_token` 后，除 `/healthz`
 //! 与登录接口外所有 API 都要求 HttpOnly 会话 Cookie 或 `Authorization: Bearer`。
@@ -598,12 +598,6 @@ async fn settings_write(request: &HttpRequest, state: &AdminState) -> HttpRespon
             json!({"error": "server was started without a config path; online edit is disabled"}),
         );
     };
-    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
-        return HttpResponse::json(
-            409,
-            json!({"error": "YAML config is read-only; edit server.yaml manually and restart"}),
-        );
-    }
     let body: Value = match serde_json::from_slice(&request.body) {
         Ok(value) => value,
         Err(_) => return HttpResponse::json(400, json!({"error": "invalid json"})),
@@ -618,6 +612,7 @@ async fn settings_write(request: &HttpRequest, state: &AdminState) -> HttpRespon
     if let Err(error) = preflight_binds(&state.config, &next).await {
         return HttpResponse::json(400, json!({"error": error}));
     }
+    let config_format = ConfigFormat::from_path(path);
     let backup = match meatus_core::write_server_config(path, &next) {
         Ok(backup) => backup,
         Err(error) => {
@@ -628,6 +623,7 @@ async fn settings_write(request: &HttpRequest, state: &AdminState) -> HttpRespon
 
     warn!(
         path = %path.display(),
+        format = config_format.label(),
         "server settings written; process will restart to apply listeners"
     );
     tokio::spawn(async move {
@@ -642,8 +638,12 @@ async fn settings_write(request: &HttpRequest, state: &AdminState) -> HttpRespon
             "restart_required": true,
             "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
             "config_path": path.display().to_string(),
+            "config_format": config_format.label(),
             "backup": backup.as_ref().map(|path| path.display().to_string()),
-            "message": "配置已写入 server.toml；服务将在 1 秒后重启，面板会短暂断开并需要重新登录。",
+            "message": format!(
+                "配置已写入 {}；服务将在 1 秒后重启，面板会短暂断开并需要重新登录。",
+                path.display()
+            ),
         }),
     )
 }
@@ -1249,6 +1249,10 @@ fn settings_json(state: &AdminState) -> Value {
             "proxy_crud": true,
             "settings": state.config_path.is_some(),
             "config_path": state.config_path.as_ref().map(|path| path.display().to_string()),
+            "config_format": state
+                .config_path
+                .as_deref()
+                .map(|path| ConfigFormat::from_path(path).label()),
         },
     })
 }

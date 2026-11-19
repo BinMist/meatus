@@ -1,16 +1,27 @@
-//! 配置文件回写：保留注释与未编辑字段，原子替换目标文件。
+//! 配置文件回写：保留未编辑字段，原子替换目标文件。
 //!
-//! 只负责“把已经通过校验的新值写回 TOML”，不负责重启或 reload。
+//! TOML 尽量保留注释与键顺序；YAML 会规范化重写，注释和键顺序不保证保留。
+//! 只负责“把已经通过校验的新值写回配置文件”，不负责重启或 reload。
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde_yaml::{Mapping, Number, Sequence, Value as YamlValue};
 use toml_edit::{Array, ArrayOfTables, Document, InlineTable, Item, Table, Value, value};
 
-use crate::config::{ClientConfig, ProxySpec, ProxyType, ServerConfig};
+use crate::config::{ClientConfig, ConfigFormat, ProxySpec, ProxyType, ServerConfig};
 
-/// 写回客户端 proxy：同名替换，不存在则追加。保持其余配置和注释不变。
+/// 写回客户端 proxy：同名替换，不存在则追加。
+///
+/// TOML 保持其余配置和注释不变；YAML 规范化重写。
 pub fn upsert_client_proxy(path: &Path, spec: &ProxySpec) -> Result<(), String> {
+    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
+        return upsert_client_proxy_yaml(path, spec);
+    }
+    upsert_client_proxy_toml(path, spec)
+}
+
+fn upsert_client_proxy_toml(path: &Path, spec: &ProxySpec) -> Result<(), String> {
     let raw = read_config(path)?;
     let mut document = raw
         .parse::<Document>()
@@ -38,7 +49,16 @@ pub fn upsert_client_proxy(path: &Path, spec: &ProxySpec) -> Result<(), String> 
 }
 
 /// 从客户端配置移除指定 proxy；不存在时视为成功。
+///
+/// TOML 保持其余配置和注释不变；YAML 规范化重写。
 pub fn remove_client_proxy(path: &Path, name: &str) -> Result<(), String> {
+    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
+        return remove_client_proxy_yaml(path, name);
+    }
+    remove_client_proxy_toml(path, name)
+}
+
+fn remove_client_proxy_toml(path: &Path, name: &str) -> Result<(), String> {
     let raw = read_config(path)?;
     let mut document = raw
         .parse::<Document>()
@@ -60,8 +80,17 @@ pub fn remove_client_proxy(path: &Path, name: &str) -> Result<(), String> {
     write_atomic(path, &document.to_string())
 }
 
-/// 将 server 的可编辑字段写回 TOML；成功时返回备份文件路径。
+/// 将 server 的可编辑字段写回 TOML / YAML；成功时返回备份文件路径。
+///
+/// TOML 保留注释与键顺序；YAML 规范化重写。
 pub fn write_server_config(path: &Path, next: &ServerConfig) -> Result<Option<PathBuf>, String> {
+    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
+        return write_server_config_yaml(path, next);
+    }
+    write_server_config_toml(path, next)
+}
+
+fn write_server_config_toml(path: &Path, next: &ServerConfig) -> Result<Option<PathBuf>, String> {
     let raw = read_config(path)?;
     let mut document = raw
         .parse::<Document>()
@@ -121,6 +150,263 @@ pub fn write_server_config(path: &Path, next: &ServerConfig) -> Result<Option<Pa
         fs::copy(path, &backup).map_err(|err| format!("backup {}: {err}", path.display()))?;
     }
     write_atomic(path, &document.to_string())?;
+    Ok(had_original.then_some(backup))
+}
+
+fn write_server_config_yaml(path: &Path, next: &ServerConfig) -> Result<Option<PathBuf>, String> {
+    let mut root = read_yaml_config(path, "server")?;
+
+    yaml_set_string(&mut root, "server", "bind_addr", &next.server.bind_addr)?;
+    yaml_set_u64(
+        &mut root,
+        "server",
+        "control_port",
+        u64::from(next.server.control_port),
+    )?;
+    yaml_set_string(&mut root, "tenant", "default", &next.tenant.default)?;
+    yaml_set_u64_array(
+        &mut root,
+        "ports",
+        "range",
+        &[
+            u64::from(next.ports.range[0]),
+            u64::from(next.ports.range[1]),
+        ],
+    )?;
+
+    yaml_set_bool(&mut root, "http", "enabled", next.http.enabled)?;
+    yaml_set_string(&mut root, "http", "bind", &next.http.bind)?;
+    yaml_set_string(&mut root, "http", "https_bind", &next.http.https_bind)?;
+    yaml_set_string(&mut root, "http", "domain", &next.http.domain)?;
+
+    yaml_set_bool(&mut root, "acme", "enabled", next.acme.enabled)?;
+    yaml_set_string(
+        &mut root,
+        "acme",
+        "email",
+        next.acme.email.as_deref().unwrap_or_default(),
+    )?;
+    yaml_set_bool(&mut root, "acme", "staging", next.acme.staging)?;
+
+    yaml_set_bool(&mut root, "socks5", "enabled", next.socks5.enabled)?;
+    yaml_set_string(&mut root, "socks5", "bind", &next.socks5.bind)?;
+
+    yaml_set_string(&mut root, "log", "level", &next.log.level)?;
+    yaml_set_string(
+        &mut root,
+        "log",
+        "format",
+        match next.log.format {
+            crate::config::LogFormat::Text => "text",
+            crate::config::LogFormat::Json => "json",
+        },
+    )?;
+
+    let text =
+        serde_yaml::to_string(&root).map_err(|err| format!("serialize server YAML: {err}"))?;
+    validate_server_yaml_text(&text)?;
+    backup_and_write(path, &text)
+}
+
+fn upsert_client_proxy_yaml(path: &Path, spec: &ProxySpec) -> Result<(), String> {
+    let mut root = read_yaml_config(path, "client")?;
+    let array = yaml_sequence_mut(&mut root, "proxy")?;
+
+    let mut replaced = false;
+    for item in array.iter_mut() {
+        if item
+            .as_mapping()
+            .and_then(|table| table.get(yaml_key("name")))
+            .and_then(YamlValue::as_str)
+            == Some(spec.name.as_str())
+        {
+            *item = proxy_yaml_value(spec);
+            replaced = true;
+            break;
+        }
+    }
+    if !replaced {
+        array.push(proxy_yaml_value(spec));
+    }
+
+    let text =
+        serde_yaml::to_string(&root).map_err(|err| format!("serialize client YAML: {err}"))?;
+    validate_client_yaml_text(&text)?;
+    write_atomic(path, &text)
+}
+
+fn remove_client_proxy_yaml(path: &Path, name: &str) -> Result<(), String> {
+    let mut root = read_yaml_config(path, "client")?;
+    let empty = {
+        let array = yaml_sequence_mut(&mut root, "proxy")?;
+        array.retain(|item| {
+            item.as_mapping()
+                .and_then(|table| table.get(yaml_key("name")))
+                .and_then(YamlValue::as_str)
+                != Some(name)
+        });
+        array.is_empty()
+    };
+    if empty {
+        root.as_mapping_mut()
+            .ok_or_else(|| "client config root must be a mapping".to_string())?
+            .remove(yaml_key("proxy"));
+    }
+
+    let text =
+        serde_yaml::to_string(&root).map_err(|err| format!("serialize client YAML: {err}"))?;
+    validate_client_yaml_text(&text)?;
+    write_atomic(path, &text)
+}
+
+fn proxy_yaml_value(spec: &ProxySpec) -> YamlValue {
+    let mut table = Mapping::new();
+    table.insert(yaml_key("name"), YamlValue::String(spec.name.clone()));
+    table.insert(
+        yaml_key("type"),
+        YamlValue::String(proxy_kind(spec.kind).to_string()),
+    );
+    table.insert(
+        yaml_key("local_addr"),
+        YamlValue::String(spec.local_addr.clone()),
+    );
+
+    if let Some(port) = spec.remote_port {
+        table.insert(
+            yaml_key("remote_port"),
+            YamlValue::Number(Number::from(u64::from(port))),
+        );
+    }
+
+    if !spec.custom_domains.is_empty() {
+        let mut domains = Sequence::new();
+        for domain in &spec.custom_domains {
+            domains.push(YamlValue::String(domain.clone()));
+        }
+        table.insert(yaml_key("custom_domains"), YamlValue::Sequence(domains));
+    }
+
+    let options = &spec.options;
+    if options.rate_limit_bps.is_some()
+        || options.idle_timeout_s.is_some()
+        || options.max_conns.is_some()
+        || !options.allow_cidrs.is_empty()
+    {
+        let mut option_table = Mapping::new();
+        if let Some(value) = options.rate_limit_bps {
+            option_table.insert(
+                yaml_key("rate_limit_bps"),
+                YamlValue::Number(Number::from(value)),
+            );
+        }
+        if let Some(value) = options.idle_timeout_s {
+            option_table.insert(
+                yaml_key("idle_timeout_s"),
+                YamlValue::Number(Number::from(u64::from(value))),
+            );
+        }
+        if let Some(value) = options.max_conns {
+            option_table.insert(
+                yaml_key("max_conns"),
+                YamlValue::Number(Number::from(u64::from(value))),
+            );
+        }
+        if !options.allow_cidrs.is_empty() {
+            let mut cidrs = Sequence::new();
+            for cidr in &options.allow_cidrs {
+                cidrs.push(YamlValue::String(cidr.clone()));
+            }
+            option_table.insert(yaml_key("allow_cidrs"), YamlValue::Sequence(cidrs));
+        }
+        table.insert(yaml_key("options"), YamlValue::Mapping(option_table));
+    }
+
+    YamlValue::Mapping(table)
+}
+
+fn read_yaml_config(path: &Path, kind: &str) -> Result<YamlValue, String> {
+    let raw = read_config(path)?;
+    let root: YamlValue =
+        serde_yaml::from_str(&raw).map_err(|err| format!("parse {kind} config YAML: {err}"))?;
+    if !root.is_mapping() {
+        return Err(format!("{kind} config YAML root must be a mapping"));
+    }
+    Ok(root)
+}
+
+fn yaml_key(key: &str) -> YamlValue {
+    YamlValue::String(key.to_string())
+}
+
+fn yaml_map_mut<'a>(root: &'a mut YamlValue, key: &str) -> Result<&'a mut Mapping, String> {
+    let table = root
+        .as_mapping_mut()
+        .ok_or_else(|| "config root must be a mapping".to_string())?;
+    let key = yaml_key(key);
+    if !table.contains_key(&key) {
+        table.insert(key.clone(), YamlValue::Mapping(Mapping::new()));
+    }
+    table
+        .get_mut(&key)
+        .and_then(YamlValue::as_mapping_mut)
+        .ok_or_else(|| format!("{} must be a mapping", key.as_str().unwrap_or_default()))
+}
+
+fn yaml_sequence_mut<'a>(root: &'a mut YamlValue, key: &str) -> Result<&'a mut Sequence, String> {
+    let table = root
+        .as_mapping_mut()
+        .ok_or_else(|| "config root must be a mapping".to_string())?;
+    let key = yaml_key(key);
+    if !table.contains_key(&key) {
+        table.insert(key.clone(), YamlValue::Sequence(Sequence::new()));
+    }
+    table
+        .get_mut(&key)
+        .and_then(YamlValue::as_sequence_mut)
+        .ok_or_else(|| format!("{} must be a sequence", key.as_str().unwrap_or_default()))
+}
+
+fn yaml_set_string(
+    root: &mut YamlValue,
+    table: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    yaml_map_mut(root, table)?.insert(yaml_key(key), YamlValue::String(value.to_string()));
+    Ok(())
+}
+
+fn yaml_set_bool(root: &mut YamlValue, table: &str, key: &str, value: bool) -> Result<(), String> {
+    yaml_map_mut(root, table)?.insert(yaml_key(key), YamlValue::Bool(value));
+    Ok(())
+}
+
+fn yaml_set_u64(root: &mut YamlValue, table: &str, key: &str, value: u64) -> Result<(), String> {
+    yaml_map_mut(root, table)?.insert(yaml_key(key), YamlValue::Number(Number::from(value)));
+    Ok(())
+}
+
+fn yaml_set_u64_array(
+    root: &mut YamlValue,
+    table: &str,
+    key: &str,
+    values: &[u64],
+) -> Result<(), String> {
+    let mut array = Sequence::new();
+    for value in values {
+        array.push(YamlValue::Number(Number::from(*value)));
+    }
+    yaml_map_mut(root, table)?.insert(yaml_key(key), YamlValue::Sequence(array));
+    Ok(())
+}
+
+fn backup_and_write(path: &Path, text: &str) -> Result<Option<PathBuf>, String> {
+    let backup = backup_path(path);
+    let had_original = path.exists();
+    if had_original {
+        fs::copy(path, &backup).map_err(|err| format!("backup {}: {err}", path.display()))?;
+    }
+    write_atomic(path, text)?;
     Ok(had_original.then_some(backup))
 }
 
@@ -253,6 +539,22 @@ fn validate_server_text(text: &str) -> Result<(), String> {
         .map_err(|err| format!("invalid server config: {err}"))
 }
 
+fn validate_client_yaml_text(text: &str) -> Result<(), String> {
+    let config: ClientConfig =
+        serde_yaml::from_str(text).map_err(|err| format!("invalid client YAML: {err}"))?;
+    config
+        .validate()
+        .map_err(|err| format!("invalid client config: {err}"))
+}
+
+fn validate_server_yaml_text(text: &str) -> Result<(), String> {
+    let config: ServerConfig =
+        serde_yaml::from_str(text).map_err(|err| format!("invalid server YAML: {err}"))?;
+    config
+        .validate()
+        .map_err(|err| format!("invalid server config: {err}"))
+}
+
 fn backup_path(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
@@ -262,7 +564,11 @@ fn backup_path(path: &Path) -> PathBuf {
 }
 
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    let tmp = path.with_extension("toml.tmp");
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("tmp");
+    let tmp = path.with_extension(format!("{extension}.tmp"));
     fs::write(&tmp, text).map_err(|err| format!("write {}: {err}", tmp.display()))?;
     let permissions = fs::metadata(path).ok().map(|meta| meta.permissions());
     if let Some(permissions) = &permissions {
@@ -363,6 +669,60 @@ remote_port = 21000
         assert_eq!(parsed.proxies[0].name, "new");
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    fn upsert_and_remove_client_proxy_yaml_preserves_env_placeholder() {
+        let path = temp_path("client.yaml");
+        let original = r#"
+client:
+  server_addr: "tunnel.example.com:7000"
+  server_name: "tunnel.example.com"
+  client_id: "home-nas"
+  tenant: "default"
+  token: "${MEATUS_CLIENT_TOKEN}"
+  server_ca_cert: "certs/server.crt"
+
+proxy:
+  - name: "old"
+    type: "tcp"
+    local_addr: "127.0.0.1:8080"
+    remote_port: 21000
+"#;
+        fs::write(&path, original).expect("write original");
+
+        let spec = ProxySpec {
+            name: "new".to_string(),
+            kind: ProxyType::Http,
+            local_addr: "127.0.0.1:3000".to_string(),
+            remote_port: None,
+            custom_domains: vec!["app.example.com".to_string()],
+            options: ProxyOptions {
+                rate_limit_bps: Some(1_000_000),
+                idle_timeout_s: Some(30),
+                max_conns: Some(4),
+                allow_cidrs: vec!["10.0.0.0/8".to_string()],
+            },
+        };
+        upsert_client_proxy(&path, &spec).expect("upsert yaml");
+        let raw = fs::read_to_string(&path).expect("read");
+        assert!(raw.contains("${MEATUS_CLIENT_TOKEN}"), "{raw}");
+        let parsed: ClientConfig = serde_yaml::from_str(&raw).expect("parse written yaml");
+        assert_eq!(parsed.proxies.len(), 2);
+        let new = parsed
+            .proxies
+            .iter()
+            .find(|proxy| proxy.name == "new")
+            .expect("new proxy");
+        assert_eq!(new.kind, ProxyType::Http);
+        assert_eq!(new.custom_domains, vec!["app.example.com".to_string()]);
+
+        remove_client_proxy(&path, "old").expect("remove yaml");
+        let raw = fs::read_to_string(&path).expect("read");
+        let parsed: ClientConfig = serde_yaml::from_str(&raw).expect("parse written yaml");
+        assert_eq!(parsed.proxies.len(), 1);
+        assert_eq!(parsed.proxies[0].name, "new");
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[cfg(test)]
@@ -391,5 +751,65 @@ mod server_tests {
         assert_eq!(parsed.log.level, "warn");
         assert_eq!(parsed.log.format, crate::config::LogFormat::Json);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn server_yaml_write_updates_fields_and_keeps_env_placeholder() {
+        let path = std::env::temp_dir().join(format!(
+            "meatus-server-yaml-edit-{}.yaml",
+            std::process::id()
+        ));
+        let original = r#"
+server:
+  bind_addr: "127.0.0.1"
+  control_port: 7000
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+tenant:
+  default: "default"
+
+auth:
+  mode: "hmac"
+  provider: "local"
+  clients:
+    - id: "home-nas"
+      tenant: "default"
+      token_sha256: "${MEATUS_TOKEN_SHA256}"
+
+ports:
+  range: [20000, 30000]
+
+admin:
+  bind: "127.0.0.1:7400"
+  panel: true
+  admin_token: "${MEATUS_ADMIN_TOKEN}"
+
+log:
+  level: "info"
+  format: "text"
+"#;
+        fs::write(&path, original).expect("write original");
+        let mut next: ServerConfig = serde_yaml::from_str(original).expect("parse example");
+        next.http.enabled = false;
+        next.http.domain = "panel.example.com".to_string();
+        next.log.level = "warn".to_string();
+        next.log.format = crate::config::LogFormat::Json;
+
+        let backup = write_server_config(&path, &next).expect("write server yaml");
+        assert!(backup.is_some());
+        let raw = fs::read_to_string(&path).expect("read");
+        assert!(raw.contains("${MEATUS_TOKEN_SHA256}"), "{raw}");
+        assert!(raw.contains("${MEATUS_ADMIN_TOKEN}"), "{raw}");
+        assert!(raw.contains("domain: panel.example.com"), "{raw}");
+        assert!(raw.contains("level: warn"), "{raw}");
+        assert!(raw.contains("format: json"), "{raw}");
+        let parsed: ServerConfig = serde_yaml::from_str(&raw).expect("parse result");
+        assert_eq!(parsed.log.level, "warn");
+        assert_eq!(parsed.log.format, crate::config::LogFormat::Json);
+        let _ = fs::remove_file(path);
+        if let Some(backup) = backup {
+            let _ = fs::remove_file(backup);
+        }
     }
 }

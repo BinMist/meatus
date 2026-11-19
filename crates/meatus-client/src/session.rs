@@ -9,8 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use meatus_core::{
-    ClientConfig, ConfigFormat, MultiplexedStream, ProxySpec, ProxyType as ConfigProxyType,
-    TargetPolicy, WireError, multiplex, read_frame, write_frame,
+    ClientConfig, MultiplexedStream, ProxySpec, ProxyType as ConfigProxyType, TargetPolicy,
+    WireError, multiplex, read_frame, write_frame,
 };
 use meatus_proto::{
     PROTOCOL_VERSION,
@@ -409,9 +409,7 @@ async fn control_loop(
                         match result {
                             Ok(spec) => {
                                 let persisted = config_path.map_or(Ok(()), |path| {
-                                    ensure_writable_config(path).and_then(|()| {
-                                        meatus_core::upsert_client_proxy(path, &spec)
-                                    })
+                                    meatus_core::upsert_client_proxy(path, &spec)
                                 });
                                 if let Err(error) = persisted {
                                     warn!(%error, "admin add proxy config write failed");
@@ -466,9 +464,7 @@ async fn control_loop(
                     Some(control_msg::Kind::AdminRemoveProxy(cmd)) => {
                         let name = cmd.name;
                         let persisted = config_path.map_or(Ok(()), |path| {
-                            ensure_writable_config(path).and_then(|()| {
-                                meatus_core::remove_client_proxy(path, &name)
-                            })
+                            meatus_core::remove_client_proxy(path, &name)
                         });
                         if let Err(error) = persisted {
                             warn!(%error, "admin remove proxy config write failed");
@@ -906,13 +902,6 @@ fn now_ms() -> i64 {
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
-fn ensure_writable_config(path: &Path) -> Result<(), String> {
-    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
-        return Err("YAML config is read-only; edit client.yaml manually and restart".to_string());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -930,11 +919,8 @@ mod tests {
     }
 
     #[test]
-    fn yaml_config_is_read_only() {
-        assert!(ensure_writable_config(Path::new("client.toml")).is_ok());
-        let error = ensure_writable_config(Path::new("client.yaml")).expect_err("yaml rejected");
-        assert!(error.contains("read-only"));
-        assert!(ensure_writable_config(Path::new("client.yml")).is_err());
+    fn spec_helper_is_available() {
+        assert_eq!(spec("p0", 20000).name, "p0");
     }
 
     #[tokio::test]

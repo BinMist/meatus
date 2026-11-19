@@ -44,7 +44,7 @@ sudo ss -ltnp | grep -E ':(7000|7400|20022)\b'
 | HTTP 404 | `custom_domains` 与 `Host` 是否一致；`[http] enabled` 是否 true；client 是否在线 | 域名小写、无空白；重启两端 |
 | 面板 401 | 是否配置了 `admin_token`；token 是否取对 | 读 `/etc/meatus/admin.token`，连续失败 5 次会锁 10 分钟 |
 | 面板打不开 | 是否只绑 `127.0.0.1:7400`；SSH 隧道是否建立 | `ssh -L 7400:127.0.0.1:7400 ...`，先 curl healthz |
-| YAML 只读 | 是否编辑了 `server.yaml` / `client.yaml` | 面板不写回 YAML；手工改文件后重启 |
+| YAML 写回 | 是否编辑了 `server.yaml` / `client.yaml`；是否需要保留注释 | 面板可写回，但 YAML 会规范化重写；需保留注释时改用 TOML |
 | ACR 401 | 是否 `docker login registry.cn-hangzhou.aliyuncs.com` | ACR 是私有仓库，匿名拉取会 401 |
 | `ghcr.io` 拉取失败 | GHCR 是否已发布 | 当前用 ACR，不要给 `ghcr.io` 地址 |
 | Docker client 访问不到宿主机 | 目标地址是否 `127.0.0.1` | 用 `host.docker.internal` 或 `host-gateway` |

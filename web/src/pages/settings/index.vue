@@ -144,11 +144,12 @@ const readonlyItems = computed(() => {
   ]
 })
 
-const footText = computed(() =>
-  settings.value
-    ? `配置路径：${settings.value.writes.config_path || '未知'} · 最后读取：${lastRead.value}`
-    : '配置读取中…',
-)
+const footText = computed(() => {
+  if (!settings.value) return '配置读取中…'
+  const format = settings.value.writes.config_format
+  const formatText = format ? `（${format.toUpperCase()}）` : ''
+  return `配置路径：${settings.value.writes.config_path || '未知'}${formatText} · 最后读取：${lastRead.value}`
+})
 
 function toDraft(current: SettingsSnapshot): SettingsDraft {
   return {

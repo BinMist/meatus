@@ -2,14 +2,14 @@
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.85fr);
   align-items: start;
-  gap: 16px;
+  gap: var(--mt-gap);
 }
 
 .mt-settings-main,
 .mt-settings-aside {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--mt-gap);
   min-width: 0;
 }
 

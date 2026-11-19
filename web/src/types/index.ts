@@ -95,6 +95,7 @@ export interface SettingsSnapshot {
     proxy_crud: boolean
     settings: boolean
     config_path: string | null
+    config_format?: 'toml' | 'yaml' | 'auto' | null
   }
 }
 
@@ -103,6 +104,7 @@ export interface SettingsUpdateResponse {
   restart_required: boolean
   restart_delay_s: number
   config_path: string
+  config_format?: 'toml' | 'yaml' | 'auto'
   backup: string | null
   message: string
 }

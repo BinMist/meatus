@@ -2,6 +2,29 @@
 
 本文件记录 Meatus 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [Unreleased]
+
+## [1.1.1] - 2026-11-19
+
+V1.1.1 补丁：YAML 管理面写回与管理面板细节修正。
+
+### Added
+
+- 管理设置响应新增 `config_format`，设置页显示当前配置为 TOML 还是 YAML。
+- 管理面板 Proxy / 证书页搜索栏补充重置、查询操作按钮；日志页桌面端改为面板内滚动，避免底部被裁切。
+
+### Changed
+
+- YAML 配置支持管理面写回：`server.yaml` 的系统设置与 `client.yaml` 的 proxy 增删都会持久化；YAML 采用规范化重写，注释和键顺序不保证保留。TOML 仍保留注释与键顺序。
+- server YAML 写回前生成 `.bak` 备份；写回失败不覆盖原文件。
+- 管理面板操作列、表单栅格、页面间距与圆角细节统一；设置页提示补充 YAML 规范化重写说明。
+- `README.md`、`docs/INSTALL.md`、`docs/USAGE.md`、YAML 示例与教程 Skill 更新为当前写回行为。
+
+### Fixed
+
+- 移除管理面与客户端对 YAML 配置的只读拒绝，修复 YAML 配置下无法在线保存设置 / proxy 的问题。
+- 修复日志页在桌面端高度不足时被底部裁切的问题。
+
 ## [1.1.0] - 2026-11-18
 
 V1.1：公网可用性加固 + ACR 镜像发布 + YAML 配置。

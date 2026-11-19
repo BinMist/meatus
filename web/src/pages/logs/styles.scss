@@ -13,3 +13,40 @@
 .mt-log-line__level.is-error {
   font-weight: 700;
 }
+
+/* 桌面端让日志面板占满剩余视口，列表在面板内部滚动，避免底部被裁切。 */
+@media (min-width: 901px) {
+  .page--logs {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .page--logs > .sl-page-header,
+  .page--logs > .band,
+  .page--logs > .band-label {
+    flex: none;
+  }
+
+  .page--logs > .mt-panel-flush {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .page--logs .mt-panel-flush .sl-panel__body {
+    display: flex;
+    flex: 1 1 0;
+    min-height: 0;
+  }
+
+  .page--logs .mt-log-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    max-height: none;
+  }
+}

@@ -11,16 +11,16 @@
 Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**完全开源（Apache-2.0）、面向个人 / 小团队自托管**。核心代码、协议、面板和部署脚本都在本仓库中。
 
 - **传输**：TCP + TLS 1.3 + yamux（QUIC 留 v2）
-- **配置**：单二进制 + TOML（默认）/ YAML（V1.1 支持，只读）；服务端只存 token 的 SHA-256
+- **配置**：单二进制 + TOML（默认）/ YAML（V1.1 支持，管理面可写）；服务端只存 token 的 SHA-256
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，HTTP proxy 的精确域名由 server 用 Let's Encrypt HTTP-01 自动签发、TLS 终止并缓存/续期
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **状态**：`1.1.0` 已发布并完成 Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>。当前发布形态为 macOS aarch64、Linux x86_64 musl 静态包 + 阿里云 ACR 多架构镜像（ACR 当前为私有，需先 `docker login`）；GHCR 与 GitHub Release 暂缓。V1.1 已通过 88 passed / 1 ignored、fmt / clippy、fuzz 120s × 2、30min soak、20% 丢包 30min 回归；24h soak 运行中。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **状态**：`1.1.0` 已发布并完成 Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>。当前发布形态为 macOS aarch64、Linux x86_64 musl 静态包 + 阿里云 ACR 多架构镜像（ACR 当前为私有，需先 `docker login`）；GHCR 与 GitHub Release 暂缓。`1.1.1` 是 YAML 写回补丁，代码已收口，发布资产待构建；安装示例仍指向已发布的 `1.1.0`。V1.1 已通过 88 passed / 1 ignored、fmt / clippy、fuzz 120s × 2、30min soak、20% 丢包 30min 回归；24h soak 待补最终记录。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
 ## V1.1 主要更新
 
 - **管理面独立 TLS**：`[admin.tls]` 支持 `enabled` / `cert` / `key` / `hsts`，不复用隧道证书；非 loopback 仍强制 `admin_token`。
-- **YAML 只读配置**：支持 `.yaml` / `.yml`，`meatus server|client|check --format auto|toml|yaml`；面板不写回 YAML。
+- **YAML 配置**：支持 `.yaml` / `.yml`，`meatus server|client|check --format auto|toml|yaml`；`1.1.0` 为只读，`1.1.1` 起支持面板写回，采用规范化重写，注释和键顺序不保证保留。
 - **代理头信任收敛**：`admin.trust_forwarded_proto` 默认 `false`，只在可信反向代理后显式开启。
 - **CSP 收紧**：`style-src 'self'`，移除 `unsafe-inline`；面板样式全部走外部样式表与语义 token。
 - **发布物料补齐**：发布包内置 `SBOM.spdx.json`、第三方许可证声明与许可证原文；镜像 SBOM 单独输出。
@@ -76,7 +76,7 @@ mkdir -p certs
 cargo run -p meatus-cli -- gen-cert \
   --domain tunnel.example.com --domain 127.0.0.1 --out certs
 
-# 3. 配置（TOML 默认；需要 YAML 时用 config/*.example.yaml，YAML 只读）
+# 3. 配置（TOML 默认；需要 YAML 时用 config/*.example.yaml，YAML 管理面可写但会规范化重写）
 cp config/server.example.toml server.toml
 cp config/client.example.toml client.toml
 # server.toml：tls_cert / tls_key、clients[].token_sha256
@@ -164,10 +164,10 @@ hsts = true
 六个页面：登录、总览、Proxy 管理、证书状态、实时日志、系统设置。
 
 - 总览：5 秒轮询 `/api/v1/status`，展示客户端 / proxy / 活跃连接 / uptime 与累计流量曲线。
-- Proxy 管理：通过 admin API 新增、编辑、删除运行中的 proxy；server 下发管理帧到指定 `run_id` 的 client，等待 ack 后生效，失败回滚上一份 runtime。client 启动时带 `--config` 会把变更写回 `client.toml`，重启后仍保留；YAML client 配置整体只读。写操作走 CSRF 校验，表单支持类型、域名、本地地址、端口、连接数 / 限速 / 空闲 / CIDR 高级项。
+- Proxy 管理：通过 admin API 新增、编辑、删除运行中的 proxy；server 下发管理帧到指定 `run_id` 的 client，等待 ack 后生效，失败回滚上一份 runtime。client 启动时带 `--config` 会把变更写回 `client.toml` / `client.yaml`，重启后仍保留；YAML 会规范化重写。写操作走 CSRF 校验，表单支持类型、域名、本地地址、端口、连接数 / 限速 / 空闲 / CIDR 高级项。
 - 证书状态：读取 `acme.cert_dir` 中的 PEM，解析叶证书 SAN、到期时间、剩余天数、序列号、签发者与链长度；状态区分 managed / expiring / expired / pending / not-configured。
 - 实时日志：2 秒拉取 `/api/v1/logs?limit=300`，页脚显示总行数与当前展示行数；内容来自进程内 2000 行环形缓冲，重启即清空，不落盘、不包含 admin token。
-- 系统设置：在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志并写回 `server.toml`；保存前校验配置和端口预检，成功后自动重启生效。TLS、admin 绑定、认证 token 与会话策略保持只读；YAML 配置不写回。
+- 系统设置：在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志并写回 `server.toml` / `server.yaml`；保存前校验配置和端口预检，成功后自动重启生效。TLS、admin 绑定、认证 token 与会话策略保持只读；YAML 会规范化重写。
 
 安全边界：
 

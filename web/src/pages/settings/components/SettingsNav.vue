@@ -11,7 +11,7 @@
       @click="handleSelect"
     />
     <div class="settings-nav-note">
-      认证、会话与 TLS 路径只读；保存会备份原文件并重启 server。
+      认证、会话与 TLS 路径只读；保存会备份原文件并重启 server；YAML 写回会规范化重写。
     </div>
   </aside>
 </template>

@@ -21,7 +21,7 @@
     </template>
 
     <sl-form :model="form" label-position="top" @submit.prevent>
-      <div class="mt-form-grid mt-form-grid--compact">
+      <div class="mt-form-grid mt-form-grid--four mt-form-grid--compact">
         <sl-form-item label="客户端" prop="run_id" required>
           <template #label="{ label, required }">
             <FormLabel
@@ -116,7 +116,7 @@
       />
 
       <div class="mt-form-section mt-form-section--tight">高级选项</div>
-      <div class="mt-form-grid mt-form-grid--compact">
+      <div class="mt-form-grid mt-form-grid--four mt-form-grid--compact">
         <sl-form-item label="最大连接数">
           <template #label="{ label }">
             <FormLabel :label="label" hint="0 表示不限制该 proxy 的并发连接数。" />

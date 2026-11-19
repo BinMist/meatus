@@ -18,12 +18,18 @@
         />
       </label>
     </template>
+
+    <template #actions>
+      <sl-button type="secondary" native-type="reset">重置</sl-button>
+      <sl-button type="primary" native-type="submit">查询</sl-button>
+    </template>
   </sl-search-form>
 </template>
 
 <script setup lang="ts">
 import { SlSearchForm } from '@sailonix/ui/search-form'
 import { SlSelect } from '@sailonix/ui/select'
+import { SlButton } from '@sailonix/ui/button'
 import { proxyTypeOptionsAll } from '../constants'
 
 defineOptions({ name: 'ProxySearchBar' })
