@@ -13,6 +13,7 @@
 <script setup lang="ts">
 import { SlStatusTag } from '@sailonix/ui/status-tag'
 import type { SessionMode } from './types'
+import { APP_VERSION_TAG } from '../version'
 
 defineOptions({ name: 'SidebarFooter' })
 
@@ -21,6 +22,6 @@ withDefaults(
     mode: SessionMode
     version?: string
   }>(),
-  { version: 'v1.1.0' },
+  { version: APP_VERSION_TAG },
 )
 </script>

@@ -78,6 +78,8 @@ export interface SettingsSnapshot {
     cert_dir: string
     email: string | null
     email_configured: boolean
+    dns_provider: string | null
+    dns_token_configured: boolean
   }
   socks5: {
     enabled: boolean
@@ -127,6 +129,9 @@ export interface CertificateEntry {
   source: string
   challenge: string
   status: string
+  acme_state: string | null
+  error: string | null
+  last_attempt: number | null
   not_after: number | null
   days_left: number | null
   serial: string | null

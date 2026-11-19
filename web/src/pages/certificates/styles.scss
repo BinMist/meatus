@@ -141,6 +141,17 @@
 .mt-cert-facts .sl-descriptions__label {
   color: var(--mt-ink-3);
 }
+
+.mt-cert-error {
+  margin: 0;
+  overflow: hidden;
+  color: var(--mt-rose);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 520px) {
   .mt-panel-flush .sl-panel__actions {
     display: none;

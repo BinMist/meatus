@@ -7,7 +7,7 @@
     <dl class="mt-cert-card__facts">
       <div>
         <dt>类型 / 来源</dt>
-        <dd>{{ row.type }} · {{ row.sourceText }}</dd>
+        <dd>{{ row.type }} · {{ row.sourceText }} · {{ row.challengeText }}</dd>
       </div>
       <div>
         <dt>到期 / 剩余</dt>
@@ -21,6 +21,9 @@
         <dd>{{ row.chainText }}</dd>
       </div>
     </dl>
+    <p v-if="row.errorText" class="mt-cert-error" :title="String(row.errorText)">
+      续期失败：{{ row.errorText }}
+    </p>
   </article>
 </template>
 

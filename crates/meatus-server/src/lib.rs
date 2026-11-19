@@ -199,6 +199,7 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
         Arc::new(state.config.clone()),
         Arc::clone(&state.logs),
         Arc::clone(&state.admin_bus),
+        state.acme.clone(),
     )
     .with_config_path(config_path);
     let admin_task = tokio::spawn(admin::serve(

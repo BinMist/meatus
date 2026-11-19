@@ -2,7 +2,31 @@
 
 本文件记录 Meatus 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
-## [Unreleased]
+## [1.2.1] - 2026-11-19
+
+V1.2.1：代理连通性诊断、Cloudflare / DNSPod DNS-01 泛域名与镜像健康检查。
+
+### Added
+
+- 面板 Proxy 行新增“测试本地服务”按钮：`POST /api/v1/proxies/{name}/probe`，经控制帧 `Probe` / `ProbeResult` 由客户端探测 `local_addr`。
+- 诊断覆盖 TCP / HTTP / HTTPS / UDP；SOCKS5 返回“需实际请求验证”。结果含可达性、延迟与错误码，单 proxy 限速 1 次 / 秒。
+- 新增 `meatus_probe_total{result="ok|fail"}` 指标；诊断不进入正常转发统计。
+- 客户端 `Hello.caps` 声明 `probe`；老客户端不声明时，面板明确提示“当前客户端不支持诊断”。
+- ACME 新增 DNS-01 泛域名自动签发：支持 Cloudflare 与腾讯云 DNSPod，按 `_acme-challenge.<域名>` 创建/清理 TXT，支持 `*.example.com` 多级子域名 SNI 终止。
+- DNS-01 证书到期前 30 天自动续期；续期失败保留旧证书与 resolver，失败原因写入 `/api/v1/certificates` 并在面板证书页展示。
+- `dns_api_token` 支持 `${VAR}` 环境变量展开，token 不写日志、不进入 `/api/v1/settings`。
+- 面板系统设置新增 ACME 校验方式、Cloudflare / DNSPod provider 与 API Token 编辑；已配置 token 时留空保留，面板不回显明文。
+
+### Changed
+
+- 版本升至 `1.2.1`。
+- `README.md`、`docs/USAGE.md`、配置示例同步代理诊断与 Cloudflare / DNSPod DNS-01 行为。
+
+### Fixed
+
+- TLS 泛域名匹配收紧为一级标签：`*.example.com` 只终止 `app.example.com`，不再错误命中 `a.b.example.com`，避免向更深层级返回 SAN 不匹配的证书。
+- 修复面板 DNS Provider 初始为空导致 DNS-01 无法保存的问题，默认回填 `cloudflare`。
+- Docker 镜像内置 `HEALTHCHECK`，默认探测 `http://127.0.0.1:7400/healthz`，部署时不再需要手工补 `--health-cmd`；改过管理面端口时可用 `MEATUS_HEALTH_URL` 覆盖。
 
 ## [1.2.0] - 2026-11-19
 

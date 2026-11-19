@@ -13,7 +13,7 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **传输**：TCP + TLS 1.3 + yamux（QUIC 留 v2）
 - **配置**：单二进制 + TOML（默认）/ YAML（V1.1 支持，管理面可写）；服务端只存 token 的 SHA-256
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
-- **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，HTTP proxy 的精确域名由 server 用 Let's Encrypt HTTP-01 自动签发、TLS 终止并缓存/续期
+- **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，精确域名由 server 用 HTTP-01 自动签发、TLS 终止并缓存/续期，泛域名走 DNS-01（支持 Cloudflare / DNSPod）
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
 - **状态**：当前版本 `1.2.0`，源码与 ACR 多架构镜像（`1.2.0` / `1.2` / `latest`）已发布；Gitee Release 见 <https://gitee.com/binsail/meatus/releases/tag/v1.2.0>。`1.1.1` 不单独发布，其 YAML 写回与面板修正并入 `1.2.0`。发布形态为 macOS aarch64、Linux x86_64 musl 静态包 + 阿里云 ACR 多架构镜像（ACR 当前为私有，需先 `docker login`）；GHCR 与 GitHub Release 暂缓。V1.1 已通过 88 passed / 1 ignored、fmt / clippy、fuzz 120s × 2、30min soak、20% 丢包 30min 回归；24h soak 待补最终记录。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
@@ -27,11 +27,11 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 ## V1.1 主要更新
 
 - **管理面独立 TLS**：`[admin.tls]` 支持 `enabled` / `cert` / `key` / `hsts`，不复用隧道证书；非 loopback 仍强制 `admin_token`。
-- **YAML 配置**：支持 `.yaml` / `.yml`，`meatus server|client|check --format auto|toml|yaml`；`1.1.0` 为只读，`1.1.1` 起支持面板写回，采用规范化重写，注释和键顺序不保证保留。
+- **YAML 配置**：支持 `.yaml` / `.yml`，`meatus server|client|check --format auto|toml|yaml`；`1.1.0` 为只读，`1.2.0` 起支持面板写回，采用规范化重写，注释和键顺序不保证保留。
 - **代理头信任收敛**：`admin.trust_forwarded_proto` 默认 `false`，只在可信反向代理后显式开启。
 - **CSP 收紧**：`style-src 'self'`，移除 `unsafe-inline`；面板样式全部走外部样式表与语义 token。
 - **发布物料补齐**：发布包内置 `SBOM.spdx.json`、第三方许可证声明与许可证原文；镜像 SBOM 单独输出。
-- **镜像发布**：linux/amd64 + linux/arm64 多架构，ACR 提供 `1.1.0` / `1.1` / `latest` 三个标签；GHCR 路径保留，当前未推送。
+- **镜像发布**：linux/amd64 + linux/arm64 多架构，ACR 提供 `1.2.0` / `1.2` / `latest` 三个标签；GHCR 路径保留，当前未推送。
 
 ## 目录结构
 
@@ -128,13 +128,14 @@ kill -HUP <client_pid>
 - 控制面：客户端先连 control 端口，TLS 1.3 握手后由客户端打开 control stream 并发 `Hello`；服务端回 `Challenge`，客户端用 `HMAC-SHA256(key=sha256(token), nonce)` 应答。
 - 数据面：TCP 每个公网连接一条 yamux stream，先写 `StreamHeader` 再双向拷贝；UDP 每个 proxy 一条专用 stream，帧为 `UdpPacket{session_id,payload}`，空闲 60s 回收会话，单包 ≤1500B，默认上限 2048 会话/proxy。
 - HTTP：server `[http] enabled = true` 时绑定 `http.bind` / `https_bind`；`Host` 精确优先、再最长后缀泛域名，未知 404，非法请求 400，超过 route `max_conns` 返回 503。代理类型写 `type = "http"`，`custom_domains` 必填，`remote_port` 必须为 0。
-- HTTPS：同一 listener 读取 TLS ClientHello 的 SNI。默认走 `type = "https"` 的 **SNI 透传**，客户端 `local_addr` 指向自己的 TLS 服务；`acme.enabled = true` 且域名由 `type = "http"` 注册时，server 用 ACME HTTP-01 签发证书并终止 TLS，再把明文 HTTP 转发给本地 HTTP 服务。无 SNI / 无路由直接断开。
-- SOCKS5：server `[socks5] enabled = true` 才监听；只接受 `CONNECT` 与 IPv4/IPv6 目标，域名目标暂不支持。目标先过服务端 `allow_cidrs`，再写入 `StreamHeader.dst_hint`，由 client 从内网侧发起连接并做第二次白名单校验；默认拒绝公网目标。当前只登记一个全局路由，`remote_port` 必须为 0。
-- ACME：仅支持精确域名 + HTTP-01；泛域名需要 DNS-01，当前不自动签发，请继续用 `type = "https"` 自带证书。证书与账户缓存在 `acme.cert_dir`，文件 0600、目录 0700；`staging = true` 指向 Let's Encrypt staging。TLS-ALPN-01 尚未接入。
+- HTTPS：同一 listener 读取 TLS ClientHello 的 SNI。默认走 `type = "https"` 的 **SNI 透传**，客户端 `local_addr` 指向自己的 TLS 服务；`acme.enabled = true` 且域名由 `type = "http"` 注册时，精确域名优先用 ACME HTTP-01，泛域名用 DNS-01 签发证书并终止 TLS；DNS-01 下未启用 HTTP 时，精确域名也走 DNS-01；泛域名证书只覆盖一级子域名。签发后把明文 HTTP 转发给本地 HTTP 服务。无 SNI / 无路由直接断开。
+- SOCKS5：server `[socks5] enabled = true` 才监听；只接受 `CONNECT`，支持 IPv4/IPv6 与域名目标。域名目标必须命中 client `options.allow_domains`（精确域名或 `*.suffix`），由 client 解析 DNS 并按 `allow_cidrs` 过滤后固定首个允许 IP；server 只做白名单校验，不解析内网域名。未配置 `allow_domains` 时域名目标仍拒绝，默认拒绝公网目标。当前只登记一个全局路由，`remote_port` 必须为 0。
+- ACME：精确域名支持 HTTP-01；泛域名支持 Cloudflare / DNSPod DNS-01，按 `_acme-challenge.<域名>` 创建/清理 TXT，到期前 30 天续期，续期失败保留旧证书。证书与账户缓存在 `acme.cert_dir`，文件 0600、目录 0700；`staging = true` 指向 Let's Encrypt staging。TLS-ALPN-01 尚未接入。
 - 心跳：客户端 10s Ping、30s 无 Pong 重连；服务端 15s Ping、45s 无消息关闭。
 - 重连：`1→2→4→8→16→30s`，±20% 抖动；重连后全量重注册 proxy。`kill -9 client` 需要 systemd / Docker 等 supervisor 拉起。
 - 证书：默认系统根；自签 / 私有 CA 用 `client.server_ca_cert`。`server_public_key_pin` 支持 `sha256:<64hex>` 或裸 64 hex：先校验证书链，再比对叶子 SPKI SHA-256。
-- 限速 / 统计：每 proxy 一个令牌桶（`rate_limit_bps`，默认不限），超限只延迟不丢包；client 每 10s 上报 `Stats`，server 输出 Prometheus 文本到 `/metrics`，`/healthz` 返回 uptime。
+- 限速 / 统计：每 proxy 一个令牌桶（`rate_limit_bps`，默认不限），超限只延迟不丢包；client 每 10s 上报 `Stats`，server 输出 Prometheus 文本到 `/metrics`（含 `meatus_probe_total{result}`），`/healthz` 返回 uptime。
+- 代理诊断：面板 Proxy 行的“测试”按钮经控制帧 `Probe` / `ProbeResult` 由客户端探测 `local_addr`；TCP / HTTP / HTTPS 返回可达性与延迟，UDP 只做 socket bind/connect，SOCKS5 提示“需实际请求验证”。单 proxy 限速 1 次 / 秒、超时 3 秒，不影响正常转发。
 - 热重载：client 收到 `SIGHUP` 后重新解析配置并做 proxy 差量（新增 / 删除 / 修改先删后加），失败保留旧配置；`server_addr` / `token` 等连接级字段变更需重启。
 - 管理面：`/metrics`、`/healthz`、`/api/v1/status`、`/api/v1/settings`、`/api/v1/certificates`、`/api/v1/logs`；配置 `admin_token` 后除 `/healthz` 外均要求 Cookie 会话或 `Authorization: Bearer`。`meatus status` 直接请求 `/api/v1/status` 并输出 clients/proxies 表格。
 - 管理面板：`meatus server` 启动后访问 `http://127.0.0.1:7400/`；登录用 `admin_token` 换 HttpOnly、SameSite=Strict 会话 Cookie，登出校验 `X-Meatus-CSRF`；连续失败 5 次锁 10 分钟。详见下方面板章节。

@@ -27,12 +27,18 @@ http:
   enabled: false
   bind: "0.0.0.0:80"
   https_bind: "0.0.0.0:443"
-  domain: "*.tunnel.example.com"
+  domain: "tunnel.example.com"
 
 acme:
   enabled: false
   email: "ops@example.com"
-  challenge: "http-01"
+  challenge: "http-01" # http-01 | dns-01；泛域名必须 dns-01
+  # challenge: "dns-01"
+  # dns_provider: "cloudflare"
+  # dns_api_token: "REPLACE_WITH_CLOUDFLARE_API_TOKEN" # 需要 Zone:Read + Zone.DNS:Edit
+  # 腾讯云 DNSPod 示例（二选一）：
+  # dns_provider: "dnspod"
+  # dns_api_token: "REPLACE_WITH_DNSPOD_ID,REPLACE_WITH_DNSPOD_TOKEN" # 控制台生成的 ID,Token
   staging: true
 
 socks5:

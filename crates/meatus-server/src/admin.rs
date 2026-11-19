@@ -59,6 +59,7 @@ pub struct AdminState {
     config_path: Option<PathBuf>,
     logs: Arc<LogBuffer>,
     admin_bus: Arc<AdminBus>,
+    acme: Option<Arc<crate::acme::AcmeManager>>,
     admin_token: Option<Arc<str>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     failures: Arc<Mutex<HashMap<IpAddr, LoginFailure>>>,
@@ -79,7 +80,8 @@ impl AdminState {
         config: Arc<ServerConfig>,
         logs: Arc<LogBuffer>,
         admin_bus: Arc<AdminBus>,
-        ) -> Self {
+        acme: Option<Arc<crate::acme::AcmeManager>>,
+    ) -> Self {
         let admin_token = config
             .admin
             .admin_token
@@ -92,6 +94,7 @@ impl AdminState {
             config,
             logs,
             admin_bus,
+            acme,
             admin_token,
             config_path: None,
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -1324,6 +1327,41 @@ fn merge_server_settings(current: &ServerConfig, body: &Value) -> Result<ServerC
                 .map(ToString::to_string);
         }
         set_bool(&mut next.acme.staging, section, "staging")?;
+        if let Some(value) = section.get("challenge").and_then(Value::as_str) {
+            next.acme.challenge = match value.trim() {
+                "http-01" => meatus_core::AcmeChallenge::Http01,
+                "dns-01" => meatus_core::AcmeChallenge::Dns01,
+                "tls-alpn-01" => meatus_core::AcmeChallenge::TlsAlpn01,
+                other => {
+                    return Err(format!(
+                        "acme.challenge must be http-01/dns-01/tls-alpn-01, got {other}"
+                    ));
+                }
+            };
+        }
+        if let Some(value) = section.get("dns_provider") {
+            if !value.is_null() && !value.is_string() {
+                return Err("acme.dns_provider must be a string".to_string());
+            }
+            next.acme.dns_provider = value
+                .as_str()
+                .map(str::trim)
+                .filter(|provider| !provider.is_empty())
+                .map(ToString::to_string);
+        }
+        if let Some(value) = section.get("dns_api_token") {
+            if !value.is_null() && !value.is_string() {
+                return Err("acme.dns_api_token must be a string".to_string());
+            }
+            // 留空表示保留现有 token；只有显式传入非空值才覆盖。
+            if let Some(token) = value
+                .as_str()
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+            {
+                next.acme.dns_api_token = Some(token.to_string());
+            }
+        }
     }
 
     if let Some(section) = body.get("socks5").and_then(Value::as_object) {
@@ -1848,6 +1886,12 @@ fn settings_json(state: &AdminState) -> Value {
             "cert_dir": config.acme.cert_dir.display().to_string(),
             "email": config.acme.email.clone(),
             "email_configured": config.acme.email.as_deref().is_some_and(|value| !value.is_empty()),
+            "dns_provider": config.acme.dns_provider.clone(),
+            "dns_token_configured": config
+                .acme
+                .dns_api_token
+                .as_deref()
+                .is_some_and(|value| !value.is_empty()),
         },
         "socks5": {
             "enabled": config.socks5.enabled,
@@ -1894,6 +1938,15 @@ fn challenge_label(challenge: meatus_core::AcmeChallenge) -> &'static str {
     }
 }
 
+fn certificate_covers(cert: &CachedCertificate, domain: &str) -> bool {
+    cert.domains.iter().any(|name| {
+        name == domain
+            || name.strip_prefix("*.").is_some_and(|suffix| {
+                domain.len() > suffix.len() && domain.ends_with(&format!(".{suffix}"))
+            })
+    })
+}
+
 fn certificates_json(state: &AdminState) -> Value {
     let snapshot = state.status.render(&state.metrics);
     let cached = read_cached_certificates(&state.config.acme.cert_dir);
@@ -1910,9 +1963,21 @@ fn certificates_json(state: &AdminState) -> Value {
             };
             let matched = cached
                 .iter()
-                .filter(|cert| cert.domains.iter().any(|name| name == domain))
+                .filter(|cert| certificate_covers(cert, domain))
                 .min_by_key(|cert| cert.not_after);
-            let (status, source, challenge, cert_fields) = if let Some(cert) = matched {
+            let acme_status = state
+                .acme
+                .as_ref()
+                .and_then(|acme| acme.domain_status(domain));
+            let challenge = if state.config.acme.enabled {
+                state.acme.as_ref().map_or_else(
+                    || challenge_label(state.config.acme.challenge),
+                    |acme| acme.challenge_label(domain),
+                )
+            } else {
+                "none"
+            };
+            let (status, source, cert_fields) = if let Some(cert) = matched {
                 let days_left = (cert.not_after - now) / 86_400;
                 let status = if days_left < 0 {
                     "expired"
@@ -1928,11 +1993,6 @@ fn certificates_json(state: &AdminState) -> Value {
                     } else {
                         "cache"
                     },
-                    if state.config.acme.enabled {
-                        "http-01"
-                    } else {
-                        "none"
-                    },
                     json!({
                         "not_after": cert.not_after,
                         "days_left": days_left,
@@ -1943,7 +2003,9 @@ fn certificates_json(state: &AdminState) -> Value {
                 )
             } else {
                 let status = if state.config.acme.enabled {
-                    "pending"
+                    acme_status
+                        .as_ref()
+                        .map_or("pending", |status| status.state)
                 } else {
                     "not-configured"
                 };
@@ -1953,11 +2015,6 @@ fn certificates_json(state: &AdminState) -> Value {
                         "acme"
                     } else {
                         "manual"
-                    },
-                    if state.config.acme.enabled {
-                        "http-01"
-                    } else {
-                        "none"
                     },
                     json!({
                         "not_after": Value::Null,
@@ -1985,6 +2042,9 @@ fn certificates_json(state: &AdminState) -> Value {
                 "source": source,
                 "challenge": challenge,
                 "status": status,
+                "acme_state": acme_status.as_ref().map(|status| status.state),
+                "error": acme_status.as_ref().and_then(|status| status.error.clone()),
+                "last_attempt": acme_status.as_ref().map(|status| status.updated_at),
                 "not_after": not_after,
                 "days_left": days_left,
                 "serial": serial,
@@ -2173,4 +2233,65 @@ mod certificate_tests {
         assert!(parsed[0].not_after > 0);
     }
 
+    #[test]
+    fn cached_wildcard_certificate_covers_child_domains() {
+        let cert = CachedCertificate {
+            domains: vec!["*.example.com".to_string()],
+            not_after: 0,
+            serial: String::new(),
+            issuer: String::new(),
+            chain_length: 1,
+        };
+        assert!(certificate_covers(&cert, "*.example.com"));
+        assert!(certificate_covers(&cert, "app.example.com"));
+        assert!(certificate_covers(&cert, "a.b.example.com"));
+        assert!(!certificate_covers(&cert, "example.com"));
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use meatus_core::AcmeChallenge;
+
+    fn base_config() -> meatus_core::ServerConfig {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[acme]
+enabled = false
+email = "ops@example.com"
+dns_api_token = "existing-token"
+"#;
+        meatus_core::parse_server_config(toml).expect("config")
+    }
+
+    #[test]
+    fn settings_accept_dns01_and_keep_token_when_blank() {
+        let current = base_config();
+        let body = serde_json::json!({
+            "acme": {
+                "enabled": false,
+                "challenge": "dns-01",
+                "dns_provider": "cloudflare",
+                "dns_api_token": ""
+            }
+        });
+        let next = merge_server_settings(&current, &body).expect("merge");
+        assert_eq!(next.acme.challenge, AcmeChallenge::Dns01);
+        assert_eq!(next.acme.dns_provider.as_deref(), Some("cloudflare"));
+        assert_eq!(next.acme.dns_api_token.as_deref(), Some("existing-token"));
+    }
+
+    #[test]
+    fn settings_reject_unknown_challenge() {
+        let current = base_config();
+        let body = serde_json::json!({"acme": {"challenge": "http-03"}});
+        let err = merge_server_settings(&current, &body).expect_err("reject");
+        assert!(err.contains("http-03"), "{err}");
+    }
 }

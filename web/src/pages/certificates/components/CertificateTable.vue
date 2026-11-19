@@ -17,11 +17,15 @@
         :status="row.tagStatus as CertificateRowView['tagStatus']"
         :label="String(row.tagLabel)"
       />
-      <CertificateDomain
-        v-else-if="column.key === 'domain'"
-        :domain="String(row.domain)"
-        :meta="`${row.proxy} · ${row.issuerText}`"
-      />
+      <div v-else-if="column.key === 'domain'" class="mt-cert-domain-cell">
+        <CertificateDomain
+          :domain="String(row.domain)"
+          :meta="`${row.proxy} · ${row.issuerText}`"
+        />
+        <p v-if="row.errorText" class="mt-cert-error" :title="String(row.errorText)">
+          续期失败：{{ row.errorText }}
+        </p>
+      </div>
       <CertificateExpiry
         v-else-if="column.key === 'expiresText'"
         :text="String(row.expiresText)"

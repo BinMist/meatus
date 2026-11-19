@@ -7,6 +7,8 @@ export interface CertificateRowView {
   tagLabel: string
   type: string
   sourceText: string
+  challengeText: string
+  errorText: string
   chainText: string
   expiresText: string
   daysText: string

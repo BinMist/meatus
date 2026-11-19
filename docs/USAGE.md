@@ -775,21 +775,45 @@ domain = "*.tunnel.example.com"
 [acme]
 enabled = true
 email = "ops@example.com"
-challenge = "http-01"
+challenge = "dns-01"
+dns_provider = "cloudflare"
+dns_api_token = "${CF_API_TOKEN}"
 staging = true
 cert_dir = "/var/lib/meatus/acme"
 ```
 
+DNSPod（腾讯云域名）把 provider 与 token 换成：
 
+```toml
+[acme]
+challenge = "dns-01"
+dns_provider = "dnspod"
+dns_api_token = "${DNSPOD_TOKEN}" # 控制台生成的 ID,Token
+```
 
-| 字段          | 说明                                     |
-| ----------- | -------------------------------------- |
-| `enabled`   | 开启 ACME；必须同时 `http.enabled = true`     |
-| `email`     | Let's Encrypt 账户邮箱，必填                  |
-| `challenge` | V1 只支持 `http-01`                       |
-| `staging`   | 先用 staging，避免打光生产配额                    |
-| `cert_dir`  | 证书与账户缓存目录，默认 `/etc/meatus/acme`        |
-| `directory` | ACME directory URL，可指向 Pebble /staging |
+DNSPod 会在账号域名列表里按 `*.tunnel.example.com → tunnel.example.com → example.com` 逐级查找所属根域名；TXT 记录使用 `Record.Create` / `Record.Remove`，TTL 600，线路“默认”。Token 在 DNSPod 控制台「用户中心 → 密钥管理」创建，必须保存为 `ID,Token` 两段；建议只授权该账号下的解析权限。
+
+精确域名优先用 `challenge = "http-01"`；泛域名必须 `dns-01`。若 `dns-01` 下未启用 HTTP，精确域名也会走 DNS-01。DNS-01 支持 Cloudflare 与 DNSPod。`dns_api_token` 支持 `${VAR}` 环境变量展开，token 不会写日志，也不会出现在 `/api/v1/settings` 响应中。
+
+| 字段             | 说明                                                       |
+| -------------- | -------------------------------------------------------- |
+| `enabled`      | 开启 ACME；`http-01` 需要 `http.enabled = true`，`dns-01` 不依赖 80 端口 |
+| `email`        | Let's Encrypt 账户邮箱，必填                                    |
+| `challenge`    | `http-01`（精确域名）或 `dns-01`（泛域名）；`tls-alpn-01` 未接入           |
+| `dns_provider` | `dns-01` 时必填，支持 `cloudflare` / `dnspod`                           |
+| `dns_api_token` | provider 对应的 API Token：Cloudflare 需要 `Zone:Read + Zone.DNS:Edit`；DNSPod 使用 `ID,Token`。建议写成 `${CF_API_TOKEN}` / `${DNSPOD_TOKEN}`，缺失变量启动直接报错   |
+| `staging`      | 先用 staging，避免打光生产配额                                       |
+| `cert_dir`     | 证书与账户缓存目录，默认 `/etc/meatus/acme`                          |
+| `directory`    | ACME directory URL，可指向 Pebble / staging；Pebble 自签 CA 需额外信任配置，当前未内置                 |
+
+面板 **系统设置 → HTTP 与 ACME** 可在线切换 `http-01` / `dns-01`，选择 Cloudflare 或 DNSPod 并填写对应 Token。Token 已配置时输入框留空表示保留原值；面板只显示“已配置”，不会回显 token。保存后面板会重启 server 使新配置生效。
+
+DNS-01 行为：
+
+* 按 `_acme-challenge.<域名>` 创建 TXT 记录，等待约 10 秒传播后通知 ACME 校验，完成或失败都会清理 TXT；
+* 泛域名证书按 SNI 通配匹配，`*.example.com` 可终止 `app.example.com`，但不覆盖 `a.b.example.com`（TLS 通配符只匹配一级标签）；
+* 到期前 30 天自动续期；续期失败保留旧证书、旧 resolver 与现有连接，失败原因显示在面板证书页；
+* Cloudflare / DNSPod token 权限不足、zone 不存在、DNS 超时都会以明确错误写入面板，不会删除旧证书。
 
 #### `[socks5]`
 
@@ -1141,23 +1165,18 @@ certs/server.key   # 自动 0600
 
 
 
-1. **server 终止 TLS（ACME）**：`[http] enabled = true` + `[acme] enabled = true`，client 用 `type = "http"`；server 自动签发并续期，再把明文 HTTP 转发给 client 的本地 HTTP 服务。
+1. **server 终止 TLS（ACME）**：精确域名优先 `[http] enabled = true` + `[acme] challenge = "http-01"`；泛域名用 `[acme] challenge = "dns-01"` + Cloudflare / DNSPod token（此模式下未启用 HTTP 时，精确域名也走 DNS-01）。client 用 `type = "http"`，server 自动签发并续期，再把明文 HTTP 转发给 client 的本地 HTTP 服务。
 
 2. **SNI 透传 + 自带证书**：client 用 `type = "https"`，本地服务自己提供 TLS；server 不持私钥。
 
 ACME 限制：
 
-
-
-* 只支持**精确域名** + `http-01`；
-
-* 泛域名不自动签发，请用自带证书 + `type = "https"`；
-
-* 80 端口必须能从公网访问；
-
+* 精确域名：优先 `http-01`（80 端口必须公网可达）；若 `dns-01` 下未启用 HTTP，则精确域名也走 DNS-01；
+* 泛域名：必须 `dns-01`，支持 Cloudflare / DNSPod；与精确域名可共存；
+* 泛域名证书只匹配一级子域名（`*.example.com` 覆盖 `app.example.com`，不覆盖 `a.b.example.com`）；更深层级需单独签发精确域名或对应层级的泛域名；
 * 首次先用 `staging = true` 验证，再切生产；
-
-* 证书与账户缓存在 `acme.cert_dir`，权限 0600 / 0700。
+* 证书与账户缓存在 `acme.cert_dir`，权限 0600 / 0700；
+* 续期失败保留旧证书，不阻断现有 HTTPS 连接；失败原因在面板「证书」页可查。
 
 ### 4.4 证书 pin（可选）
 
@@ -1345,6 +1364,18 @@ range = [20000, 30000]
 
 
 ![保存后的 proxy 列表](assets/usage/local-mysql/05-result-list.png)
+
+**⑥ 测试本地服务连通性**
+
+Proxy 操作列新增闪电图标“测试”按钮，点击后由在线客户端探测这条 proxy 的 `local_addr`：
+
+- TCP / HTTP / HTTPS：尝试建立 TCP 连接，返回“可达 + 延迟”或“不可达 + 错误码”；
+- UDP：在客户端创建临时 socket 并 `connect` 目标地址，不做业务报文往返；
+- SOCKS5：不做真实代理请求，明确返回“需实际请求验证”；
+- 单条 proxy 限速 1 次 / 秒，诊断超时 3 秒；结果只保留在面板内存，不写入数据库；
+- 诊断走独立控制帧，不转发真实业务数据，也不计入正常流量统计。
+
+老客户端未声明 `probe` 能力时，面板会提示“当前客户端不支持诊断”；升级到支持该能力的客户端后重试即可。
 
 > 面板只能管理 client proxy 和 server 端口池（系统设置 → 端口池范围）；server 宿主机的 Docker `-p` 映射、云安全组和 ufw 属于宿主机 / 云平台配置，仍需按第 4、5 步单独处理。
 
@@ -1781,7 +1812,7 @@ server：
 enabled = true
 bind = "0.0.0.0:80"
 https_bind = "0.0.0.0:443"
-domain = "*.tunnel.example.com"
+domain = "tunnel.example.com"
 
 [acme]
 enabled = true
@@ -1789,6 +1820,36 @@ email = "ops@example.com"
 challenge = "http-01"
 staging = true
 cert_dir = "/var/lib/meatus/acme"
+```
+
+泛域名把 `[acme]` 换成 DNS-01：
+
+
+
+```
+[acme]
+enabled = true
+email = "ops@example.com"
+challenge = "dns-01"
+dns_provider = "cloudflare"
+dns_api_token = "${CF_API_TOKEN}"
+staging = true
+cert_dir = "/var/lib/meatus/acme"
+```
+
+DNSPod 则把 `dns_provider` 改为 `"dnspod"`，`dns_api_token` 改为腾讯云控制台生成的 `ID,Token`。
+
+client 注册泛域名：
+
+
+
+```
+[[proxy]]
+name = "wildcard"
+type = "http"
+local_addr = "127.0.0.1:8080"
+remote_port = 0
+custom_domains = ["*.tunnel.example.com"]
 ```
 
 client：
@@ -1810,13 +1871,17 @@ custom_domains = ["blog.example.com"]
 
 * 精确域名走 ACME HTTP-01，server 签发证书并终止 TLS；
 
+* 泛域名走 Cloudflare / DNSPod DNS-01，按 `_acme-challenge.<域名>` 创建 TXT 后签发；
+
 * 再把明文 HTTP 转发给 client 的本地 HTTP 服务；
 
-* 泛域名不自动签发；
+* 泛域名证书只覆盖一级子域名：`*.tunnel.example.com` 命中 `app.tunnel.example.com`，不命中 `a.b.tunnel.example.com`；
 
 * 先 `staging = true` 验证，确认后改 `false` 并重启；
 
-* 证书状态可在面板 “证书状态” 页查看；
+* 到期前 30 天自动续期；续期失败保留旧证书，不中断现有连接；
+
+* 证书状态与最近失败原因可在面板 “证书状态” 页查看；
 
 * Docker 部署使用 ACME 时，务必把 `/data/server.toml` 的 `[acme].cert_dir` 改为 `/data/acme`（默认值 `/etc/meatus/acme` 不在持久卷内），否则重启容器会丢证书缓存。
 
@@ -2397,15 +2462,17 @@ sudo lsof -iTCP:20022 -sTCP:LISTEN
 
 
 
-* 80 端口是否公网可达；
+* HTTP-01：80 端口是否公网可达；域名是否精确匹配，泛域名必须改用 DNS-01；
 
-* 域名是否精确匹配（不支持泛域名自动签发）；
+* DNS-01：Cloudflare token 是否有 `Zone:Read + Zone.DNS:Edit` 权限，或 DNSPod token 是否为 `ID,Token` 且域名在账号内；zone 是否与域名后缀一致；TXT 是否已创建；
 
 * DNS 是否已解析到 server；
 
 * 是否先用 `staging = true`；
 
 * Let's Encrypt 生产配额是否被打光；
+
+* 面板 “证书状态” 页是否显示 `续期失败：...` 的具体原因；
 
 * server 日志中的 ACME 错误。
 

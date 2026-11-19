@@ -23,7 +23,11 @@
 
       <div class="settings-body">
         <SettingsControlSection :draft="draft" />
-        <SettingsHttpSection :draft="draft" :cert-dir="settings?.acme.cert_dir || ''" />
+        <SettingsHttpSection
+          :draft="draft"
+          :cert-dir="settings?.acme.cert_dir || ''"
+          :dns-token-configured="settings?.acme.dns_token_configured || false"
+        />
         <SettingsSocksSection
           :draft="draft"
           :log-level-options="logLevelOptions"
@@ -99,7 +103,14 @@ const draft = reactive<SettingsDraft>({
   tenant: { default: 'default' },
   ports: { start: 20000, end: 30000 },
   http: { enabled: false, bind: '0.0.0.0:80', https_bind: '0.0.0.0:443', domain: '' },
-  acme: { enabled: false, email: '', staging: false },
+  acme: {
+    enabled: false,
+    email: '',
+    staging: false,
+    challenge: 'http-01',
+    dns_provider: 'cloudflare',
+    dns_api_token: '',
+  },
   socks5: { enabled: false, bind: '0.0.0.0:2081' },
   log: { level: 'info', format: 'text' },
 })
@@ -166,6 +177,9 @@ function toDraft(current: SettingsSnapshot): SettingsDraft {
       enabled: current.acme.enabled,
       email: current.acme.email ?? '',
       staging: current.acme.staging,
+      challenge: current.acme.challenge || 'http-01',
+      dns_provider: current.acme.dns_provider || 'cloudflare',
+      dns_api_token: '',
     },
     socks5: { enabled: current.socks5.enabled, bind: current.socks5.bind },
     log: { level: current.log.level, format: current.log.format },
@@ -197,7 +211,26 @@ function validateDraft(): string {
   if (draft.ports.start > draft.ports.end) return '端口池起始端口不能大于结束端口'
   if (draft.http.enabled && !draft.http.domain.trim()) return '启用 HTTP 时需要填写默认域名'
   if (draft.acme.enabled && !draft.acme.email.trim()) return '启用 ACME 时需要填写邮箱'
-  if (draft.acme.enabled && !draft.http.enabled) return '启用 ACME 时需要同时启用 HTTP（HTTP-01 challenge）'
+  if (
+    draft.acme.enabled &&
+    draft.acme.challenge === 'http-01' &&
+    !draft.http.enabled
+  ) {
+    return 'HTTP-01 需要同时启用 HTTP 路由'
+  }
+  if (draft.acme.enabled && draft.acme.challenge === 'dns-01') {
+    const provider = draft.acme.dns_provider.trim()
+    if (provider !== 'cloudflare' && provider !== 'dnspod') {
+      return 'DNS-01 仅支持 Cloudflare 或 DNSPod'
+    }
+    const token = draft.acme.dns_api_token.trim()
+    if (provider === 'dnspod' && token && !token.includes(',')) {
+      return 'DNSPod Token 格式应为 ID,Token'
+    }
+    if (!token && !settings.value?.acme.dns_token_configured) {
+      return `DNS-01 需要填写 ${provider === 'dnspod' ? 'DNSPod' : 'Cloudflare'} API Token`
+    }
+  }
   return ''
 }
 
@@ -232,6 +265,9 @@ async function save() {
         enabled: draft.acme.enabled,
         email: draft.acme.email.trim(),
         staging: draft.acme.staging,
+        challenge: draft.acme.challenge,
+        dns_provider: draft.acme.dns_provider.trim(),
+        dns_api_token: draft.acme.dns_api_token.trim(),
       },
       socks5: { enabled: draft.socks5.enabled, bind: draft.socks5.bind },
       log: { level: draft.log.level, format: draft.log.format },

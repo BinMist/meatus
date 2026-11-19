@@ -161,6 +161,8 @@ const allRows = computed<CertificateRowView[]>(() =>
             : entry.source === 'manual'
               ? '手动'
               : entry.source,
+      challengeText: entry.challenge === 'dns-01' ? 'DNS-01' : entry.challenge === 'http-01' ? 'HTTP-01' : '—',
+      errorText: entry.error ?? '',
       chainText: entry.chain_length ? `${entry.chain_length} 张` : '—',
       expiresText: entry.not_after ? formatDate(entry.not_after) : '—',
       daysText: days.text,

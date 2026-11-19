@@ -20,7 +20,7 @@ remote_port = 20022
 
 # HTTP（M3）：server 需开启 [http]；remote_port 必须为 0（不占端口池）
 # custom_domains 支持精确域名与 *.example.com 泛域名；精确优先
-# server 开 [acme] enabled = true 时，精确域名会走 ACME HTTP-01 + TLS 终止
+# server 开 [acme] enabled = true 时：精确域名走 HTTP-01，泛域名走 DNS-01，均由 server 终止 TLS
 # [[proxy]]
 # name = "nas-web"
 # type = "http"

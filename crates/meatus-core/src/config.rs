@@ -487,12 +487,31 @@ impl ServerConfig {
             if self.acme.directory.trim().is_empty() {
                 return Err(invalid("acme.directory must not be empty"));
             }
-            if matches!(self.acme.challenge, AcmeChallenge::Dns01)
-                && (self.acme.dns_provider.is_none() || self.acme.dns_api_token.is_none())
-            {
-                return Err(invalid(
-                    "acme.challenge = \"dns-01\" requires dns_provider and dns_api_token",
-                ));
+            if matches!(self.acme.challenge, AcmeChallenge::Dns01) {
+                let provider = self
+                    .acme
+                    .dns_provider
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase();
+                let token = self.acme.dns_api_token.as_deref().unwrap_or("").trim();
+                if provider.is_empty() || token.is_empty() {
+                    return Err(invalid(
+                        "acme.challenge = \"dns-01\" requires dns_provider and dns_api_token",
+                    ));
+                }
+                if provider != "cloudflare" && provider != "dnspod" {
+                    return Err(invalid(format!(
+                        "acme.dns_provider = {provider:?} is not supported yet; \
+                         supported providers: \"cloudflare\", \"dnspod\""
+                    )));
+                }
+                if provider == "dnspod" && !token.contains(',') {
+                    return Err(invalid(
+                        "acme.dns_api_token for dnspod must use the \"ID,Token\" format",
+                    ));
+                }
             }
         }
 
@@ -542,19 +561,27 @@ impl ServerConfig {
     pub fn validate_runtime(&self) -> Result<(), ConfigError> {
         self.validate()?;
         if self.acme.enabled {
-            if !self.http.enabled {
-                return Err(invalid(
-                    "acme.enabled requires http.enabled = true (HTTP-01 uses :80)",
-                ));
-            }
             if self.acme.email.as_deref().unwrap_or("").trim().is_empty() {
                 return Err(invalid("acme.email is required when acme.enabled = true"));
             }
-            if self.acme.challenge != AcmeChallenge::Http01 {
-                return Err(invalid(
-                    "ACME M3 only supports challenge = \"http-01\" for exact domains; \
-                     tls-alpn-01 / dns-01 are not wired yet",
-                ));
+            match self.acme.challenge {
+                AcmeChallenge::Http01 => {
+                    if !self.http.enabled {
+                        return Err(invalid(
+                            "acme.challenge = \"http-01\" requires http.enabled = true",
+                        ));
+                    }
+                }
+                AcmeChallenge::Dns01 => {
+                    // 泛域名走 DNS-01，不依赖 :80；精确域名仍复用 HTTP-01，
+                    // 若 http.enabled = false 则由 ensure_domain 返回 false。
+                }
+                AcmeChallenge::TlsAlpn01 => {
+                    return Err(invalid(
+                        "acme.challenge = \"tls-alpn-01\" is not wired yet; \
+                         use \"http-01\" or \"dns-01\"",
+                    ));
+                }
             }
         }
         if self.server.tls_cert.is_none() || self.server.tls_key.is_none() {
@@ -1143,6 +1170,90 @@ challenge = "dns-01"
 "#;
         let err = parse_server_config(toml).expect_err("should reject");
         assert!(err.to_string().contains("dns_provider"));
+    }
+
+    #[test]
+    fn acme_dns01_accepts_cloudflare_without_http() {
+        let toml = r#"
+[server]
+control_port = 7000
+tls_cert = "/tmp/meatus-test.crt"
+tls_key = "/tmp/meatus-test.key"
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[acme]
+enabled = true
+email = "ops@example.com"
+challenge = "dns-01"
+dns_provider = "cloudflare"
+dns_api_token = "token"
+"#;
+        let config = parse_server_config(toml).expect("dns-01 config");
+        config.validate_runtime().expect("dns-01 runtime");
+    }
+
+    #[test]
+    fn acme_dns01_accepts_dnspod_without_http() {
+        let toml = r#"
+[server]
+control_port = 7000
+tls_cert = "/tmp/meatus-test.crt"
+tls_key = "/tmp/meatus-test.key"
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[acme]
+enabled = true
+email = "ops@example.com"
+challenge = "dns-01"
+dns_provider = "dnspod"
+dns_api_token = "12345,abcdef"
+"#;
+        let config = parse_server_config(toml).expect("dnspod dns-01 config");
+        config.validate_runtime().expect("dnspod dns-01 runtime");
+    }
+
+    #[test]
+    fn acme_dns01_rejects_dnspod_token_without_comma() {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[acme]
+enabled = true
+email = "ops@example.com"
+challenge = "dns-01"
+dns_provider = "dnspod"
+dns_api_token = "not-an-id-token"
+"#;
+        let err = parse_server_config(toml).expect_err("should reject");
+        assert!(err.to_string().contains("ID,Token"), "{err}");
+    }
+
+    #[test]
+    fn acme_dns01_rejects_unknown_provider() {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[acme]
+enabled = true
+email = "ops@example.com"
+challenge = "dns-01"
+dns_provider = "route53"
+dns_api_token = "token"
+"#;
+        let err = parse_server_config(toml).expect_err("should reject");
+        assert!(err.to_string().contains("cloudflare"));
     }
 
     #[test]

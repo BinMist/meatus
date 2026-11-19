@@ -36,6 +36,7 @@ const baseColumns: DataTableColumn[] = [
   { key: 'domain', header: '域名 / Proxy', type: 'text', sortable: true, width: 220 },
   { key: 'type', header: '类型', type: 'text', width: 74 },
   { key: 'sourceText', header: '来源', type: 'text', width: 92 },
+  { key: 'challengeText', header: '校验', type: 'text', width: 88 },
   { key: 'status', header: '状态', type: 'text', width: 106 },
   { key: 'chainText', header: '证书链', type: 'text', width: 76 },
   { key: 'expiresText', header: '到期 / 剩余', type: 'text', width: 180 },

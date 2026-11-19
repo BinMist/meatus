@@ -4,7 +4,14 @@ export interface SettingsDraft {
   tenant: { default: string }
   ports: { start: number; end: number }
   http: { enabled: boolean; domain: string; bind: string; https_bind: string }
-  acme: { enabled: boolean; email: string; staging: boolean }
+  acme: {
+    enabled: boolean
+    email: string
+    staging: boolean
+    challenge: string
+    dns_provider: string
+    dns_api_token: string
+  }
   socks5: { enabled: boolean; bind: string }
   log: { level: string; format: string }
 }

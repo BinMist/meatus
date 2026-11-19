@@ -51,6 +51,7 @@ import OverviewTrafficChart from './components/OverviewTrafficChart.vue'
 import { notifyError } from '../../services/notifications'
 import { apiGet, formatNumber, relativeTime, session } from '../../services/api'
 import type { StatusSnapshot } from '../../types'
+import { APP_VERSION } from '../../version'
 
 const snapshot = ref<StatusSnapshot | null>(null)
 const error = ref('')
@@ -115,7 +116,7 @@ const specItems = computed(() => [
   { key: 'bind', label: 'bind', value: '127.0.0.1' },
   { key: 'mode', label: 'mode', value: session.mode === 'loopback' ? 'LOOPBACK' : 'SESSION' },
   { key: 'sampling', label: 'sampling', value: '5s' },
-  { key: 'version', label: 'version', value: '1.1.0' },
+  { key: 'version', label: 'version', value: APP_VERSION },
 ])
 
 const dashFacts = computed(() => [
