@@ -508,37 +508,10 @@
   height: 17px;
 }
 
+/* 令牌显隐按钮已换成 @sailonix/ui 的 SlIconButton（ghost / sm = 32px + 16px 图标），
+   尺寸、悬停与聚焦环由组件令牌控制，这里只留外边距 */
 .mt-login-reveal {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
   margin: 0 6px 0 2px;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-  transition: color 0.18s, background 0.18s;
-}
-
-.mt-login-reveal svg {
-  width: 18px;
-  height: 18px;
-}
-
-.mt-login-reveal:hover {
-  color: var(--blue);
-  background: var(--blue-soft);
-}
-
-.mt-login-reveal:focus-visible {
-  outline: 2px solid rgba(35, 109, 233, 0.35);
-  outline-offset: 1px;
 }
 
 .mt-login-field-hint {

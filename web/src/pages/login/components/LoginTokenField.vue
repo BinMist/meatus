@@ -25,11 +25,11 @@
         </span>
       </template>
       <template #suffix>
-        <button
+        <sl-icon-button
           class="mt-login-reveal"
-          type="button"
+          type="ghost"
+          size="sm"
           :aria-label="showToken ? '隐藏令牌' : '显示令牌'"
-          :aria-pressed="showToken"
           :title="showToken ? '隐藏令牌' : '显示令牌'"
           @click="showToken = !showToken"
         >
@@ -61,7 +61,7 @@
               stroke-linejoin="round"
             />
           </svg>
-        </button>
+        </sl-icon-button>
       </template>
     </sl-input>
     <div class="mt-login-field-hint" id="mtLoginTokenHint">
@@ -72,6 +72,8 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { SlIconButton } from '@sailonix/ui/icon-button'
+import '@sailonix/ui/icon-button/style'
 import { SlInput } from '@sailonix/ui/input'
 
 defineOptions({ name: 'LoginTokenField' })
