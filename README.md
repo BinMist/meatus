@@ -15,7 +15,7 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，HTTP proxy 的精确域名由 server 用 Let's Encrypt HTTP-01 自动签发、TLS 终止并缓存/续期
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **状态**：当前源码版本 `1.2.0`；公网已发布版本仍为 `1.1.0`（Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>），`1.1.1` 不单独发布，其 YAML 写回与面板修正并入 `1.2.0`。发布形态为 macOS aarch64、Linux x86_64 musl 静态包 + 阿里云 ACR 多架构镜像（ACR 当前为私有，需先 `docker login`）；GHCR 与 GitHub Release 暂缓。V1.1 已通过 88 passed / 1 ignored、fmt / clippy、fuzz 120s × 2、30min soak、20% 丢包 30min 回归；24h soak 待补最终记录。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **状态**：当前版本 `1.2.0`，源码与 ACR 多架构镜像（`1.2.0` / `1.2` / `latest`）已发布；Gitee Release 见 <https://gitee.com/binsail/meatus/releases/tag/v1.2.0>。`1.1.1` 不单独发布，其 YAML 写回与面板修正并入 `1.2.0`。发布形态为 macOS aarch64、Linux x86_64 musl 静态包 + 阿里云 ACR 多架构镜像（ACR 当前为私有，需先 `docker login`）；GHCR 与 GitHub Release 暂缓。V1.1 已通过 88 passed / 1 ignored、fmt / clippy、fuzz 120s × 2、30min soak、20% 丢包 30min 回归；24h soak 待补最终记录。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
 ## V1.2 主要更新
 
@@ -65,8 +65,8 @@ docker compose exec meatus cat /data/admin.token
 # 不用 Compose 的纯 docker run 命令见 docs/INSTALL.md 4.6
 # 预构建镜像（ACR 当前为私有仓库，先登录）：
 # docker login registry.cn-hangzhou.aliyuncs.com
-# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1.0
-# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2.0
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2
 ```
 
 ## 快速开始（TCP / UDP / HTTP / HTTPS 隧道）
@@ -197,14 +197,14 @@ chmod 600 .env
 
 ## 许可证
 
-Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。发布包内 `SBOM.spdx.json` 为 SPDX 源码依赖清单；镜像 SBOM 单独输出为 `dist/sbom-meatus-<version>-image.spdx.json`。当前 `1.1.0` 仅实推阿里云 ACR；ACR 不接受 buildx 的 OCI 1.1 attestation manifest，改为推送后再用 syft 扫描生成镜像 SBOM。GHCR 发布路径保留在脚本中，待恢复 GitHub 发布时启用。
+Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。发布包内 `SBOM.spdx.json` 为 SPDX 源码依赖清单；镜像 SBOM 单独输出为 `dist/sbom-meatus-<version>-image.spdx.json`。当前 `1.2.0` 仅实推阿里云 ACR；ACR 不接受 buildx 的 OCI 1.1 attestation manifest，改为推送后再用 syft 扫描生成镜像 SBOM。GHCR 发布路径保留在脚本中，待恢复 GitHub 发布时启用。
 
 ## 文档
 
-- 完整使用教程：`docs/USAGE.md`（含 V1.1 更新、升级、管理面 TLS、YAML 与 Docker 示例）
+- 完整使用教程：`docs/USAGE.md`（含 V1.2 更新、客户端令牌、SOCKS5 域名、管理面 TLS、YAML 与 Docker 示例）
 - 新手教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 - 安装部署：`docs/INSTALL.md`
-- 版本发布：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>
+- 版本发布：<https://gitee.com/binsail/meatus/releases/tag/v1.2.0>
 - 开发规划与验收记录：已归档到内部资料目录，不随开源仓库发布
 - ADR：`docs/adr/0001-transport-tcp-tls-yamux.md`、`docs/adr/0002-dual-mode-self-host-first.md`
 - 贡献指南：`CONTRIBUTING.md`

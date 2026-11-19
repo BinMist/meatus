@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# 构建并推送 V1.1 双仓库镜像：GHCR（canonical）+ 阿里云 ACR（国内镜像）。
+# 构建并推送双仓库镜像：GHCR（canonical）+ 阿里云 ACR（国内镜像）。
 #
 # 前置：已登录两个 registry，或由 CI 的 login-action 完成登录。
 #   docker login ghcr.io
 #   docker login registry.cn-hangzhou.aliyuncs.com
 #
 # 用法：
-#   ./scripts/docker-release.sh --version 1.1.0
-#   ./scripts/docker-release.sh --version 1.1.0 --skip-acr
-#   ./scripts/docker-release.sh --version 1.1.0 --platforms linux/amd64,linux/arm64
+#   ./scripts/docker-release.sh --version 1.2.0
+#   ./scripts/docker-release.sh --version 1.2.0 --skip-acr
+#   ./scripts/docker-release.sh --version 1.2.0 --platforms linux/amd64,linux/arm64
 #
 # Gitee Go 可直接把本脚本作为「镜像构建并推送」步骤；GHCR 与 ACR 的凭据放流水线 secret。
 set -euo pipefail
