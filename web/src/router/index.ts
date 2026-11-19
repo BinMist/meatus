@@ -8,6 +8,7 @@ export const router = createRouter({
     { path: '/proxies', name: 'proxies', component: () => import('../pages/proxies/index.vue'), meta: { title: 'Proxy 管理', icon: 'server' } },
     { path: '/clients', name: 'clients', component: () => import('../pages/clients/index.vue'), meta: { title: '客户端与令牌', icon: 'users' } },
     { path: '/certificates', name: 'certificates', component: () => import('../pages/certificates/index.vue'), meta: { title: '证书状态', icon: 'shield' } },
+    { path: '/audit', name: 'audit', component: () => import('../pages/audit/index.vue'), meta: { title: '审计日志', icon: 'history' } },
     { path: '/logs', name: 'logs', component: () => import('../pages/logs/index.vue'), meta: { title: '实时日志', icon: 'terminal' } },
     { path: '/settings', name: 'settings', component: () => import('../pages/settings/index.vue'), meta: { title: '系统设置', icon: 'settings' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },

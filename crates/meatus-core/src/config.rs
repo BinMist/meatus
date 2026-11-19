@@ -99,6 +99,15 @@ pub struct ServerConfig {
     pub ctrl: Option<CtrlSection>,
     #[serde(default)]
     pub log: LogSection,
+    #[serde(default)]
+    pub audit: AuditSection,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditSection {
+    /// 审计 JSONL 目录；缺省为配置文件同级的 `audit/`。
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -847,6 +856,8 @@ pub struct ClientConfig {
     pub proxies: Vec<ProxySpec>,
     #[serde(default)]
     pub log: LogSection,
+    #[serde(default)]
+    pub audit: AuditSection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1306,6 +1317,41 @@ token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         assert_eq!(config.server.bind_addr, "0.0.0.0");
         assert_eq!(config.ports.range, [20000, 30000]);
         assert_eq!(config.auth.credential_entries().len(), 1);
+    }
+
+    #[test]
+    fn audit_directory_is_optional() {
+        let config = parse_server_config(
+            r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[audit]
+dir = "/var/lib/meatus/audit"
+"#,
+        )
+        .expect("valid");
+        assert_eq!(
+            config.audit.dir.as_deref(),
+            Some(std::path::Path::new("/var/lib/meatus/audit"))
+        );
+        assert!(config_for_default_audit().audit.dir.is_none());
+    }
+
+    fn config_for_default_audit() -> ServerConfig {
+        parse_server_config(
+            r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"#,
+        )
+        .expect("valid")
     }
 
     #[test]

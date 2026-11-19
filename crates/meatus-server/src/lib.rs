@@ -4,6 +4,7 @@
 mod acme;
 mod admin;
 mod admin_bus;
+pub mod audit;
 mod control;
 mod http;
 pub mod logbuf;
@@ -55,6 +56,7 @@ pub struct ServerState {
     pub(crate) socks5: Arc<Socks5Registry>,
     pub acme: Option<Arc<acme::AcmeManager>>,
     pub logs: Arc<LogBuffer>,
+    pub audit: Arc<audit::AuditLog>,
     pub(crate) admin_bus: Arc<admin_bus::AdminBus>,
     /// 当前生效的配置与认证；SIGHUP / 面板重载共用。
     pub runtime: Arc<RuntimeConfig>,
@@ -94,6 +96,7 @@ impl ServerState {
             socks5: Arc::new(Socks5Registry::default()),
             acme,
             logs: Arc::new(LogBuffer::default()),
+            audit: Arc::new(audit::AuditLog::default()),
             admin_bus: Arc::new(admin_bus::AdminBus::default()),
             runtime,
             reloader: None,
@@ -112,7 +115,14 @@ impl ServerState {
             Arc::clone(&self.runtime),
             self.log_reload.clone(),
         ));
-        self.config_path = Some(path);
+        self.config_path = Some(path.clone());
+        let audit_dir = self
+            .config
+            .audit
+            .dir
+            .clone()
+            .or_else(|| path.parent().map(|parent| parent.join("audit")));
+        self.audit = Arc::new(audit::AuditLog::new(audit_dir));
         self
     }
 
@@ -225,6 +235,7 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
         Arc::clone(&state.metrics),
         Arc::clone(&state.status),
         Arc::clone(&state.quotas),
+        Arc::clone(&state.audit),
         Arc::new(state.config.clone()),
         Arc::clone(&state.runtime),
         Arc::clone(&state.logs),
@@ -380,6 +391,7 @@ async fn serve_connection(
         state,
         open,
         cancel,
+        peer: peer.ip(),
     };
     let result = control::serve(control, ctx).await;
     drain.abort();

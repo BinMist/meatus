@@ -1,0 +1,48 @@
+.mt-audit-filters {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.mt-audit-filters .sl-form-item {
+  margin-bottom: 0;
+}
+
+.mt-audit-actor,
+.mt-audit-action {
+  font-family: var(--sl-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+
+.mt-audit-target {
+  color: var(--mt-ink-3);
+}
+
+.mt-audit-trace {
+  font-size: 11px;
+  color: var(--mt-ink-3);
+}
+
+.mt-audit-ok {
+  color: #1f8a5b;
+}
+
+.mt-audit-denied {
+  color: #b05200;
+}
+
+.mt-audit-error {
+  color: #b3261e;
+}
+
+@media (max-width: 1100px) {
+  .mt-audit-filters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .mt-audit-filters {
+    grid-template-columns: 1fr;
+  }
+}

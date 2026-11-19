@@ -436,6 +436,15 @@ admin_token = "admin-secret"
     assert_eq!(status, 200);
     assert!(body.contains("\"lines\""));
 
+    let (status, _, body) = request(admin_port, &auth_request("/api/v1/audit?limit=20")).await;
+    assert_eq!(status, 200);
+    assert!(body.contains("\"events\""));
+    assert!(body.contains("\"action\":\"login\""));
+    assert!(body.contains("\"source_ip\":\"127.0.0.1\""));
+    assert!(body.contains("\"persistent\":false"));
+    assert!(!body.contains("admin-secret"));
+    assert!(!body.contains("\"trace_id\":\"\""));
+
     let (status, _, _) = request(
         admin_port,
         &format!("DELETE /api/v1/session HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\n\r\n"),

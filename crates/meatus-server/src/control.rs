@@ -53,6 +53,7 @@ pub struct SessionContext {
     pub state: Arc<ServerState>,
     pub open: OpenHandle,
     pub cancel: CancellationToken,
+    pub peer: std::net::IpAddr,
 }
 
 struct ProxyRuntime {
@@ -105,6 +106,11 @@ impl Drop for ProxyRuntime {
         self.state
             .socks5
             .unregister(&self.name, &self.tenant_id, &self.client_id, &self.run_id);
+        self.state.audit.record(
+            crate::audit::AuditEvent::new("proxy.unregister", &self.name)
+                .actor(format!("client:{}", self.client_id))
+                .client(&self.client_id),
+        );
         self.state.status.unregister_proxy(
             &self.tenant_id,
             &self.client_id,
@@ -248,6 +254,12 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
     ctx.state
         .status
         .client_connected(&hello.tenant_id, &hello.client_id, &run_id, &hello.caps);
+    ctx.state.audit.record(
+        crate::audit::AuditEvent::new("client.online", &hello.client_id)
+            .actor(format!("client:{}", hello.client_id))
+            .client(&hello.client_id)
+            .source_ip(ctx.peer),
+    );
     struct ClientStatusGuard {
         state: Arc<ServerState>,
         tenant_id: String,
@@ -259,6 +271,11 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
             self.state
                 .status
                 .client_disconnected(&self.tenant_id, &self.client_id, &self.run_id);
+            self.state.audit.record(
+                crate::audit::AuditEvent::new("client.offline", &self.client_id)
+                    .actor(format!("client:{}", self.client_id))
+                    .client(&self.client_id),
+            );
         }
     }
     let _client_status = ClientStatusGuard {
@@ -936,6 +953,41 @@ async fn read_hello(reader: &mut Reader) -> anyhow::Result<Hello> {
 
 #[allow(clippy::too_many_arguments)]
 async fn start_proxy(
+    ctx: &SessionContext,
+    tenant_id: &str,
+    client_id: &str,
+    run_id: &str,
+    request: NewProxy,
+    policy: &ClientPolicy,
+    replacing: bool,
+    next_trace: Arc<AtomicU64>,
+) -> Result<ProxyRuntime, (ErrorCode, String)> {
+    let name = request.name.clone();
+    let result = start_proxy_inner(
+        ctx, tenant_id, client_id, run_id, request, policy, replacing, next_trace,
+    )
+    .await;
+    let mut event = crate::audit::AuditEvent::new("proxy.create", name)
+        .actor(format!("client:{client_id}"))
+        .client(client_id);
+    if let Err((_, message)) = &result {
+        event = event.result(
+            if message.to_ascii_lowercase().contains("not allowed")
+                || message.contains("max_proxies")
+                || message.contains("policy")
+            {
+                "denied"
+            } else {
+                "error"
+            },
+        );
+    }
+    ctx.state.audit.record(event);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_proxy_inner(
     ctx: &SessionContext,
     tenant_id: &str,
     client_id: &str,

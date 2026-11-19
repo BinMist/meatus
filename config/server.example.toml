@@ -89,3 +89,7 @@ trust_forwarded_proto = false
 [log]
 level = "info"
 format = "text" # text | json
+
+[audit]
+# 审计 JSONL 目录；缺省为配置文件同级 audit/，例如 /data/audit
+# dir = "/var/lib/meatus/audit"

@@ -27,6 +27,7 @@
 | 客户端级授权 | `auth.clients[]` 支持 `allow_types`、`allow_domains`、`max_proxies`，在 proxy 创建时校验，越权返回 `PolicyDenied` |
 | 客户端级配额 | 支持 `rate_limit_bps`、`monthly_bytes`、`max_conns`、`conn_rate_per_s`、`quota_action`；按 UTC 自然月累计 |
 | 可观测性 | 客户端页展示授权摘要与配额；`/metrics` 增加 `meatus_quota_denied_total`、`meatus_quota_throttled_total` |
+| 审计日志 | 登录、配置 / 客户端 / proxy 变更、客户端上下线写入 JSONL；面板“审计日志”可按时间、操作者、client、动作、结果查询最近 90 天 |
 
 ### V1.2 带来的变化
 
@@ -2563,6 +2564,22 @@ level = "debug"
 
 修改后重启对应进程。面板 “实时日志” 只保留进程内 2000 行，重启清空，不落盘。
 
+
+
+### 8.12 审计日志（V1.3）
+
+admin 写操作、客户端上下线和 proxy 创建 / 注销都会写入审计事件，字段为 `actor`、`source_ip`、`action`、`target`、`result`、`trace_id`。日志按 UTC 日切写成 `audit-YYYY-MM-DD.jsonl`，默认保留 90 天。
+
+```toml
+[audit]
+# 缺省：配置文件同级 audit/ 目录；Docker 数据卷下为 /data/audit
+dir = "/var/lib/meatus/audit"
+```
+
+- 不记录请求 body、admin token、Cookie、DNS API token 和私钥；事件中的敏感值统一替换为 `***`。
+- 写盘失败只产生 `warn`，不阻断转发；服务端未使用 `-c` 启动时仅保留内存事件，面板会显示“审计未落盘”。
+- 面板“审计日志”页支持按最近 24 小时 / 7 / 30 / 90 天、操作者、client、动作、结果过滤，并可导出当前查询结果为 NDJSON。
+- 直接查询管理 API：`GET /api/v1/audit?days=7&limit=200&action=client.create&client=home-nas`。
 
 
 ***

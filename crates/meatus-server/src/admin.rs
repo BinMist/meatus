@@ -57,6 +57,7 @@ pub struct AdminState {
     metrics: Arc<Metrics>,
     status: Arc<StatusRegistry>,
     quotas: Arc<crate::quota::MonthlyQuota>,
+    audit: Arc<crate::audit::AuditLog>,
     config: Arc<ServerConfig>,
     runtime: Arc<crate::RuntimeConfig>,
     reloader: Option<Arc<crate::ConfigReloader>>,
@@ -83,6 +84,7 @@ impl AdminState {
         metrics: Arc<Metrics>,
         status: Arc<StatusRegistry>,
         quotas: Arc<crate::quota::MonthlyQuota>,
+        audit: Arc<crate::audit::AuditLog>,
         config: Arc<ServerConfig>,
         runtime: Arc<crate::RuntimeConfig>,
         logs: Arc<LogBuffer>,
@@ -100,6 +102,7 @@ impl AdminState {
             metrics,
             status,
             quotas,
+            audit,
             config,
             runtime,
             reloader,
@@ -443,6 +446,25 @@ fn is_api(path: &str) -> bool {
 }
 
 async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResponse {
+    let response = route_inner(request, peer_ip, state).await;
+    if let Some((action, target, client_id)) = audit_spec(request) {
+        let result = match response.status {
+            200..=299 => "ok",
+            401 | 403 => "denied",
+            _ => "error",
+        };
+        let mut event = crate::audit::AuditEvent::new(action, target)
+            .source_ip(peer_ip)
+            .result(result);
+        if let Some(client_id) = client_id {
+            event = event.client(client_id);
+        }
+        state.audit.record(event);
+    }
+    response
+}
+
+async fn route_inner(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResponse {
     if let Some(id) = request.path.strip_prefix("/api/v1/clients/") {
         return clients_item(request, state, id).await;
     }
@@ -494,6 +516,32 @@ async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> Ht
         ("DELETE", "/api/v1/proxies") => proxy_delete(request, state).await,
         ("PUT", "/api/v1/settings") => settings_write(request, state).await,
         ("POST", "/api/v1/config/reload") => config_reload(request, state),
+        ("GET", "/api/v1/audit") => {
+            if !authorized(request, state) {
+                return HttpResponse::json(401, json!({"error": "unauthorized"}));
+            }
+            let filter = crate::audit::AuditFilter {
+                days: query_value(&request.query, "days")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(7),
+                limit: query_value(&request.query, "limit")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(200),
+                actor: query_value(&request.query, "actor"),
+                action: query_value(&request.query, "action"),
+                client_id: query_value(&request.query, "client"),
+                result: query_value(&request.query, "result"),
+            };
+            let events = state.audit.query(&filter);
+            HttpResponse::json(
+                200,
+                json!({
+                    "events": events,
+                    "persistent": state.audit.is_persistent(),
+                    "dir": state.audit.dir().map(|path| path.display().to_string()),
+                }),
+            )
+        }
         ("GET", "/api/v1/settings") => {
             if !authorized(request, state) {
                 return HttpResponse::json(401, json!({"error": "unauthorized"}));
@@ -525,6 +573,56 @@ async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> Ht
         }
         _ => HttpResponse::text(404, "not found"),
     }
+}
+
+fn audit_spec(request: &HttpRequest) -> Option<(&'static str, String, Option<String>)> {
+    let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
+    let body_str = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    if let Some(id) = request.path.strip_prefix("/api/v1/clients/")
+        && !id.is_empty()
+        && !id.contains('/')
+    {
+        let action = match request.method.as_str() {
+            "PUT" => "client.rotate",
+            "DELETE" => "client.delete",
+            _ => return None,
+        };
+        return Some((action, id.to_string(), Some(id.to_string())));
+    }
+    let action = match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/api/v1/session") => ("login", "session".to_string(), None),
+        ("DELETE", "/api/v1/session") => ("logout", "session".to_string(), None),
+        ("POST", "/api/v1/clients") => {
+            let id = body_str("id").unwrap_or_else(|| "client".to_string());
+            ("client.create", id.clone(), Some(id))
+        }
+        ("POST", "/api/v1/proxies") | ("PUT", "/api/v1/proxies") => {
+            let name = body_str("name").unwrap_or_else(|| "proxy".to_string());
+            let client = body_str("client_id");
+            let action = if request.method == "POST" {
+                "proxy.create"
+            } else {
+                "proxy.update"
+            };
+            (action, name, client)
+        }
+        ("DELETE", "/api/v1/proxies") => {
+            let name = query_value(&request.query, "name")
+                .or_else(|| body_str("name"))
+                .unwrap_or_else(|| "proxy".to_string());
+            ("proxy.delete", name, body_str("client_id"))
+        }
+        ("PUT", "/api/v1/settings") => ("settings.update", "settings".to_string(), None),
+        ("POST", "/api/v1/config/reload") => ("config.reload", "config".to_string(), None),
+        _ => return None,
+    };
+    Some(action)
 }
 
 async fn proxy_write(request: &HttpRequest, state: &AdminState, replace: bool) -> HttpResponse {
@@ -2508,6 +2606,41 @@ mod tests {
             parse_client_policy(&json!({ "max_proxies": 2000 })).is_err(),
             "max_proxies above 1024 must be rejected"
         );
+    }
+
+    fn request(method: &str, path: &str, body: Value) -> HttpRequest {
+        HttpRequest {
+            method: method.to_string(),
+            path: path.to_string(),
+            query: String::new(),
+            headers: String::new(),
+            body: body.to_string().into_bytes(),
+            secure: false,
+        }
+    }
+
+    #[test]
+    fn audit_spec_maps_write_operations() {
+        let create = request("POST", "/api/v1/clients", json!({"id": "nas"}));
+        let (action, target, client) = audit_spec(&create).expect("client create");
+        assert_eq!(action, "client.create");
+        assert_eq!(target, "nas");
+        assert_eq!(client.as_deref(), Some("nas"));
+
+        let rotate = request("PUT", "/api/v1/clients/nas", Value::Null);
+        assert_eq!(audit_spec(&rotate).expect("rotate").0, "client.rotate");
+
+        let delete = request("DELETE", "/api/v1/proxies", json!({"name": "web"}));
+        assert_eq!(audit_spec(&delete).expect("proxy delete").1, "web");
+
+        let settings = request("PUT", "/api/v1/settings", json!({}));
+        assert_eq!(
+            audit_spec(&settings).expect("settings").0,
+            "settings.update"
+        );
+
+        assert!(audit_spec(&request("GET", "/api/v1/clients", Value::Null)).is_none());
+        assert!(audit_spec(&request("GET", "/api/v1/audit", Value::Null)).is_none());
     }
 
     #[test]
