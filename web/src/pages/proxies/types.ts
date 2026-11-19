@@ -1,4 +1,4 @@
-import type { ProxyRow } from '../../types'
+import type { ProxyProbeResult, ProxyRow } from '../../types'
 
 export interface ProxyDraft {
   [key: string]: unknown
@@ -21,6 +21,9 @@ export type ProxyRowView = ProxyRow & {
   local_addr: string
   domainsText: string
   traffic: string
+  probe?: ProxyProbeResult
+  probeText: string
+  probeTone: 'ok' | 'fail' | ''
 }
 
 export interface ProxyTypeOption {

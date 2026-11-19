@@ -14,17 +14,21 @@
         :columns="columns"
         :rows="rows"
         :deleting="deleting"
+        :probing="probing"
         @copy="emit('copy', $event)"
         @edit="emit('edit', $event)"
         @remove="emit('remove', $event)"
+        @probe="emit('probe', $event)"
       />
       <ProxyCardList
         v-else
         :rows="rows"
         :deleting="deleting"
+        :probing="probing"
         @copy="emit('copy', $event)"
         @edit="emit('edit', $event)"
         @remove="emit('remove', $event)"
+        @probe="emit('probe', $event)"
       />
     </div>
   </sl-panel>
@@ -43,12 +47,13 @@ import type { ProxyRowView } from '../types'
 
 defineOptions({ name: 'ProxyListPanel' })
 
-defineProps<{ rows: ProxyRowView[]; deleting: string }>()
+defineProps<{ rows: ProxyRowView[]; deleting: string; probing: string }>()
 
 const emit = defineEmits<{
   copy: [row: ProxyRow]
   edit: [row: ProxyRow]
   remove: [row: ProxyRow]
+  probe: [row: ProxyRow]
 }>()
 
 const tableHost = ref<HTMLElement | null>(null)
@@ -59,7 +64,7 @@ const baseColumns: DataTableColumn[] = [
   { key: 'name', header: '名称', type: 'text', sortable: true, width: 118 },
   { key: 'type', header: '类型', type: 'text', width: 88 },
   { key: 'endpoint', header: '入口', type: 'text', width: 180 },
-  { key: 'local_addr', header: '本地服务', type: 'text', width: 150 },
+  { key: 'local_addr', header: '本地服务', type: 'text', width: 176 },
   { key: 'domainsText', header: '域名', type: 'text', width: 170 },
   {
     key: 'active_conns',
@@ -78,7 +83,7 @@ const baseColumns: DataTableColumn[] = [
     format: (value: unknown) => formatNumber(Number(value)),
   },
   { key: 'traffic', header: '流量', type: 'text', align: 'end', width: 86 },
-  { key: 'actions', header: '操作', type: 'actions', width: 120 },
+  { key: 'actions', header: '操作', type: 'actions', width: 150 },
 ]
 
 const columns = computed(() => {

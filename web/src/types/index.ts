@@ -6,6 +6,16 @@ export interface ClientRow {
   proxy_count: number
 }
 
+export interface ProxyProbeResult {
+  name: string
+  supported: boolean
+  ok: boolean
+  latency_ms: number
+  error_code: string
+  message: string
+  error?: string
+}
+
 export interface ProxyRow {
   name: string
   type: string

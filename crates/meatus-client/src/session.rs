@@ -115,6 +115,7 @@ async fn handshake(
                     "http".to_string(),
                     "https".to_string(),
                     "socks5".to_string(),
+                    "probe".to_string(),
                 ],
                 tenant_id: config.client.tenant.clone(),
                 token_id: String::new(),
@@ -501,6 +502,27 @@ async fn control_loop(
                                     ok: true,
                                     error: String::new(),
                                 })),
+                            },
+                        )
+                        .await?;
+                    }
+                    Some(control_msg::Kind::Probe(request)) => {
+                        let spec = proxies
+                            .read()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get(&request.proxy_name)
+                            .cloned();
+                        let result = crate::probe::run(
+                            request.request_id,
+                            &request.proxy_name,
+                            spec.as_ref(),
+                            request.timeout_ms,
+                        )
+                        .await;
+                        write_frame(
+                            writer,
+                            &ControlMsg {
+                                kind: Some(control_msg::Kind::ProbeResult(result)),
                             },
                         )
                         .await?;

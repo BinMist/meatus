@@ -90,6 +90,8 @@ impl ProxyMetrics {
 pub struct Metrics {
     started: Instant,
     connected: AtomicU64,
+    probe_ok: AtomicU64,
+    probe_fail: AtomicU64,
     proxies: Mutex<HashMap<String, Arc<ProxyMetrics>>>,
     handshake_fail: Mutex<HashMap<String, u64>>,
 }
@@ -99,6 +101,8 @@ impl Default for Metrics {
         Self {
             started: Instant::now(),
             connected: AtomicU64::new(0),
+            probe_ok: AtomicU64::new(0),
+            probe_fail: AtomicU64::new(0),
             proxies: Mutex::new(HashMap::new()),
             handshake_fail: Mutex::new(HashMap::new()),
         }
@@ -139,6 +143,14 @@ impl Metrics {
         *failures.entry(reason.to_string()).or_insert(0) += 1;
     }
 
+    pub fn probe_finished(&self, ok: bool) {
+        if ok {
+            self.probe_ok.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.probe_fail.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     #[must_use]
     pub fn uptime_secs(&self) -> u64 {
         self.started.elapsed().as_secs()
@@ -156,6 +168,19 @@ impl Metrics {
             out,
             "meatus_client_connected {}",
             self.connected.load(Ordering::Relaxed)
+        );
+
+        let _ = writeln!(out, "# HELP meatus_probe_total Admin proxy probes.");
+        let _ = writeln!(out, "# TYPE meatus_probe_total counter");
+        let _ = writeln!(
+            out,
+            "meatus_probe_total{{result=\"ok\"}} {}",
+            self.probe_ok.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "meatus_probe_total{{result=\"fail\"}} {}",
+            self.probe_fail.load(Ordering::Relaxed)
         );
 
         let proxies = self

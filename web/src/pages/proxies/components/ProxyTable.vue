@@ -14,7 +14,15 @@
     <template #cell="{ column, row }">
       <ProxyTypeTag v-if="column.key === 'type'" :type="String(row.type)" />
       <span v-else-if="column.key === 'endpoint'" class="mt-mono-cell">{{ row.endpoint }}</span>
-      <span v-else-if="column.key === 'local_addr'" class="mt-mono-cell">{{ row.local_addr }}</span>
+      <div v-else-if="column.key === 'local_addr'" class="mt-local-cell">
+        <span class="mt-mono-cell">{{ row.local_addr }}</span>
+        <span
+          v-if="row.probeText"
+          class="mt-probe-line"
+          :class="`is-${row.probeTone}`"
+          :title="String(row.probeText)"
+        >{{ row.probeText }}</span>
+      </div>
       <span
         v-else-if="column.key === 'domainsText'"
         class="mt-domain-cell"
@@ -30,9 +38,11 @@
       <ProxyRowActions
         :row="asProxy(row)"
         :deleting="deleting"
+        :probing="probing"
         @copy="emit('copy', $event)"
         @edit="emit('edit', $event)"
         @remove="emit('remove', $event)"
+        @probe="emit('probe', $event)"
       />
     </template>
   </sl-data-table>
@@ -53,15 +63,17 @@ defineProps<{
   columns: DataTableColumn[]
   rows: ProxyRowView[]
   deleting: string
+  probing: string
 }>()
 
 const emit = defineEmits<{
   copy: [row: ProxyRow]
   edit: [row: ProxyRow]
   remove: [row: ProxyRow]
+  probe: [row: ProxyRow]
 }>()
 
-function asProxy(row: DataTableRow): ProxyRow {
-  return row as unknown as ProxyRow
+function asProxy(row: DataTableRow): ProxyRowView {
+  return row as unknown as ProxyRowView
 }
 </script>

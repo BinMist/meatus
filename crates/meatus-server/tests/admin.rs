@@ -622,6 +622,33 @@ token = "secret"
     assert_eq!(status, 200);
     assert!(body.contains("echo-admin"));
 
+    let probe_body = format!(r#"{{"run_id":"{run_id}"}}"#);
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/proxies/echo-admin/probe HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{}\r\n",
+            json_body(&probe_body)
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "probe proxy: {body}");
+    assert!(body.contains("\"ok\":true"), "probe body: {body}");
+    assert!(body.contains("\"supported\":true"));
+    assert!(body.contains("\"latency_ms\""));
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/proxies/echo-admin/probe HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{}\r\n",
+            json_body(&probe_body)
+        ),
+    )
+    .await;
+    assert_eq!(
+        status, 429,
+        "second probe within 1s must be limited: {body}"
+    );
+
     let update = format!(
         r#"{{"run_id":"{run_id}","name":"echo-admin","type":"tcp","local_addr":"127.0.0.1:{echo_port}","remote_port":0,"custom_domains":[],"options":{{"max_conns":64}}}}"#
     );

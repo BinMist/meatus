@@ -62,6 +62,7 @@ pub struct AdminState {
     admin_token: Option<Arc<str>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     failures: Arc<Mutex<HashMap<IpAddr, LoginFailure>>>,
+    probes: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl AdminState {
@@ -78,7 +79,7 @@ impl AdminState {
         config: Arc<ServerConfig>,
         logs: Arc<LogBuffer>,
         admin_bus: Arc<AdminBus>,
-    ) -> Self {
+        ) -> Self {
         let admin_token = config
             .admin
             .admin_token
@@ -95,6 +96,7 @@ impl AdminState {
             config_path: None,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             failures: Arc::new(Mutex::new(HashMap::new())),
+            probes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -426,6 +428,14 @@ async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> Ht
     if let Some(id) = request.path.strip_prefix("/api/v1/clients/") {
         return clients_item(request, state, id).await;
     }
+    if request.method == "POST"
+        && let Some(name) = request
+            .path
+            .strip_prefix("/api/v1/proxies/")
+            .and_then(|rest| rest.strip_suffix("/probe"))
+    {
+        return proxy_probe(request, state, name).await;
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/healthz") => HttpResponse::json(
             200,
@@ -545,6 +555,118 @@ async fn proxy_write(request: &HttpRequest, state: &AdminState, replace: bool) -
         Ok(Err(_)) => HttpResponse::json(502, json!({"error": "client command channel closed"})),
         Err(_) => HttpResponse::json(504, json!({"error": "client command timeout"})),
     }
+}
+
+async fn proxy_probe(request: &HttpRequest, state: &AdminState, name: &str) -> HttpResponse {
+    if let Err(response) = write_allowed(request, state) {
+        return response;
+    }
+    if !valid_proxy_name(name) {
+        return HttpResponse::json(400, json!({"error": "invalid proxy name"}));
+    }
+    let body: Value = if request.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(_) => return HttpResponse::json(400, json!({"error": "invalid json"})),
+        }
+    };
+    let run_id = body
+        .get("run_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let entries = state.status.proxy_entries(name, run_id);
+    let entry = match entries.as_slice() {
+        [] => return HttpResponse::json(404, json!({"error": format!("proxy {name} not found")})),
+        [entry] => entry.clone(),
+        _ => {
+            return HttpResponse::json(
+                409,
+                json!({"error": "proxy name is ambiguous; pass run_id"}),
+            );
+        }
+    };
+    if !state.status.client_supports(&entry.run_id, "probe") {
+        return HttpResponse::json(
+            409,
+            json!({
+                "name": name,
+                "supported": false,
+                "ok": false,
+                "error": "当前客户端不支持诊断，请升级客户端到 1.2.1 或更高版本",
+            }),
+        );
+    }
+    if !probe_rate_allowed(state, &entry.run_id, name, &entry.proxy_type) {
+        return HttpResponse::json(
+            429,
+            json!({"error": "probe rate limited: 1 request/second"}),
+        );
+    }
+
+    let timeout_ms = 3_000u32;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let command = AdminProxyCommand::Probe {
+        proxy_name: name.to_string(),
+        timeout_ms,
+        reply: reply_tx,
+    };
+    if let Err(error) = state.admin_bus.send(&entry.run_id, command).await {
+        return HttpResponse::json(409, json!({"error": error}));
+    }
+    match timeout(Duration::from_secs(5), reply_rx).await {
+        Ok(Ok(Ok(result))) => {
+            state.metrics.probe_finished(result.ok);
+            HttpResponse::json(
+                200,
+                json!({
+                    "name": name,
+                    "supported": true,
+                    "ok": result.ok,
+                    "latency_ms": result.latency_ms,
+                    "error_code": result.error_code,
+                    "message": result.message,
+                }),
+            )
+        }
+        Ok(Ok(Err(error))) => HttpResponse::json(
+            probe_error_status(&error),
+            json!({"name": name, "supported": true, "ok": false, "error": error}),
+        ),
+        Ok(Err(_)) => HttpResponse::json(502, json!({"error": "client command channel closed"})),
+        Err(_) => HttpResponse::json(504, json!({"error": "probe timeout"})),
+    }
+}
+
+fn probe_error_status(error: &str) -> u16 {
+    if error.contains("不支持") {
+        409
+    } else if error.contains("timeout") {
+        504
+    } else {
+        502
+    }
+}
+
+fn probe_rate_allowed(state: &AdminState, run_id: &str, name: &str, proxy_type: &str) -> bool {
+    let key = format!("{run_id}\0{name}\0{proxy_type}");
+    let now = Instant::now();
+    let mut probes = state
+        .probes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if probes
+        .get(&key)
+        .is_some_and(|last| now.duration_since(*last) < Duration::from_secs(1))
+    {
+        return false;
+    }
+    if probes.len() > 512 {
+        probes.retain(|_, last| now.duration_since(*last) < Duration::from_secs(60));
+    }
+    probes.insert(key, now);
+    true
 }
 
 async fn proxy_delete(request: &HttpRequest, state: &AdminState) -> HttpResponse {
@@ -2050,4 +2172,5 @@ mod certificate_tests {
         assert_eq!(parsed[0].chain_length, 1);
         assert!(parsed[0].not_after > 0);
     }
+
 }

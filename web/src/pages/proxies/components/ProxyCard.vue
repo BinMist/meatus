@@ -14,6 +14,10 @@
         <dt>域名</dt>
         <dd class="mt-domain-cell">{{ row.domainsText }}</dd>
       </div>
+      <div v-if="row.probeText">
+        <dt>诊断</dt>
+        <dd class="mt-probe-line" :class="`is-${row.probeTone}`">{{ row.probeText }}</dd>
+      </div>
       <div>
         <dt>活跃 / 累计</dt>
         <dd>{{ formatNumber(Number(row.active_conns)) }} / {{ formatNumber(Number(row.conn_total)) }}</dd>
@@ -27,9 +31,11 @@
       <ProxyRowActions
         :row="row"
         :deleting="deleting"
+        :probing="probing"
         @copy="emit('copy', $event)"
         @edit="emit('edit', $event)"
         @remove="emit('remove', $event)"
+        @probe="emit('probe', $event)"
       />
     </footer>
   </article>
@@ -44,11 +50,12 @@ import type { ProxyRowView } from '../types'
 
 defineOptions({ name: 'ProxyCard' })
 
-defineProps<{ row: ProxyRowView; deleting: string }>()
+defineProps<{ row: ProxyRowView; deleting: string; probing: string }>()
 
 const emit = defineEmits<{
   copy: [row: ProxyRow]
   edit: [row: ProxyRow]
   remove: [row: ProxyRow]
+  probe: [row: ProxyRow]
 }>()
 </script>

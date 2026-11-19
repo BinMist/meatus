@@ -15,6 +15,7 @@ struct ClientEntry {
     client_id: String,
     run_id: String,
     connected_at_ms: i64,
+    caps: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,7 +47,13 @@ pub struct StatusRegistry {
 }
 
 impl StatusRegistry {
-    pub fn client_connected(&self, tenant_id: &str, client_id: &str, run_id: &str) {
+    pub fn client_connected(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        run_id: &str,
+        caps: &[String],
+    ) {
         let key = format!("{tenant_id}\0{client_id}\0{run_id}");
         self.inner
             .write()
@@ -59,6 +66,7 @@ impl StatusRegistry {
                     client_id: client_id.to_string(),
                     run_id: run_id.to_string(),
                     connected_at_ms: now_ms(),
+                    caps: caps.to_vec(),
                 },
             );
     }
@@ -92,6 +100,29 @@ impl StatusRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .proxies
             .remove(&proxy_key(tenant_id, client_id, run_id, name));
+    }
+
+    #[must_use]
+    pub fn client_supports(&self, run_id: &str, cap: &str) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clients
+            .values()
+            .find(|entry| entry.run_id == run_id)
+            .is_some_and(|entry| entry.caps.iter().any(|value| value == cap))
+    }
+
+    #[must_use]
+    pub fn proxy_entries(&self, name: &str, run_id: Option<&str>) -> Vec<ProxyEntry> {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .proxies
+            .values()
+            .filter(|entry| entry.name == name && run_id.is_none_or(|id| entry.run_id == id))
+            .cloned()
+            .collect()
     }
 
     pub fn render(&self, metrics: &Metrics) -> Value {

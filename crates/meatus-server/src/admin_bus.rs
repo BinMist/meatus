@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use meatus_proto::v1::{NewProxy, ProxyOk};
+use meatus_proto::v1::{NewProxy, ProbeResult, ProxyOk};
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
@@ -18,6 +18,11 @@ pub(crate) enum AdminProxyCommand {
     Remove {
         name: String,
         reply: oneshot::Sender<Result<(), String>>,
+    },
+    Probe {
+        proxy_name: String,
+        timeout_ms: u32,
+        reply: oneshot::Sender<Result<ProbeResult, String>>,
     },
 }
 

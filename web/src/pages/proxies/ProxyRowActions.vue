@@ -4,6 +4,18 @@
       type="ghost"
       size="xs"
       icon-only
+      aria-label="测试本地服务"
+      title="测试本地服务连通性"
+      :loading="probing === row.key"
+      :disabled="probing === row.key"
+      @click="$emit('probe', row)"
+    >
+      <sl-icon name="bolt" :size="14" />
+    </sl-button>
+    <sl-button
+      type="ghost"
+      size="xs"
+      icon-only
       aria-label="复制入口地址"
       title="复制入口地址"
       @click="$emit('copy', row)"
@@ -50,12 +62,14 @@ import { SlButton } from '@sailonix/ui/button'
 import { SlIcon } from '@sailonix/icon'
 import { SlPopconfirm } from '@sailonix/ui/popconfirm'
 import type { ProxyRow } from '../../types'
+import type { ProxyRowView } from './types'
 
-defineProps<{ row: ProxyRow; deleting?: string }>()
+defineProps<{ row: ProxyRowView; deleting?: string; probing?: string }>()
 defineEmits<{
   copy: [row: ProxyRow]
   edit: [row: ProxyRow]
   remove: [row: ProxyRow]
+  probe: [row: ProxyRow]
 }>()
 </script>
 

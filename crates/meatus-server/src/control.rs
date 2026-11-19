@@ -15,8 +15,8 @@ use meatus_core::{
 use meatus_proto::{
     ErrorCode, PROTOCOL_VERSION,
     v1::{
-        AdminAddProxy, AdminRemoveProxy, Challenge, ControlMsg, Hello, NewProxy, Ping, Pong,
-        ProxyOk, ProxyType, StreamHeader, StreamKind, UdpPacket, Welcome, control_msg,
+        AdminAddProxy, AdminRemoveProxy, Challenge, ControlMsg, Hello, NewProxy, Ping, Pong, Probe,
+        ProbeResult, ProxyOk, ProxyType, StreamHeader, StreamKind, UdpPacket, Welcome, control_msg,
     },
 };
 use tokio::io::{ReadHalf, WriteHalf};
@@ -198,7 +198,7 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
     .await?;
     ctx.state
         .status
-        .client_connected(&hello.tenant_id, &hello.client_id, &run_id);
+        .client_connected(&hello.tenant_id, &hello.client_id, &run_id, &hello.caps);
     struct ClientStatusGuard {
         state: Arc<ServerState>,
         tenant_id: String,
@@ -269,6 +269,7 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
                     &hello.tenant_id,
                     &hello.client_id,
                     &run_id,
+                    &hello.caps,
                     next_trace.clone(),
                     &mut next_admin_id,
                 ).await?;
@@ -357,7 +358,9 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
                     | Some(control_msg::Kind::ProxyOk(_))
                     | Some(control_msg::Kind::AdminAddProxy(_))
                     | Some(control_msg::Kind::AdminRemoveProxy(_))
-                    | Some(control_msg::Kind::AdminProxyAck(_)) => {
+                    | Some(control_msg::Kind::AdminProxyAck(_))
+                    | Some(control_msg::Kind::Probe(_))
+                    | Some(control_msg::Kind::ProbeResult(_)) => {
                         debug!("ignoring unexpected control message");
                     }
                     None => {}
@@ -380,6 +383,7 @@ async fn handle_admin_command(
     tenant_id: &str,
     client_id: &str,
     run_id: &str,
+    caps: &[String],
     next_trace: Arc<AtomicU64>,
     next_admin_id: &mut u64,
 ) -> anyhow::Result<()> {
@@ -421,8 +425,96 @@ async fn handle_admin_command(
             .await;
             let _ = reply.send(result);
         }
+        AdminProxyCommand::Probe {
+            proxy_name,
+            timeout_ms,
+            reply,
+        } => {
+            let request_id = *next_admin_id;
+            *next_admin_id += 1;
+            let result = probe_via_client(
+                reader,
+                writer,
+                proxies,
+                &proxy_name,
+                timeout_ms,
+                caps,
+                request_id,
+            )
+            .await;
+            let _ = reply.send(result);
+        }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn probe_via_client(
+    reader: &mut Reader,
+    writer: &mut Writer,
+    proxies: &HashMap<String, ProxyRuntime>,
+    proxy_name: &str,
+    timeout_ms: u32,
+    caps: &[String],
+    request_id: u64,
+) -> Result<ProbeResult, String> {
+    if !caps.iter().any(|cap| cap == "probe") {
+        return Err("当前客户端不支持诊断，请升级客户端到 1.2.1 或更高版本".to_string());
+    }
+    if !proxies.contains_key(proxy_name) {
+        return Err(format!("proxy {proxy_name} not registered"));
+    }
+    write_frame(
+        writer,
+        &ControlMsg {
+            kind: Some(control_msg::Kind::Probe(Probe {
+                request_id,
+                proxy_name: proxy_name.to_string(),
+                timeout_ms,
+            })),
+        },
+    )
+    .await
+    .map_err(|error| format!("send probe: {error}"))?;
+
+    let wait = Duration::from_millis(u64::from(timeout_ms.clamp(500, 3_000) + 1_000));
+    let deadline = TokioInstant::now() + wait;
+    loop {
+        let remaining = deadline.saturating_duration_since(TokioInstant::now());
+        if remaining.is_zero() {
+            return Err("probe timeout".to_string());
+        }
+        let frame = timeout(remaining, read_frame::<_, ControlMsg>(reader)).await;
+        match frame {
+            Ok(Ok(msg)) => match msg.kind {
+                Some(control_msg::Kind::ProbeResult(result)) if result.request_id == request_id => {
+                    return Ok(result);
+                }
+                Some(control_msg::Kind::Ping(ping)) => {
+                    write_frame(
+                        writer,
+                        &ControlMsg {
+                            kind: Some(control_msg::Kind::Pong(Pong {
+                                seq: ping.seq,
+                                ts_ms: now_ms(),
+                            })),
+                        },
+                    )
+                    .await
+                    .map_err(|error| format!("send pong: {error}"))?;
+                }
+                Some(control_msg::Kind::Error(err)) if err.fatal => {
+                    return Err(format!("client error {}: {}", err.code, err.message));
+                }
+                Some(_) | None => continue,
+            },
+            Ok(Err(WireError::Closed)) => {
+                return Err("client disconnected during probe".to_string());
+            }
+            Ok(Err(error)) => return Err(format!("read probe result: {error}")),
+            Err(_) => return Err("probe timeout".to_string()),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -853,7 +945,7 @@ async fn start_proxy(
                         warn!(
                             proxy = %request.name,
                             domain = %domain,
-                            "acme only issues exact domains over http-01; wildcard falls back to sni"
+                            "acme did not enable tls termination for this domain; falls back to sni"
                         );
                     }
                 }

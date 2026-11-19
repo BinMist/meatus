@@ -25,6 +25,9 @@ import { dismissNotification, notifications } from '../services/notifications'
 <style scoped>
 .mt-notification-viewport {
   top: 84px;
+  /* 余量必须 ≥ 阴影的「偏移 + 模糊」外扩（当前 10 + 30 = 40px），
+     否则滚动容器的矩形裁剪会把阴影切成一条直边。 */
+  --sl-notification-shadow-bleed: 48px;
 }
 
 .mt-notification-list {
@@ -35,7 +38,9 @@ import { dismissNotification, notifications } from '../services/notifications'
 }
 
 :deep(.sl-notification) {
-  box-shadow: 0 18px 44px rgba(31, 44, 49, 0.16);
+  /* 偏移收拢到 10px：18px 偏移 + 44px 模糊会把阴影甩到卡片下方，
+     看着像卡片下又挂了一条灰板；10+30 的外扩是 40px，边缘刚好贴合卡片轮廓。 */
+  box-shadow: 0 10px 30px rgba(31, 44, 49, 0.14);
 }
 
 .mt-notification-enter-active,

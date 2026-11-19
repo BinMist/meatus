@@ -31,9 +31,11 @@
     <ProxyListPanel
       :rows="rows"
       :deleting="deleting"
+      :probing="probing"
       @copy="copyAddress"
       @edit="openEdit"
       @remove="removeProxy"
+      @probe="probeProxy"
     />
 
     <ProxyFormDialog
@@ -65,6 +67,7 @@ import { dismissNotification, notifyError, notifySuccess, notifyWarning } from '
 import { apiGet, apiWrite, formatBytes, formatNumber } from '../../services/api'
 import type {
   ClientRow,
+  ProxyProbeResult,
   ProxyRow,
   ProxyWriteResponse,
   SettingsSnapshot,
@@ -79,8 +82,10 @@ const dialogOpen = ref(false)
 const editing = ref<ProxyRow | null>(null)
 const saving = ref(false)
 const deleting = ref('')
+const probing = ref('')
 const dialogError = ref('')
 const updatedAt = ref('')
+const probeResults = reactive<Record<string, ProxyProbeResult>>({})
 let noClientsNoticeShown = false
 let noClientsNoticeId: number | null = null
 let timer: number | undefined
@@ -174,6 +179,15 @@ function endpointOf(proxy: ProxyRow): string {
   return `:${proxy.remote_port}`
 }
 
+function probeText(probe?: ProxyProbeResult): string {
+  if (!probe) return ''
+  if (probe.ok) return `可达 ${probe.latency_ms}ms`
+  if (probe.error_code === 'unsupported') return probe.message || '当前客户端不支持诊断'
+  if (probe.error_code === 'requires_request') return probe.message || '需实际请求验证'
+  if (probe.error_code === 'request_failed') return probe.message || '诊断请求失败'
+  return `不可达：${probe.message || probe.error || probe.error_code || '未知错误'}`
+}
+
 const rows = computed<ProxyRowView[]>(() => {
   const keyword = applied.keyword
   return proxies.value
@@ -192,14 +206,21 @@ const rows = computed<ProxyRowView[]>(() => {
         .toLowerCase()
         .includes(keyword)
     })
-    .map((proxy) => ({
-      ...proxy,
-      key: `${proxy.run_id}-${proxy.name}`,
-      endpoint: endpointOf(proxy),
-      local_addr: proxy.type === 'socks5' ? '—' : proxy.local_addr || '—',
-      domainsText: proxy.domains.length ? proxy.domains.join(', ') : '—',
-      traffic: formatBytes(proxy.bytes_in + proxy.bytes_out),
-    }))
+    .map((proxy) => {
+      const key = `${proxy.run_id}-${proxy.name}`
+      const probe = probeResults[key]
+      return {
+        ...proxy,
+        key,
+        endpoint: endpointOf(proxy),
+        local_addr: proxy.type === 'socks5' ? '—' : proxy.local_addr || '—',
+        domainsText: proxy.domains.length ? proxy.domains.join(', ') : '—',
+        traffic: formatBytes(proxy.bytes_in + proxy.bytes_out),
+        probe,
+        probeText: probeText(probe),
+        probeTone: probe ? (probe.ok ? 'ok' : 'fail') : '',
+      }
+    })
 })
 
 function resetDialog() {
@@ -313,6 +334,46 @@ async function submit() {
     dialogError.value = err instanceof Error ? err.message : String(err)
   } finally {
     saving.value = false
+  }
+}
+
+async function probeProxy(row: ProxyRow) {
+  const key = `${row.run_id}-${row.name}`
+  probing.value = key
+  try {
+    const result = await apiWrite<ProxyProbeResult>(
+      'POST',
+      `/api/v1/proxies/${encodeURIComponent(row.name)}/probe`,
+      { run_id: row.run_id },
+    )
+    probeResults[key] = result
+    if (result.ok) {
+      notifySuccess(
+        `诊断可达：${row.name}`,
+        `本地服务 ${row.local_addr} 响应 ${result.latency_ms}ms`,
+      )
+    } else if (result.error_code === 'requires_request') {
+      notifyWarning(`诊断：${row.name}`, result.message || 'SOCKS5 需实际请求验证')
+    } else {
+      notifyWarning(
+        `诊断不可达：${row.name}`,
+        result.message || result.error_code || '本地服务不可达',
+      )
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const unsupported = message.includes('不支持')
+    probeResults[key] = {
+      name: row.name,
+      supported: false,
+      ok: false,
+      latency_ms: 0,
+      error_code: unsupported ? 'unsupported' : 'request_failed',
+      message,
+    }
+    notifyError('诊断失败', message)
+  } finally {
+    probing.value = ''
   }
 }
 

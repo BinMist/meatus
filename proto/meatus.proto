@@ -83,6 +83,24 @@ message AdminProxyAck {
   string error      = 3;
 }
 
+// 管理面诊断：server -> client，测试一条 proxy 指向的本地服务是否可达。
+// 老客户端不声明 "probe" cap 时不应收到该帧。
+message Probe {
+  uint64 request_id = 1;
+  string proxy_name = 2;
+  uint32 timeout_ms = 3;
+}
+
+// 客户端诊断结果：只报告本地服务可达性与延迟，不转发真实业务数据。
+message ProbeResult {
+  uint64 request_id = 1;
+  string proxy_name = 2;
+  bool   ok         = 3;
+  uint32 latency_ms = 4;
+  string error_code = 5;
+  string message    = 6;
+}
+
 message Ping {
   uint64 seq   = 1;
   int64  ts_ms = 2;
@@ -124,6 +142,8 @@ message ControlMsg {
     AdminAddProxy    admin_add_proxy    = 12;
     AdminRemoveProxy admin_remove_proxy = 13;
     AdminProxyAck    admin_proxy_ack    = 14;
+    Probe            probe              = 15;
+    ProbeResult      probe_result       = 16;
   }
 }
 

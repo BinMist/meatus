@@ -7,6 +7,31 @@
   white-space: nowrap;
 }
 
+.mt-local-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mt-probe-line {
+  display: block;
+  overflow: hidden;
+  color: var(--mt-ink-3);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-probe-line.is-ok {
+  color: var(--sl-color-success, #047857);
+}
+
+.mt-probe-line.is-fail {
+  color: var(--sl-color-danger, #b42318);
+}
+
 .mt-table-host {
   width: 100%;
   min-width: 0;
