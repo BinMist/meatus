@@ -45,6 +45,7 @@ pub struct BackupSecrets {
     pub admin_token: Option<String>,
     pub dns_api_token: Option<String>,
     pub client_token: Option<String>,
+    pub admin_user_tokens: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +210,12 @@ pub fn secrets_from_raw(path: &Path, raw: &str) -> BackupSecrets {
             admin_token: config.admin.admin_token,
             dns_api_token: config.acme.dns_api_token,
             client_token: None,
+            admin_user_tokens: config
+                .admin
+                .users
+                .into_iter()
+                .filter_map(|user| user.token.map(|token| (user.name, token)))
+                .collect(),
         };
     }
     if let Ok(config) = crate::config::parse_client_config_unchecked_with_format(raw, format) {
@@ -216,6 +223,7 @@ pub fn secrets_from_raw(path: &Path, raw: &str) -> BackupSecrets {
             admin_token: None,
             dns_api_token: None,
             client_token: Some(config.client.token),
+            admin_user_tokens: Vec::new(),
         };
     }
     BackupSecrets::default()
@@ -291,6 +299,7 @@ fn redact_server(raw: &str, format: ConfigFormat) -> Result<String, String> {
                 "admin_token",
                 SECRET_PLACEHOLDER,
             );
+            replace_admin_user_tokens(document.as_table_mut(), SECRET_PLACEHOLDER);
             replace_toml(
                 document.as_table_mut(),
                 "acme",
@@ -337,12 +346,14 @@ fn restore_server(
                 "admin_token",
                 secrets.admin_token.as_deref(),
             );
+            apply_admin_user_tokens(document.as_table_mut(), &secrets.admin_user_tokens);
             apply_toml(
                 document.as_table_mut(),
                 "acme",
                 "dns_api_token",
                 secrets.dns_api_token.as_deref(),
             );
+            ensure_no_user_token_placeholder(&document.to_string(), ConfigFormat::Toml)?;
             Ok(document.to_string())
         }
     }
@@ -403,6 +414,7 @@ fn redact_yaml(raw: &str, server: bool) -> Result<String, String> {
     if let Some(root) = value.as_mapping_mut() {
         if server {
             set_yaml_secret(root, "admin", "admin_token");
+            set_yaml_admin_user_tokens(root);
             set_yaml_secret(root, "acme", "dns_api_token");
         } else {
             set_yaml_secret(root, "client", "token");
@@ -425,6 +437,121 @@ fn set_yaml_secret(root: &mut Mapping, section: &str, key: &str) {
     }
 }
 
+fn replace_admin_user_tokens(table: &mut toml_edit::Table, replacement: &str) {
+    if let Some(users) = table
+        .get_mut("admin")
+        .and_then(|item| item.as_table_mut())
+        .and_then(|admin| admin.get_mut("users"))
+        .and_then(|item| item.as_array_of_tables_mut())
+    {
+        for user in users.iter_mut() {
+            if let Some(item) = user.get_mut("token")
+                && !item.as_str().is_some_and(is_env_placeholder)
+            {
+                *item = value(replacement);
+            }
+        }
+    }
+}
+
+fn apply_admin_user_tokens(table: &mut toml_edit::Table, secrets: &[(String, String)]) {
+    if let Some(users) = table
+        .get_mut("admin")
+        .and_then(|item| item.as_table_mut())
+        .and_then(|admin| admin.get_mut("users"))
+        .and_then(|item| item.as_array_of_tables_mut())
+    {
+        for user in users.iter_mut() {
+            let Some(name) = user.get("name").and_then(toml_edit::Item::as_str) else {
+                continue;
+            };
+            let Some(secret) = secrets
+                .iter()
+                .find(|(user, _)| user == name)
+                .map(|(_, token)| token)
+            else {
+                continue;
+            };
+            if let Some(item) = user.get_mut("token")
+                && item
+                    .as_str()
+                    .is_some_and(|value| value == SECRET_PLACEHOLDER)
+            {
+                *item = value(secret);
+            }
+        }
+    }
+}
+
+fn ensure_no_user_token_placeholder(raw: &str, format: ConfigFormat) -> Result<(), String> {
+    let config = crate::config::parse_server_config_unchecked_with_format(raw, format)
+        .map_err(|error| format!("parse restored server config: {error}"))?;
+    if config
+        .admin
+        .users
+        .iter()
+        .any(|user| user.token.as_deref() == Some(SECRET_PLACEHOLDER))
+    {
+        return Err("备份中的 admin.users token 未替换；请使用当前配置文件执行恢复".to_string());
+    }
+    Ok(())
+}
+
+fn set_yaml_admin_user_tokens(root: &mut Mapping) {
+    let Some(users) = root
+        .get_mut(YamlValue::String("admin".to_string()))
+        .and_then(YamlValue::as_mapping_mut)
+        .and_then(|admin| admin.get_mut(YamlValue::String("users".to_string())))
+        .and_then(YamlValue::as_sequence_mut)
+    else {
+        return;
+    };
+    for user in users.iter_mut() {
+        if let Some(user) = user.as_mapping_mut()
+            && let Some(item) = user.get_mut(YamlValue::String("token".to_string()))
+            && !item.as_str().is_some_and(is_env_placeholder)
+        {
+            *item = YamlValue::String(SECRET_PLACEHOLDER.to_string());
+        }
+    }
+}
+
+fn apply_yaml_admin_user_tokens(root: &mut Mapping, secrets: &[(String, String)]) {
+    let Some(users) = root
+        .get_mut(YamlValue::String("admin".to_string()))
+        .and_then(YamlValue::as_mapping_mut)
+        .and_then(|admin| admin.get_mut(YamlValue::String("users".to_string())))
+        .and_then(YamlValue::as_sequence_mut)
+    else {
+        return;
+    };
+    for user in users.iter_mut() {
+        let Some(user) = user.as_mapping_mut() else {
+            continue;
+        };
+        let Some(name) = user
+            .get(YamlValue::String("name".to_string()))
+            .and_then(YamlValue::as_str)
+        else {
+            continue;
+        };
+        let Some(secret) = secrets
+            .iter()
+            .find(|(user, _)| user == name)
+            .map(|(_, token)| token)
+        else {
+            continue;
+        };
+        if let Some(item) = user.get_mut(YamlValue::String("token".to_string()))
+            && item
+                .as_str()
+                .is_some_and(|value| value == SECRET_PLACEHOLDER)
+        {
+            *item = YamlValue::String(secret.clone());
+        }
+    }
+}
+
 fn is_env_placeholder(value: &str) -> bool {
     let value = value.trim();
     value.starts_with("${") && value.ends_with('}')
@@ -440,6 +567,7 @@ fn restore_yaml(
     if let Some(root) = value.as_mapping_mut() {
         if server_keys.contains(&"admin_token") {
             apply_yaml_secret(root, "admin", "admin_token", secrets.admin_token.as_deref());
+            apply_yaml_admin_user_tokens(root, &secrets.admin_user_tokens);
             apply_yaml_secret(
                 root,
                 "acme",
@@ -450,7 +578,12 @@ fn restore_yaml(
             apply_yaml_secret(root, "client", "token", secrets.client_token.as_deref());
         }
     }
-    serde_yaml::to_string(&value).map_err(|err| format!("serialize yaml config: {err}"))
+    let rendered =
+        serde_yaml::to_string(&value).map_err(|err| format!("serialize yaml config: {err}"))?;
+    if server_keys.contains(&"admin_token") {
+        ensure_no_user_token_placeholder(&rendered, ConfigFormat::Yaml)?;
+    }
+    Ok(rendered)
 }
 
 fn apply_yaml_secret(root: &mut Mapping, section: &str, key: &str, secret: Option<&str>) {
@@ -542,6 +675,11 @@ clients = [
 bind = "127.0.0.1:7400"
 admin_token = "admin-secret"
 
+[[admin.users]]
+name = "alice"
+role = "operator"
+token = "alice-secret"
+
 [acme]
 enabled = true
 email = "ops@example.com"
@@ -568,6 +706,7 @@ dns_api_token = "cf-secret"
         let backup = create_backup(&path, SERVER, env!("CARGO_PKG_VERSION")).expect("backup");
         assert!(!backup.config.contains("admin-secret"));
         assert!(!backup.config.contains("cf-secret"));
+        assert!(!backup.config.contains("alice-secret"));
         assert!(backup.config.contains("token_sha256"));
         assert_eq!(
             backup.certificates.len(),
@@ -584,6 +723,7 @@ dns_api_token = "cf-secret"
                 admin_token: Some("admin-secret".to_string()),
                 dns_api_token: Some("cf-secret".to_string()),
                 client_token: None,
+                admin_user_tokens: vec![("alice".to_string(), "alice-secret".to_string())],
             },
         )
         .expect("restore");
@@ -591,6 +731,53 @@ dns_api_token = "cf-secret"
         let restored = fs::read_to_string(&path).expect("read");
         assert!(restored.contains("admin-secret"));
         assert!(restored.contains("cf-secret"));
+        assert!(restored.contains("alice-secret"));
+    }
+
+    #[test]
+    fn yaml_backup_redacts_and_restores_admin_user_tokens() {
+        let dir = temp("yaml-users");
+        let path = dir.join("server.yaml");
+        let raw = r#"
+server:
+  bind_addr: "127.0.0.1"
+  control_port: 7000
+  tls_cert: "server.crt"
+  tls_key: "server.key"
+auth:
+  clients:
+    - id: nas
+      tenant: default
+      token_sha256: "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b"
+admin:
+  bind: "127.0.0.1:7400"
+  admin_token: "admin-secret"
+  users:
+    - name: alice
+      role: operator
+      token: "alice-secret"
+acme:
+  enabled: true
+  email: "ops@example.com"
+  challenge: dns-01
+  dns_provider: cloudflare
+  dns_api_token: "cf-secret"
+"#;
+        fs::write(&path, raw).expect("write");
+        let backup = create_backup(&path, raw, env!("CARGO_PKG_VERSION")).expect("backup");
+        assert!(!backup.config.contains("admin-secret"));
+        assert!(!backup.config.contains("alice-secret"));
+        let secrets = BackupSecrets {
+            admin_token: Some("admin-secret".to_string()),
+            dns_api_token: Some("cf-secret".to_string()),
+            client_token: None,
+            admin_user_tokens: vec![("alice".to_string(), "alice-secret".to_string())],
+        };
+        let outcome = restore_backup(&backup, &path, &secrets).expect("restore");
+        assert!(outcome.backup_path.is_some());
+        let restored = fs::read_to_string(&path).expect("read");
+        assert!(restored.contains("admin-secret"));
+        assert!(restored.contains("alice-secret"));
     }
 
     #[test]
