@@ -78,7 +78,7 @@ fn default_tenant() -> String {
 // 服务端
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub server: ServerSection,
@@ -101,7 +101,7 @@ pub struct ServerConfig {
     pub log: LogSection,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerSection {
     #[serde(default = "default_bind_addr")]
@@ -131,7 +131,7 @@ impl Default for ServerSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TenantSection {
     #[serde(default = "default_tenant")]
@@ -160,7 +160,7 @@ pub enum AuthProviderKind {
     Remote,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthSection {
     #[serde(default = "default_auth_mode")]
@@ -192,7 +192,7 @@ impl Default for AuthSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientEntry {
     pub id: String,
@@ -225,7 +225,7 @@ impl AuthSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PortsSection {
     pub range: [u16; 2],
@@ -239,7 +239,7 @@ impl Default for PortsSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpSection {
     #[serde(default)]
@@ -281,7 +281,7 @@ pub enum AcmeChallenge {
     Dns01,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcmeSection {
     #[serde(default)]
@@ -326,7 +326,7 @@ impl Default for AcmeSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Socks5Section {
     #[serde(default)]
@@ -348,7 +348,7 @@ impl Default for Socks5Section {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdminSection {
     #[serde(default = "default_admin_bind")]
@@ -363,7 +363,7 @@ pub struct AdminSection {
     pub trust_forwarded_proto: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdminTlsSection {
     #[serde(default)]
@@ -409,7 +409,7 @@ impl Default for AdminSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CtrlSection {
     pub url: String,
@@ -424,7 +424,7 @@ pub enum LogFormat {
     Json,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogSection {
     #[serde(default = "default_log_level")]

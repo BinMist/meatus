@@ -158,9 +158,8 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
         bail!("expected Auth frame");
     };
 
-    match ctx
-        .state
-        .auth
+    let auth_provider = ctx.state.runtime.auth();
+    match auth_provider
         .verify_hmac(&hello.tenant_id, &hello.client_id, &nonce, &auth.hmac)
         .await
     {

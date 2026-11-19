@@ -11,11 +11,11 @@
       </div>
       <div>
         <span class="mt-note-index">03</span>
-        <span class="mt-note-text">保存成功后进程退出，Docker <code>unless-stopped</code> / systemd <code>Restart=always</code> 会拉起。</span>
+        <span class="mt-note-text">保存成功后立即热加载 auth / 日志；监听地址、TLS 证书、ACME 路径等变更会提示需重启，不自动重启。</span>
       </div>
       <div>
         <span class="mt-note-index">04</span>
-        <span class="mt-note-text">认证 token、TLS 证书路径、admin 绑定与会话参数不在线修改。</span>
+        <span class="mt-note-text">auth 客户端与令牌热加载；admin_token、admin.tls、admin 绑定与会话参数不在线修改。</span>
       </div>
     </div>
   </sl-panel>

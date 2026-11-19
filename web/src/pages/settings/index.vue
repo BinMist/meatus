@@ -1,18 +1,33 @@
 <template>
   <div class="page">
-    <sl-page-header title="系统设置" sub-title="在线修改 server.toml；保存后面板会短暂中断并自动重启">
+    <sl-page-header title="系统设置" sub-title="在线修改 server.toml；保存后热加载 auth / 日志，监听与证书变更会提示需重启">
       <template #extra>
         <PageActionsBar meta="在线配置 · server.toml" @refresh="refresh">
           <template #prefix>
             <sl-status-tag v-if="dirty" class="mode-chip" status="warning" size="sm" label="未保存修改" />
+            <sl-status-tag
+              v-else-if="settings?.reload.last_error"
+              class="mode-chip"
+              status="error"
+              size="sm"
+              label="上次重载失败"
+            />
           </template>
+          <sl-button
+            type="secondary"
+            size="sm"
+            :disabled="!settings?.reload.supported || reloading || saving"
+            @click="reloadConfig"
+          >
+            重载配置
+          </sl-button>
           <sl-button
             type="primary"
             size="sm"
             :disabled="!canSave || !dirty"
             @click="openConfirm"
           >
-            保存并重启
+            保存配置
           </sl-button>
         </PageActionsBar>
       </template>
@@ -42,7 +57,6 @@
     <SettingsSaveDialog
       v-model:open="confirmOpen"
       :saving="saving"
-      :restarting="restarting"
       @confirm="save"
       @cancel="confirmOpen = false"
     />
@@ -65,7 +79,7 @@ import SettingsReadonlySection from './components/SettingsReadonlySection.vue'
 import SettingsSaveDialog from './components/SettingsSaveDialog.vue'
 import SettingsSocksSection from './components/SettingsSocksSection.vue'
 import { dismissNotification, notifyError, notifySuccess, notifyWarning } from '../../services/notifications'
-import { apiGet, apiWrite } from '../../services/api'
+import { apiGet, apiWrite, formatTime } from '../../services/api'
 import type { SettingsSnapshot, SettingsUpdateResponse } from '../../types'
 import type { SelectOption, SettingsDraft, SettingsNavItem } from './types'
 
@@ -74,9 +88,8 @@ const lastRead = ref('')
 let editNoticeShown = false
 let editNoticeId: number | null = null
 const saving = ref(false)
-const restarting = ref(false)
+const reloading = ref(false)
 const confirmOpen = ref(false)
-let alive = true
 
 const sections = [
   { id: 'settings-control', label: '控制面与端口' },
@@ -130,7 +143,7 @@ const logFormatOptions: SelectOption[] = [
 
 const canEdit = computed(() => Boolean(settings.value?.writes.settings))
 const canSave = computed(
-  () => canEdit.value && !saving.value && !restarting.value && Boolean(settings.value),
+  () => canEdit.value && !saving.value && !reloading.value && Boolean(settings.value),
 )
 const dirty = computed(() => {
   if (!settings.value) return false
@@ -152,6 +165,19 @@ const readonlyItems = computed(() => {
     { label: 'CSRF', value: current.session.csrf_required ? '写操作强制校验' : '未启用' },
     { label: '登录失败锁定', value: `${current.session.login_max_failures} 次 / ${formatDuration(current.session.login_lock_s)}` },
     { label: '配置写回', value: current.writes.settings ? '支持' : '不支持' },
+    { label: '当前配置版本', value: current.reload.config_version || '启动值' },
+    { label: '最后重载时间', value: formatTime(current.reload.last_reload_ms) },
+    { label: '重载次数', value: current.reload.reload_count },
+    {
+      label: '需重启字段',
+      value: current.reload.restart_required.length
+        ? current.reload.restart_required.join('、')
+        : '无',
+    },
+    {
+      label: '最后重载错误',
+      value: current.reload.last_error || '无',
+    },
   ]
 })
 
@@ -274,9 +300,12 @@ async function save() {
     }
     const result = await apiWrite<SettingsUpdateResponse>('PUT', '/api/v1/settings', body)
     confirmOpen.value = false
-    notifySuccess('配置已保存', result.backup ? `${result.message} 备份：${result.backup}` : result.message)
-    restarting.value = true
-    void waitForRestart()
+    if (result.restart_required) {
+      notifyWarning('配置已热加载，部分字段需重启', result.message)
+    } else {
+      notifySuccess('配置已热加载', result.message)
+    }
+    await refresh()
   } catch (err) {
     notifyError('保存失败', err instanceof Error ? err.message : '保存失败')
   } finally {
@@ -284,28 +313,27 @@ async function save() {
   }
 }
 
-async function waitForRestart() {
-  const deadline = Date.now() + 30_000
-  while (alive && Date.now() < deadline) {
-    await sleep(1000)
-    try {
-      const response = await fetch('/healthz', { cache: 'no-store' })
-      if (response.ok) {
-        window.location.reload()
-        return
-      }
-    } catch {
-      // 重启窗口内连接失败是预期的，继续等。
+async function reloadConfig() {
+  reloading.value = true
+  try {
+    const result = await apiWrite<{
+      ok: boolean
+      message: string
+      config_version: string
+      restart_required: boolean
+    }>('POST', '/api/v1/config/reload')
+    if (result.restart_required) {
+      notifyWarning('配置已重载，部分字段需重启', result.message)
+    } else {
+      notifySuccess('配置已重载', `${result.message} 版本 ${result.config_version}`)
     }
+    await refresh()
+  } catch (err) {
+    notifyError('重载失败，旧配置继续生效', err instanceof Error ? err.message : '重载失败')
+    await refresh()
+  } finally {
+    reloading.value = false
   }
-  if (alive) {
-    restarting.value = false
-    notifyError('服务重启超时', '请手动刷新页面，或检查容器 / systemd 的运行状态。')
-  }
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 async function refresh() {
@@ -334,7 +362,6 @@ async function refresh() {
 
 onMounted(refresh)
 onBeforeUnmount(() => {
-  alive = false
   if (editNoticeId !== null) dismissNotification(editNoticeId)
 })
 </script>

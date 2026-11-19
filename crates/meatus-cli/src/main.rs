@@ -16,6 +16,7 @@ use meatus_core::{
     ClientConfig, ConfigFormat, ConfigKind, LogFormat, ServerConfig, detect_kind_with_format,
     load_client_config_with_format, load_server_config_with_format,
 };
+use meatus_server::LogReloadHandle;
 use meatus_server::ServerState;
 use meatus_server::logbuf::LogBuffer;
 use sha2::Digest;
@@ -154,14 +155,16 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
     let config = load_server_config_with_format(&args.config, args.format.into())
         .with_context(|| format!("load server config {}", args.config.display()))?;
     let logs = Arc::new(LogBuffer::default());
-    init_logging(
+    let log_reload = init_logging(
         &config.log.level,
         config.log.format,
         Some(Arc::clone(&logs)),
     );
 
-    let mut state = ServerState::new(config)?.with_config_path(&args.config);
+    let mut state = ServerState::new(config)?;
     state.logs = logs;
+    state.set_log_reload(log_reload);
+    let state = state.with_config_path(&args.config);
     if args.dry_run {
         state.config.validate_runtime()?;
         println!("{}", server_summary(&state.config));
@@ -178,7 +181,7 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
 async fn run_client(args: ClientArgs) -> anyhow::Result<()> {
     let config = load_client_config_with_format(&args.config, args.format.into())
         .with_context(|| format!("load client config {}", args.config.display()))?;
-    init_logging(&config.log.level, config.log.format, None);
+    let _log_reload = init_logging(&config.log.level, config.log.format, None);
 
     let state = ClientState::new(config)?.with_config_path(&args.config);
     if args.dry_run {
@@ -376,12 +379,18 @@ fn print_status(body: &serde_json::Value) {
     }
 }
 
-fn init_logging(level: &str, format: LogFormat, logs: Option<Arc<LogBuffer>>) {
+fn init_logging(
+    level: &str,
+    format: LogFormat,
+    logs: Option<Arc<LogBuffer>>,
+) -> Option<LogReloadHandle> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let (filter_layer, filter_handle) = tracing_subscriber::reload::Layer::new(filter);
+
     match format {
         LogFormat::Json => {
             let registry = tracing_subscriber::registry()
-                .with(filter)
+                .with(filter_layer)
                 .with(fmt::layer().json().with_writer(std::io::stdout));
             if let Some(logs) = logs {
                 let _ = registry
@@ -398,7 +407,7 @@ fn init_logging(level: &str, format: LogFormat, logs: Option<Arc<LogBuffer>>) {
         }
         LogFormat::Text => {
             let registry = tracing_subscriber::registry()
-                .with(filter)
+                .with(filter_layer)
                 .with(fmt::layer().compact().with_writer(std::io::stdout));
             if let Some(logs) = logs {
                 let _ = registry
@@ -414,6 +423,14 @@ fn init_logging(level: &str, format: LogFormat, logs: Option<Arc<LogBuffer>>) {
             }
         }
     }
+
+    let handle = Arc::new(filter_handle);
+    Some(Arc::new(move |level: &str| {
+        let filter = EnvFilter::try_new(level).map_err(|error| error.to_string())?;
+        handle
+            .modify(|current| *current = filter)
+            .map_err(|error| error.to_string())
+    }) as LogReloadHandle)
 }
 
 fn server_summary(config: &ServerConfig) -> String {

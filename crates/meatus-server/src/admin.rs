@@ -34,7 +34,6 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HEAD: usize = 8 * 1024;
 const MAX_BODY: usize = 16 * 1024;
-const SETTINGS_RESTART_DELAY: Duration = Duration::from_secs(1);
 const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 const LOGIN_FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
 const LOGIN_MAX_FAILURES: u32 = 5;
@@ -56,6 +55,8 @@ pub struct AdminState {
     metrics: Arc<Metrics>,
     status: Arc<StatusRegistry>,
     config: Arc<ServerConfig>,
+    runtime: Arc<crate::RuntimeConfig>,
+    reloader: Option<Arc<crate::ConfigReloader>>,
     config_path: Option<PathBuf>,
     logs: Arc<LogBuffer>,
     admin_bus: Arc<AdminBus>,
@@ -74,13 +75,16 @@ impl AdminState {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_arguments)] // mirrors the server wiring; grouping would add no clarity
     pub fn new(
         metrics: Arc<Metrics>,
         status: Arc<StatusRegistry>,
         config: Arc<ServerConfig>,
+        runtime: Arc<crate::RuntimeConfig>,
         logs: Arc<LogBuffer>,
         admin_bus: Arc<AdminBus>,
         acme: Option<Arc<crate::acme::AcmeManager>>,
+        reloader: Option<Arc<crate::ConfigReloader>>,
     ) -> Self {
         let admin_token = config
             .admin
@@ -92,6 +96,8 @@ impl AdminState {
             metrics,
             status,
             config,
+            runtime,
+            reloader,
             logs,
             admin_bus,
             acme,
@@ -101,6 +107,10 @@ impl AdminState {
             failures: Arc::new(Mutex::new(HashMap::new())),
             probes: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn current_config(&self) -> Arc<ServerConfig> {
+        self.runtime.config()
     }
 
     #[must_use]
@@ -471,6 +481,7 @@ async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> Ht
         ("PUT", "/api/v1/proxies") => proxy_write(request, state, true).await,
         ("DELETE", "/api/v1/proxies") => proxy_delete(request, state).await,
         ("PUT", "/api/v1/settings") => settings_write(request, state).await,
+        ("POST", "/api/v1/config/reload") => config_reload(request, state),
         ("GET", "/api/v1/settings") => {
             if !authorized(request, state) {
                 return HttpResponse::json(401, json!({"error": "unauthorized"}));
@@ -722,7 +733,8 @@ fn clients_list(request: &HttpRequest, state: &AdminState) -> HttpResponse {
     if !authorized(request, state) {
         return HttpResponse::json(401, json!({"error": "unauthorized"}));
     }
-    let config = &state.config;
+    let config = state.current_config();
+    let config = config.as_ref();
     let mut rows = configured_clients(state);
     let snapshot = state.status.render(&state.metrics);
     let online = snapshot
@@ -749,9 +761,8 @@ fn clients_list(request: &HttpRequest, state: &AdminState) -> HttpResponse {
         row["run_count"] = json!(online_runs);
         row["proxy_count"] = json!(proxy_count);
         row["last_connected_ms"] = json!(last_connected);
-        row["can_delete"] = json!(
-            row["source"].as_str() == Some("clients") && state.config.auth.clients.len() >= 2
-        );
+        row["can_delete"] =
+            json!(row["source"].as_str() == Some("clients") && config.auth.clients.len() >= 2);
     }
     let (server_addr, server_name) = default_client_endpoint(config);
     HttpResponse::json(
@@ -763,15 +774,15 @@ fn clients_list(request: &HttpRequest, state: &AdminState) -> HttpResponse {
             "config_path": state.config_path.as_ref().map(|path| path.display().to_string()),
             "config_format": state.config_path.as_deref().map(|path| ConfigFormat::from_path(path).label()),
             "restart_required": false,
-            "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
+            "restart_delay_s": 0,
         }),
     )
 }
 
 fn configured_clients(state: &AdminState) -> Vec<Value> {
-    if state.config.auth.clients.is_empty() {
-        return state
-            .config
+    let config = state.current_config();
+    if config.auth.clients.is_empty() {
+        return config
             .auth
             .token_sha256
             .as_deref()
@@ -788,8 +799,7 @@ fn configured_clients(state: &AdminState) -> Vec<Value> {
             })
             .unwrap_or_default();
     }
-    state
-        .config
+    config
         .auth
         .clients
         .iter()
@@ -800,7 +810,7 @@ fn configured_clients(state: &AdminState) -> Vec<Value> {
                 "token_fingerprint": client.token_sha256.as_deref().map(fingerprint).unwrap_or_else(|| "未配置".to_string()),
                 "allow_ports": client.allow_ports,
                 "source": "clients",
-                "can_delete": state.config.auth.clients.len() >= 2,
+                "can_delete": config.auth.clients.len() >= 2,
             })
         })
         .collect()
@@ -839,23 +849,16 @@ async fn clients_create(request: &HttpRequest, state: &AdminState) -> HttpRespon
         Ok(value) => value,
         Err(error) => return HttpResponse::json(400, json!({"error": error})),
     };
-    if state
-        .config
-        .auth
-        .clients
-        .iter()
-        .any(|client| client.id == id)
-    {
+    let current = state.current_config();
+    let current = current.as_ref();
+    if current.auth.clients.iter().any(|client| client.id == id) {
         return HttpResponse::json(409, json!({"error": format!("client {id} already exists")}));
     }
     let allow_ports = match parse_allow_ports(body.get("allow_ports")) {
         Ok(value) => value,
         Err(error) => return HttpResponse::json(400, json!({"error": error})),
     };
-    let endpoint = match client_endpoint(
-        body.get("server_addr").and_then(Value::as_str),
-        &state.config,
-    ) {
+    let endpoint = match client_endpoint(body.get("server_addr").and_then(Value::as_str), current) {
         Ok(value) => value,
         Err(error) => return HttpResponse::json(400, json!({"error": error})),
     };
@@ -877,8 +880,11 @@ async fn clients_create(request: &HttpRequest, state: &AdminState) -> HttpRespon
             return HttpResponse::json(500, json!({"error": error}));
         }
     };
-    warn!(client = %id, "client created; process will restart to apply auth config");
-    schedule_restart();
+    let reload = match reload_config(state) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return response,
+    };
+    warn!(client = %id, revision = %reload.revision, "client created and auth reloaded");
     let row = client_response_row(state, &entry);
     HttpResponse::json(
         200,
@@ -887,10 +893,12 @@ async fn clients_create(request: &HttpRequest, state: &AdminState) -> HttpRespon
             "client": row,
             "token": token,
             "config": client_snippets(ConfigFormat::from_path(path), &endpoint.0, &endpoint.1, &id, &tenant, &token),
-            "restart_required": true,
-            "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
+            "restart_required": false,
+            "restart_delay_s": 0,
+            "config_version": reload.revision,
+            "last_reload_ms": reload.last_reload_ms,
             "backup": backup.as_ref().map(|path| path.display().to_string()),
-            "message": "客户端已创建；明文 token 只显示这一次。服务将在 1 秒后重启。",
+            "message": "客户端已创建并热加载生效；明文 token 只显示这一次。",
         }),
     )
 }
@@ -922,14 +930,15 @@ async fn clients_item(request: &HttpRequest, state: &AdminState, id: &str) -> Ht
             json!({"error": "server was started without a config path; online edit is disabled"}),
         );
     };
-    if state.config.auth.clients.is_empty() {
+    let current = state.current_config();
+    let current = current.as_ref();
+    if current.auth.clients.is_empty() {
         return HttpResponse::json(
             409,
             json!({"error": "当前为 auth.token_sha256 简写，请先新增一个 auth.clients 客户端再轮换或删除"}),
         );
     }
-    let Some(existing) = state
-        .config
+    let Some(existing) = current
         .auth
         .clients
         .iter()
@@ -940,7 +949,7 @@ async fn clients_item(request: &HttpRequest, state: &AdminState, id: &str) -> Ht
     };
 
     if action == "delete" {
-        if state.config.auth.clients.len() <= 1 {
+        if current.auth.clients.len() <= 1 {
             return HttpResponse::json(409, json!({"error": "不能删除最后一个客户端凭据"}));
         }
         let backup = match meatus_core::remove_server_client(path, id) {
@@ -950,15 +959,20 @@ async fn clients_item(request: &HttpRequest, state: &AdminState, id: &str) -> Ht
                 return HttpResponse::json(500, json!({"error": error}));
             }
         };
-        warn!(client = %id, "client deleted; process will restart to apply auth config");
-        schedule_restart();
+        let reload = match reload_config(state) {
+            Ok(snapshot) => snapshot,
+            Err(response) => return response,
+        };
+        warn!(client = %id, revision = %reload.revision, "client deleted and auth reloaded");
         return HttpResponse::json(
             200,
             json!({
                 "ok": true,
                 "id": id,
-                "restart_required": true,
-                "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
+                "restart_required": false,
+                "restart_delay_s": 0,
+                "config_version": reload.revision,
+                "last_reload_ms": reload.last_reload_ms,
                 "backup": backup.as_ref().map(|path| path.display().to_string()),
             }),
         );
@@ -979,10 +993,7 @@ async fn clients_item(request: &HttpRequest, state: &AdminState, id: &str) -> Ht
         },
         None => existing.allow_ports,
     };
-    let endpoint = match client_endpoint(
-        body.get("server_addr").and_then(Value::as_str),
-        &state.config,
-    ) {
+    let endpoint = match client_endpoint(body.get("server_addr").and_then(Value::as_str), current) {
         Ok(value) => value,
         Err(error) => return HttpResponse::json(400, json!({"error": error})),
     };
@@ -1004,8 +1015,11 @@ async fn clients_item(request: &HttpRequest, state: &AdminState, id: &str) -> Ht
             return HttpResponse::json(500, json!({"error": error}));
         }
     };
-    warn!(client = %id, "client token rotated; process will restart to apply auth config");
-    schedule_restart();
+    let reload = match reload_config(state) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return response,
+    };
+    warn!(client = %id, revision = %reload.revision, "client token rotated and auth reloaded");
     HttpResponse::json(
         200,
         json!({
@@ -1013,10 +1027,12 @@ async fn clients_item(request: &HttpRequest, state: &AdminState, id: &str) -> Ht
             "client": client_response_row(state, &entry),
             "token": token,
             "config": client_snippets(ConfigFormat::from_path(path), &endpoint.0, &endpoint.1, &entry.id, &entry.tenant, &token),
-            "restart_required": true,
-            "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
+            "restart_required": false,
+            "restart_delay_s": 0,
+            "config_version": reload.revision,
+            "last_reload_ms": reload.last_reload_ms,
             "backup": backup.as_ref().map(|path| path.display().to_string()),
-            "message": "token 已轮换；旧 token 会在服务重启后失效。明文 token 只显示这一次。",
+            "message": "token 已轮换并热加载生效；旧 token 立即失效。明文 token 只显示这一次。",
         }),
     )
 }
@@ -1046,9 +1062,10 @@ fn client_response_row(state: &AdminState, entry: &ClientEntry) -> Value {
 }
 
 fn local_auth_enabled(state: &AdminState) -> bool {
-    state.config.auth.mode == AuthMode::Hmac
+    let config = state.current_config();
+    config.auth.mode == AuthMode::Hmac
         && matches!(
-            state.config.auth.provider,
+            config.auth.provider,
             meatus_core::config::AuthProviderKind::Local
         )
 }
@@ -1194,13 +1211,6 @@ fn client_snippets(
     })
 }
 
-fn schedule_restart() {
-    tokio::spawn(async move {
-        tokio::time::sleep(SETTINGS_RESTART_DELAY).await;
-        std::process::exit(0);
-    });
-}
-
 async fn settings_write(request: &HttpRequest, state: &AdminState) -> HttpResponse {
     if let Err(response) = write_allowed(request, state) {
         return response;
@@ -1215,7 +1225,8 @@ async fn settings_write(request: &HttpRequest, state: &AdminState) -> HttpRespon
         Ok(value) => value,
         Err(_) => return HttpResponse::json(400, json!({"error": "invalid json"})),
     };
-    let next = match merge_server_settings(&state.config, &body) {
+    let current = state.current_config();
+    let next = match merge_server_settings(&current, &body) {
         Ok(next) => next,
         Err(error) => return HttpResponse::json(400, json!({"error": error})),
     };
@@ -1234,31 +1245,107 @@ async fn settings_write(request: &HttpRequest, state: &AdminState) -> HttpRespon
         }
     };
 
+    let reload = match reload_config(state) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return response,
+    };
+
     warn!(
         path = %path.display(),
         format = config_format.label(),
-        "server settings written; process will restart to apply listeners"
+        revision = %reload.revision,
+        restart_required = ?reload.restart_required,
+        "server settings written and reloaded"
     );
-    tokio::spawn(async move {
-        tokio::time::sleep(SETTINGS_RESTART_DELAY).await;
-        std::process::exit(0);
-    });
+    let restart_needed = !reload.restart_required.is_empty();
+    let message = if restart_needed {
+        format!(
+            "配置已写入并热加载；以下字段需要重启后生效：{}。",
+            reload.restart_required.join("、")
+        )
+    } else {
+        "配置已写入并热加载，无需重启。".to_string()
+    };
 
     HttpResponse::json(
         200,
         json!({
             "ok": true,
-            "restart_required": true,
-            "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
+            "restart_required": restart_needed,
+            "restart_delay_s": 0,
+            "applied": true,
+            "config_version": reload.revision,
+            "last_reload_ms": reload.last_reload_ms,
+            "restart_fields": reload.restart_required,
             "config_path": path.display().to_string(),
             "config_format": config_format.label(),
             "backup": backup.as_ref().map(|path| path.display().to_string()),
-            "message": format!(
-                "配置已写入 {}；服务将在 1 秒后重启，面板会短暂断开并需要重新登录。",
-                path.display()
-            ),
+            "message": message,
         }),
     )
+}
+
+fn config_reload(request: &HttpRequest, state: &AdminState) -> HttpResponse {
+    if let Err(response) = write_allowed(request, state) {
+        return response;
+    }
+    match reload_config(state) {
+        Ok(snapshot) => {
+            let restart_needed = !snapshot.restart_required.is_empty();
+            let message = if restart_needed {
+                format!(
+                    "配置已重载；以下字段需要重启后生效：{}。",
+                    snapshot.restart_required.join("、")
+                )
+            } else {
+                "配置已重载，无需重启。".to_string()
+            };
+            HttpResponse::json(
+                200,
+                json!({
+                    "ok": true,
+                    "config_version": snapshot.revision,
+                    "last_reload_ms": snapshot.last_reload_ms,
+                    "reload_count": snapshot.reload_count,
+                    "restart_required": restart_needed,
+                    "restart_fields": snapshot.restart_required,
+                    "last_error": snapshot.last_error,
+                    "message": message,
+                }),
+            )
+        }
+        Err(response) => {
+            let snapshot = state.runtime.snapshot();
+            let mut body = match serde_json::from_slice::<Value>(&response.body) {
+                Ok(Value::Object(map)) => map,
+                _ => serde_json::Map::new(),
+            };
+            body.insert("ok".to_string(), json!(false));
+            body.insert("config_version".to_string(), json!(snapshot.revision));
+            body.insert("last_reload_ms".to_string(), json!(snapshot.last_reload_ms));
+            body.insert("last_error".to_string(), json!(snapshot.last_error));
+            HttpResponse::json(response.status, Value::Object(body))
+        }
+    }
+}
+
+fn reload_config(state: &AdminState) -> Result<crate::ReloadSnapshot, HttpResponse> {
+    let Some(reloader) = &state.reloader else {
+        return Err(HttpResponse::json(
+            409,
+            json!({"error": "server was started without a config path; hot reload is disabled"}),
+        ));
+    };
+    reloader.reload().map_err(|error| {
+        HttpResponse::json(
+            500,
+            json!({
+                "error": format!("配置已写入但热加载失败；旧配置继续生效：{error}"),
+                "kept_previous": true,
+                "last_error": error.to_string(),
+            }),
+        )
+    })
 }
 
 fn merge_server_settings(current: &ServerConfig, body: &Value) -> Result<ServerConfig, String> {
@@ -1854,8 +1941,10 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 }
 
 fn settings_json(state: &AdminState) -> Value {
-    let config = &state.config;
+    let config = state.current_config();
+    let config = config.as_ref();
     let auth = state.auth_summary();
+    let reload = state.runtime.snapshot();
     json!({
         "server": {
             "bind": config.server.bind_addr,
@@ -1926,6 +2015,14 @@ fn settings_json(state: &AdminState) -> Value {
                 .config_path
                 .as_deref()
                 .map(|path| ConfigFormat::from_path(path).label()),
+        },
+        "reload": {
+            "supported": state.reloader.is_some(),
+            "config_version": reload.revision,
+            "last_reload_ms": reload.last_reload_ms,
+            "reload_count": reload.reload_count,
+            "last_error": reload.last_error,
+            "restart_required": reload.restart_required,
         },
     })
 }

@@ -274,6 +274,17 @@ admin:
     assert_eq!(parsed.log.level, "warn");
     assert!(yaml_path.with_file_name("server.yaml.bak").exists());
 
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/config/reload HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\nContent-Length: 0\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"config_version\""), "{body}");
+    assert!(body.contains("\"ok\":true"), "{body}");
+
     cancel.cancel();
     let _ = task.await;
     let _ = std::fs::remove_dir_all(dir);

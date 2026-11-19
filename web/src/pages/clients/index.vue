@@ -32,7 +32,7 @@
       padding="none"
     >
       <template #actions>
-        <span class="band-meta">创建/轮换后写入服务端配置，并在 1 秒后重启生效</span>
+        <span class="band-meta">创建/轮换后写入服务端配置并立即热加载生效</span>
       </template>
       <div class="mt-client-meta">
         <span>接入地址</span>
@@ -85,7 +85,7 @@
               </sl-button>
               <sl-popconfirm
                 title="删除这个客户端？"
-                :description="`删除 ${row.id} 后，该客户端会在服务重启后失效。`"
+                :description="`删除 ${row.id} 后，该客户端会立即失效，无需重启。`"
                 confirm-text="删除"
                 type="danger"
                 :disabled="!row.can_delete"
@@ -279,7 +279,7 @@ async function submit() {
         body,
       )
       result.value = response
-      notifySuccess('token 已轮换，旧 token 会在服务重启后失效')
+      notifySuccess('token 已轮换并热加载生效，旧 token 已失效')
     }
     form.serverAddr = snapshot.value?.server_addr ?? form.serverAddr
     void refresh()

@@ -9,9 +9,12 @@ mod http;
 pub mod logbuf;
 mod metrics;
 mod routes;
+mod runtime;
 mod socks5;
 mod status;
 mod tls;
+
+pub use runtime::{ConfigReloader, LogReloadHandle, ReloadSnapshot, RuntimeConfig};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,7 +44,6 @@ pub struct ServerState {
     pub config: ServerConfig,
     /// 启动时使用的配置文件路径；面板在线写回需要它。
     pub config_path: Option<PathBuf>,
-    pub auth: Arc<dyn AuthProvider>,
     pub allocator: Arc<dyn NameAllocator>,
     pub quota: Arc<dyn QuotaPolicy>,
     pub usage: Arc<dyn UsageSink>,
@@ -52,13 +54,19 @@ pub struct ServerState {
     pub acme: Option<Arc<acme::AcmeManager>>,
     pub logs: Arc<LogBuffer>,
     pub(crate) admin_bus: Arc<admin_bus::AdminBus>,
+    /// 当前生效的配置与认证；SIGHUP / 面板重载共用。
+    pub runtime: Arc<RuntimeConfig>,
+    /// 配置热加载器；没有配置文件路径时为 `None`。
+    pub reloader: Option<Arc<ConfigReloader>>,
+    /// CLI 注入的日志级别热加载句柄。
+    pub log_reload: Option<LogReloadHandle>,
 }
 
 impl ServerState {
     pub fn new(config: ServerConfig) -> Result<Self, ConfigError> {
         config.validate()?;
 
-        let auth = LocalTokenAuth::from_config(&config)?;
+        let auth: Arc<dyn AuthProvider> = Arc::new(LocalTokenAuth::from_config(&config)?);
         let allocator = LocalPortAllocator::new(config.ports.range)
             .map_err(|err| ConfigError::Invalid(err.to_string()))?;
         let acme = if config.acme.enabled {
@@ -69,10 +77,11 @@ impl ServerState {
             None
         };
 
+        let runtime = RuntimeConfig::new(config.clone(), Arc::clone(&auth), "startup");
+
         Ok(Self {
             config,
             config_path: None,
-            auth: Arc::new(auth),
             allocator: Arc::new(allocator),
             quota: Arc::new(AllowAllQuota),
             usage: Arc::new(NullUsageSink),
@@ -83,14 +92,30 @@ impl ServerState {
             acme,
             logs: Arc::new(LogBuffer::default()),
             admin_bus: Arc::new(admin_bus::AdminBus::default()),
+            runtime,
+            reloader: None,
+            log_reload: None,
         })
     }
 
-    /// 记录启动配置文件路径，供热更新写回使用。
+    /// 记录启动配置文件路径，并建立 SIGHUP / 面板共用的热加载器。
     #[must_use]
     pub fn with_config_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.config_path = Some(path.into());
+        let path = path.into();
+        let format = meatus_core::ConfigFormat::from_path(&path);
+        self.reloader = Some(ConfigReloader::new(
+            path.clone(),
+            format,
+            Arc::clone(&self.runtime),
+            self.log_reload.clone(),
+        ));
+        self.config_path = Some(path);
         self
+    }
+
+    /// 注入日志级别热加载句柄；必须在 `with_config_path` 之前调用。
+    pub fn set_log_reload(&mut self, handle: Option<LogReloadHandle>) {
+        self.log_reload = handle;
     }
 
     /// 启动时会尝试占用的监听地址，`meatus check --dry-run` 也用它。
@@ -197,9 +222,11 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
         Arc::clone(&state.metrics),
         Arc::clone(&state.status),
         Arc::new(state.config.clone()),
+        Arc::clone(&state.runtime),
         Arc::clone(&state.logs),
         Arc::clone(&state.admin_bus),
         state.acme.clone(),
+        state.reloader.clone(),
     )
     .with_config_path(config_path);
     let admin_task = tokio::spawn(admin::serve(
@@ -209,6 +236,35 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
     ));
 
     let mut data_tasks = Vec::new();
+    #[cfg(unix)]
+    if let Some(reloader) = state.reloader.clone() {
+        let reload_cancel = cancel.child_token();
+        data_tasks.push(tokio::spawn(async move {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                Ok(mut signal) => {
+                    info!("SIGHUP hot reload listening");
+                    loop {
+                        tokio::select! {
+                            _ = reload_cancel.cancelled() => break,
+                            _ = signal.recv() => {
+                                match reloader.reload() {
+                                    Ok(snapshot) => info!(
+                                        revision = %snapshot.revision,
+                                        reload_count = snapshot.reload_count,
+                                        restart_required = ?snapshot.restart_required,
+                                        "SIGHUP reload applied"
+                                    ),
+                                    Err(err) => warn!(error = %err, "SIGHUP reload rejected; keep old config"),
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(err) => warn!(error = %err, "cannot listen for SIGHUP"),
+            }
+        }));
+    }
+
     if state.config.http.enabled {
         let http_listener = TcpListener::bind(&state.config.http.bind)
             .await

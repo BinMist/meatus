@@ -109,12 +109,24 @@ export interface SettingsSnapshot {
     config_path: string | null
     config_format?: 'toml' | 'yaml' | 'auto' | null
   }
+  reload: {
+    supported: boolean
+    config_version: string
+    last_reload_ms: number | null
+    reload_count: number
+    last_error: string | null
+    restart_required: string[]
+  }
 }
 
 export interface SettingsUpdateResponse {
   ok: boolean
   restart_required: boolean
   restart_delay_s: number
+  applied?: boolean
+  config_version?: string
+  last_reload_ms?: number | null
+  restart_fields?: string[]
   config_path: string
   config_format?: 'toml' | 'yaml' | 'auto'
   backup: string | null
