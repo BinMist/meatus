@@ -28,6 +28,7 @@
 | 客户端级配额 | 支持 `rate_limit_bps`、`monthly_bytes`、`max_conns`、`conn_rate_per_s`、`quota_action`；按 UTC 自然月累计 |
 | 可观测性 | 客户端页展示授权摘要与配额；`/metrics` 增加 `meatus_quota_denied_total`、`meatus_quota_throttled_total` |
 | 审计日志 | 登录、配置 / 客户端 / proxy 变更、客户端上下线写入 JSONL；面板“审计日志”可按时间、操作者、client、动作、结果查询最近 90 天 |
+| 配置备份与恢复 | `meatus config backup/restore` 导出脱敏备份、校验版本与校验和；面板支持下载与上传恢复 |
 
 ### V1.2 带来的变化
 
@@ -2580,6 +2581,28 @@ dir = "/var/lib/meatus/audit"
 - 写盘失败只产生 `warn`，不阻断转发；服务端未使用 `-c` 启动时仅保留内存事件，面板会显示“审计未落盘”。
 - 面板“审计日志”页支持按最近 24 小时 / 7 / 30 / 90 天、操作者、client、动作、结果过滤，并可导出当前查询结果为 NDJSON。
 - 直接查询管理 API：`GET /api/v1/audit?days=7&limit=200&action=client.create&client=home-nas`。
+
+
+### 8.13 配置备份与恢复（V1.3）
+
+```bash
+# 导出（默认输出 meatus-backup-<server|client>-<时间>.json）
+meatus config backup -c /data/server.toml -o /data/backup.json
+
+# 恢复；默认从当前配置提取 admin token / DNS token / client token
+meatus config restore -c /data/server.toml --from /data/backup.json
+
+# 当前配置已损坏、无法提取秘密值时显式提供
+meatus config restore -c /data/server.toml --from /data/backup.json \
+  --admin-token "$MEATUS_ADMIN_TOKEN" --dns-api-token "$MEATUS_DNS_API_TOKEN"
+```
+
+- 备份是 JSON 信封：包含脱敏配置正文、`config_sha256`、版本、时间、证书路径引用与整体 `checksum`；不包含 admin token、DNS API token、客户端明文 token 或私钥内容。服务端 `token_sha256` 只保留哈希，客户端仍可继续认证。
+- 恢复前校验 schema、主版本、整体校验和与正文校验和；任一不匹配直接拒绝，不覆盖当前文件。
+- 恢复先写 `server.toml.bak-<时间>`，再原子替换；恢复后的配置会跑与 `meatus check` 相同的解析和 `validate_runtime`，通过后才写回。
+- 备份中的秘密值使用占位符；恢复时若无法从当前配置或命令行回填，会拒绝恢复，避免把占位符写进生产配置。
+- 面板 **系统设置 → 配置备份与恢复** 可下载备份、上传恢复；面板恢复使用进程内当前 admin token / DNS token 自动回填，成功后立即热加载。
+- YAML 备份恢复会规范化重写 YAML，注释和键顺序不保证保留。
 
 
 ***

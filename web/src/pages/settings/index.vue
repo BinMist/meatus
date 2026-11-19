@@ -48,6 +48,7 @@
           :log-level-options="logLevelOptions"
           :log-format-options="logFormatOptions"
         />
+        <SettingsBackupSection @restored="refresh" />
         <SettingsReadonlySection :items="readonlyItems" />
         <SettingsBehaviorNotes />
         <SettingsFoot :text="footText" />
@@ -70,6 +71,7 @@ import { SlButton } from '@sailonix/ui/button'
 import { SlPageHeader } from '@sailonix/ui/page-header'
 import { SlStatusTag } from '@sailonix/ui/status-tag'
 import PageActionsBar from '../../components/PageActionsBar.vue'
+import SettingsBackupSection from './components/SettingsBackupSection.vue'
 import SettingsBehaviorNotes from './components/SettingsBehaviorNotes.vue'
 import SettingsControlSection from './components/SettingsControlSection.vue'
 import SettingsFoot from './components/SettingsFoot.vue'
@@ -95,6 +97,7 @@ const sections = [
   { id: 'settings-control', label: '控制面与端口' },
   { id: 'settings-http', label: 'HTTP 与 ACME' },
   { id: 'settings-socks', label: 'SOCKS5 与日志' },
+  { id: 'settings-backup', label: '配置备份与恢复' },
   { id: 'settings-readonly', label: '只读运行信息' },
 ]
 

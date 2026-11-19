@@ -285,6 +285,66 @@ admin:
     assert!(body.contains("\"config_version\""), "{body}");
     assert!(body.contains("\"ok\":true"), "{body}");
 
+    let auth_get =
+        |path: &str| format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\n\r\n");
+    let (status, _, body) = request(admin_port, &auth_get("/api/v1/config/backup")).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        !body.contains("admin-secret"),
+        "backup must not leak admin token"
+    );
+    let snapshot: serde_json::Value = serde_json::from_str(&body).expect("backup json");
+    let backup = snapshot["backup"].clone();
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "PUT /api/v1/settings HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{}\r\n",
+            json_body(r#"{"log":{"level":"info"}}"#)
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    let restore_body = json_body(&serde_json::to_string(&backup).expect("backup body"));
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/config/restore HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{restore_body}\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"ok\":true"), "{body}");
+    let restored = std::fs::read_to_string(&yaml_path).expect("read restored yaml");
+    let parsed =
+        parse_server_config_with_format(&restored, ConfigFormat::Yaml).expect("parse restored");
+    assert_eq!(parsed.log.level, "warn");
+
+    let mut tampered = backup.clone();
+    tampered["config"] = serde_json::Value::String(format!(
+        "{}# tampered\n",
+        tampered["config"].as_str().unwrap_or_default()
+    ));
+    let tampered_body = json_body(&serde_json::to_string(&tampered).expect("tampered body"));
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/config/restore HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{tampered_body}\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert!(body.contains("校验和"), "{body}");
+    let kept = std::fs::read_to_string(&yaml_path).expect("read kept yaml");
+    assert_eq!(
+        parse_server_config_with_format(&kept, ConfigFormat::Yaml)
+            .expect("parse kept")
+            .log
+            .level,
+        "warn"
+    );
+
     cancel.cancel();
     let _ = task.await;
     let _ = std::fs::remove_dir_all(dir);

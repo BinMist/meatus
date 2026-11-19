@@ -1111,6 +1111,40 @@ pub fn parse_server_config_with_format(
     parse_server_config_at(raw, format, None)
 }
 
+/// 只反序列化、不跑语义校验；用于从“已改坏但仍可解析”的配置中提取备份恢复所需的秘密值。
+pub fn parse_server_config_unchecked_with_format(
+    raw: &str,
+    format: ConfigFormat,
+) -> Result<ServerConfig, ConfigError> {
+    let format = if format == ConfigFormat::Auto {
+        detect_format(raw)
+    } else {
+        format
+    };
+    let expanded = expand_env(raw)?;
+    match format {
+        ConfigFormat::Toml | ConfigFormat::Auto => Ok(toml::from_str(&expanded)?),
+        ConfigFormat::Yaml => serde_yaml::from_str(&expanded).map_err(|err| yaml_error(err, None)),
+    }
+}
+
+/// 只反序列化、不跑语义校验的客户端配置解析。
+pub fn parse_client_config_unchecked_with_format(
+    raw: &str,
+    format: ConfigFormat,
+) -> Result<ClientConfig, ConfigError> {
+    let format = if format == ConfigFormat::Auto {
+        detect_format(raw)
+    } else {
+        format
+    };
+    let expanded = expand_env(raw)?;
+    match format {
+        ConfigFormat::Toml | ConfigFormat::Auto => Ok(toml::from_str(&expanded)?),
+        ConfigFormat::Yaml => serde_yaml::from_str(&expanded).map_err(|err| yaml_error(err, None)),
+    }
+}
+
 pub fn parse_client_config(raw: &str) -> Result<ClientConfig, ConfigError> {
     parse_client_config_at(raw, ConfigFormat::Toml, None)
 }

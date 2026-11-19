@@ -2,6 +2,7 @@
 //! Meatus 内核：配置模型、租户命名空间、以及为多租户与外部控制面预留的五个扩展接缝。
 
 pub mod auth;
+pub mod backup;
 pub mod config;
 pub mod config_edit;
 pub mod multiplex;

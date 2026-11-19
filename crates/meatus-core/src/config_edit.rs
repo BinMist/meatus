@@ -964,7 +964,7 @@ fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())

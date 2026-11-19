@@ -548,6 +548,8 @@ async fn route_inner(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState)
             }
             HttpResponse::json(200, settings_json(state))
         }
+        ("GET", "/api/v1/config/backup") => config_backup(request, state),
+        ("POST", "/api/v1/config/restore") => config_restore(request, state),
         ("GET", "/api/v1/certificates") => {
             if !authorized(request, state) {
                 return HttpResponse::json(401, json!({"error": "unauthorized"}));
@@ -620,9 +622,87 @@ fn audit_spec(request: &HttpRequest) -> Option<(&'static str, String, Option<Str
         }
         ("PUT", "/api/v1/settings") => ("settings.update", "settings".to_string(), None),
         ("POST", "/api/v1/config/reload") => ("config.reload", "config".to_string(), None),
+        ("POST", "/api/v1/config/restore") => ("config.restore", "config".to_string(), None),
         _ => return None,
     };
     Some(action)
+}
+
+fn config_backup(request: &HttpRequest, state: &AdminState) -> HttpResponse {
+    if !authorized(request, state) {
+        return HttpResponse::json(401, json!({"error": "unauthorized"}));
+    }
+    let Some(path) = state.config_path.as_deref() else {
+        return HttpResponse::json(
+            409,
+            json!({"error": "server was started without a config path; backup is disabled"}),
+        );
+    };
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            return HttpResponse::json(
+                500,
+                json!({"error": format!("read {}: {error}", path.display())}),
+            );
+        }
+    };
+    let backup = match meatus_core::backup::create_backup(path, &raw, env!("CARGO_PKG_VERSION")) {
+        Ok(backup) => backup,
+        Err(error) => return HttpResponse::json(400, json!({"error": error})),
+    };
+    let filename = format!(
+        "meatus-backup-{}-{}.json",
+        backup.kind, backup.created_at_ms
+    );
+    HttpResponse::json(200, json!({"filename": filename, "backup": backup}))
+}
+
+fn config_restore(request: &HttpRequest, state: &AdminState) -> HttpResponse {
+    if let Err(response) = write_allowed(request, state) {
+        return response;
+    }
+    let Some(path) = state.config_path.as_deref() else {
+        return HttpResponse::json(
+            409,
+            json!({"error": "server was started without a config path; restore is disabled"}),
+        );
+    };
+    let backup: meatus_core::backup::BackupDocument = match serde_json::from_slice(&request.body) {
+        Ok(backup) => backup,
+        Err(error) => {
+            return HttpResponse::json(
+                400,
+                json!({"error": format!("invalid backup json: {error}")}),
+            );
+        }
+    };
+    let current = state.current_config();
+    let secrets = meatus_core::backup::BackupSecrets {
+        admin_token: current.admin.admin_token.clone(),
+        dns_api_token: current.acme.dns_api_token.clone(),
+        client_token: None,
+    };
+    let outcome = match meatus_core::backup::restore_backup(&backup, path, &secrets) {
+        Ok(outcome) => outcome,
+        Err(error) => return HttpResponse::json(400, json!({"error": error})),
+    };
+    let reload = match reload_config(state) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return response,
+    };
+    HttpResponse::json(
+        200,
+        json!({
+            "ok": true,
+            "kind": format!("{:?}", outcome.kind).to_ascii_lowercase(),
+            "previous": outcome.backup_path.map(|path| path.display().to_string()),
+            "warnings": outcome.warnings,
+            "config_version": reload.revision,
+            "restart_fields": reload.restart_required,
+            "last_reload_ms": reload.last_reload_ms,
+        }),
+    )
 }
 
 async fn proxy_write(request: &HttpRequest, state: &AdminState, replace: bool) -> HttpResponse {

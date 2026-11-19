@@ -43,6 +43,8 @@ enum Command {
     GenCert(GenCertArgs),
     /// 查询运行状态（M4）
     Status(StatusArgs),
+    /// 配置备份与恢复
+    Config(ConfigArgs),
 }
 
 #[derive(Args)]
@@ -130,6 +132,49 @@ struct GenCertArgs {
 }
 
 #[derive(Args)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    command: ConfigCommand,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// 导出脱敏配置备份
+    Backup(BackupArgs),
+    /// 从备份恢复配置
+    Restore(RestoreArgs),
+}
+
+#[derive(Args)]
+struct BackupArgs {
+    /// 配置文件
+    #[arg(short, long, default_value = "server.toml")]
+    config: PathBuf,
+    /// 输出备份 JSON；缺省为 meatus-backup-<server|client>-<时间>.json
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct RestoreArgs {
+    /// 目标配置文件
+    #[arg(short, long, default_value = "server.toml")]
+    config: PathBuf,
+    /// 备份 JSON
+    #[arg(long = "from")]
+    from: PathBuf,
+    /// 恢复时使用的 admin token；缺省从当前配置读取
+    #[arg(long, env = "MEATUS_ADMIN_TOKEN")]
+    admin_token: Option<String>,
+    /// 恢复时使用的 DNS API token；缺省从当前配置读取
+    #[arg(long, env = "MEATUS_DNS_API_TOKEN")]
+    dns_api_token: Option<String>,
+    /// 恢复时使用的 client token；缺省从当前配置读取
+    #[arg(long, env = "MEATUS_CLIENT_TOKEN")]
+    client_token: Option<String>,
+}
+
+#[derive(Args)]
 struct StatusArgs {
     /// admin 面板地址
     #[arg(long, default_value = "http://127.0.0.1:7400")]
@@ -148,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
         Command::GenToken => gen_token(),
         Command::GenCert(args) => gen_cert(&args),
         Command::Status(args) => status(&args).await,
+        Command::Config(args) => run_config(&args),
     }
 }
 
@@ -228,6 +274,82 @@ fn run_check(args: CheckArgs) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn run_config(args: &ConfigArgs) -> anyhow::Result<()> {
+    match &args.command {
+        ConfigCommand::Backup(args) => backup_config(args),
+        ConfigCommand::Restore(args) => restore_config(args),
+    }
+}
+
+fn backup_config(args: &BackupArgs) -> anyhow::Result<()> {
+    let raw = fs::read_to_string(&args.config)
+        .with_context(|| format!("read config {}", args.config.display()))?;
+    let backup = meatus_core::backup::create_backup(&args.config, &raw, env!("CARGO_PKG_VERSION"))
+        .map_err(anyhow::Error::msg)?;
+    let out = args.out.clone().unwrap_or_else(|| {
+        PathBuf::from(format!(
+            "meatus-backup-{}-{}.json",
+            backup.kind, backup.created_at_ms
+        ))
+    });
+    let json = serde_json::to_string_pretty(&backup).context("serialize backup")?;
+    fs::write(&out, json).with_context(|| format!("write backup {}", out.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&out, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 0600 {}", out.display()))?;
+    }
+    println!("backup  {}", out.display());
+    println!("kind    {}", backup.kind);
+    println!("format  {}", backup.format);
+    println!("version {}", backup.meatus_version);
+    println!("sha256  {}", backup.config_sha256);
+    for certificate in &backup.certificates {
+        println!("ref     {} = {}", certificate.role, certificate.path);
+    }
+    Ok(())
+}
+
+fn restore_config(args: &RestoreArgs) -> anyhow::Result<()> {
+    let raw = fs::read_to_string(&args.from)
+        .with_context(|| format!("read backup {}", args.from.display()))?;
+    let backup: meatus_core::backup::BackupDocument =
+        serde_json::from_str(&raw).context("parse backup json")?;
+    let current = fs::read_to_string(&args.config).ok();
+    let mut secrets = current
+        .as_deref()
+        .map(|raw| meatus_core::backup::secrets_from_raw(&args.config, raw))
+        .unwrap_or_default();
+    if args.admin_token.is_some() {
+        secrets.admin_token.clone_from(&args.admin_token);
+    }
+    if args.dns_api_token.is_some() {
+        secrets.dns_api_token.clone_from(&args.dns_api_token);
+    }
+    if args.client_token.is_some() {
+        secrets.client_token.clone_from(&args.client_token);
+    }
+    let outcome = meatus_core::backup::restore_backup(&backup, &args.config, &secrets)
+        .map_err(anyhow::Error::msg)?;
+    println!("restored {}", args.config.display());
+    println!("kind     {:?}", outcome.kind);
+    println!("format   {:?}", outcome.format);
+    if let Some(path) = outcome.backup_path {
+        println!("previous {}", path.display());
+    }
+    for warning in outcome.warnings {
+        println!("warning  {warning}");
+    }
+    run_check(CheckArgs {
+        config: args.config.clone(),
+        kind: None,
+        format: FormatArg::Auto,
+    })
+    .context("恢复后自动校验失败")?;
     Ok(())
 }
 
