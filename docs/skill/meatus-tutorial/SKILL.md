@@ -75,7 +75,7 @@ description: Meatus 内网穿透新手使用教程。面向第一次使用 Meatu
 
 ## 本机体验最短路径
 
-1. 下载并解压对应平台的 1.1.0 包。
+1. 下载并解压对应平台的 1.2.0 包。
 2. `meatus gen-cert --domain localhost --domain 127.0.0.1 --out certs`。
 3. `meatus gen-token`，明文给客户端，sha256 给服务端。
 4. 写 `server.toml`，`meatus check -c server.toml`。
@@ -84,11 +84,22 @@ description: Meatus 内网穿透新手使用教程。面向第一次使用 Meatu
 7. 两个终端分别跑 `meatus server -c server.toml`、`meatus client -c client.toml`。
 8. 浏览器打开 `http://127.0.0.1:20080`，看到演示网页即毕业。
 
+## 面板创建客户端（V1.2 推荐）
+
+如果已经能打开管理面板，优先用面板代替手工 `gen-token`：
+
+1. 面板「客户端」页 →「新增客户端」。
+2. 填写客户端 ID（如 `home-nas`）、租户（默认 `default`）、服务端地址、可选端口范围。
+3. 保存后立即复制弹窗里的明文 token 与 `client.toml` / `client.yaml` 片段。
+4. 明文 token 只显示一次；关闭弹窗后只能轮换。
+5. 服务端约 1 秒后重启；客户端更新 token 后重新连接。
+6. 首次创建会自动把 `auth.token_sha256` 简写迁移为 `auth.clients`，原凭据保留为 `id = "default"`。
+
 ## 公网部署最短路径
 
 1. 服务器：上传 release 包，`sudo ./scripts/install.sh --binary ... --domain <域名或公网IP>`。
 2. 服务器：确认 `systemctl status meatus-server` 为 active，`curl 127.0.0.1:7400/healthz` 返回 ok。
-3. 服务器：从 `/etc/meatus/client.token` 取明文 token，从 `/etc/meatus/certs/server.crt` 取证书。
+3. 服务器：从 `/etc/meatus/client.token` 取明文 token，从 `/etc/meatus/certs/server.crt` 取证书；也可以登录面板「客户端」页直接创建并复制配置。
 4. 本机：写 `client.toml`，`server_addr = "<公网IP>:7000"`，`server_name = "<证书SAN>"`，`server_ca_cert` 指向证书副本。
 5. 本机：`meatus check -c client.toml`，再 `meatus client -c client.toml`。
 6. 安全组 / 防火墙放行 `7000/tcp` 和 `remote_port`（例如 `20022/tcp`）。
@@ -99,6 +110,7 @@ description: Meatus 内网穿透新手使用教程。面向第一次使用 Meatu
 - 服务端只写 `bind_addr` + `control_port`；客户端才写 `server_addr`。
 - `server_name` 必须和证书 SAN 一致；自签证书客户端要带 `server_ca_cert`。
 - 管理面板默认只绑 `127.0.0.1:7400`，远程访问用 `ssh -L 7400:127.0.0.1:7400`。
+- SOCKS5 域名目标必须显式配置 `options.allow_domains`；空表示拒绝全部域名。
 
 ## 参考文件
 

@@ -65,6 +65,7 @@ const navGroups: NavGroup[] = [
   {
     label: '运维',
     items: [
+      { id: '/clients', label: '客户端', icon: 'users' },
       { id: '/certificates', label: '证书状态', icon: 'shield-check' },
       { id: '/logs', label: '实时日志', icon: 'terminal' },
       { id: '/settings', label: '系统设置', icon: 'settings' },

@@ -4,6 +4,43 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-19
+
+V1.2：客户端接入与代理可用性闭环。`1.1.1` 未单独发布，其 YAML 写回与面板修正一并包含在 `1.2.0`。
+
+### Added
+
+- 管理面板新增「客户端」页：列出 `auth.clients`、在线状态、proxy 数量、token 指纹与端口范围。
+- 新增 `GET/POST /api/v1/clients` 与 `PUT/DELETE /api/v1/clients/{id}`：创建、轮换、删除客户端 token。
+- 创建/轮换只在响应中返回一次明文 token；服务端只写 `token_sha256`，并同时生成 TOML / YAML 客户端配置片段。
+- 首次通过面板创建客户端时，自动把 `auth.token_sha256` 简写迁移为 `auth.clients` 数组；TOML 内联 `clients = [{...}]` 会自动规范化为 `[[auth.clients]]`。
+- 客户端写回沿用备份 + 原子替换 + 1 秒后重启；删除最后一个客户端凭据会被拒绝。
+- SOCKS5 域名目标：`ATYP=3` 不再直接拒绝；`options.allow_domains` 支持精确域名与 `*.example.com` 后缀。
+- SOCKS5 域名解析由 client 执行：只解析一次，按 `allow_cidrs` 过滤后固定第一个允许 IP 连接，避免 DNS rebinding。
+- `ProxyOptions.allow_domains` 贯穿 proto、服务端 / 客户端配置、管理 API、状态输出、配置写回与面板表单。
+- 面板 Proxy 表单为 SOCKS5 增加「允许目标域名」，并在状态/API 中回显。
+
+### Changed
+
+- 版本升至 `1.2.0`。
+- SOCKS5 域名目标默认仍拒绝；未配置 `allow_domains` 时不放行任何域名。
+- 面板「客户端」页创建/轮换后提示服务将在 1 秒后重启；客户端需要更新 token 后重连。
+- `auth.clients` TOML 写回从内联数组规范化为标准数组表，保留其余注释与键顺序。
+- `README.md`、`docs/USAGE.md`、`docs/INSTALL.md`、配置示例与教程 Skill 更新为 V1.2 行为。
+
+### Fixed
+
+- 修复 YAML 配置下管理面无法保存系统设置 / proxy 的问题（随 1.2.0 发布）。
+- 修复面板日志页桌面端滚动被裁切、搜索栏操作按钮缺失等 1.1.1 细节。
+
+### Known limitations
+
+- 客户端 CRUD 后服务端会重启约 1 秒，期间所有隧道短暂断开；尚无无中断热加载。
+- SOCKS5 仍只支持单条路由；第二个 SOCKS5 proxy 会被拒绝。
+- 域名目标只支持显式白名单，不做自动 DNS 发现或按租户动态策略。
+- 泛域名 ACME（DNS-01）、Proxy 连通性探测、跨平台发布仍属于后续版本。
+- GHCR 与 GitHub Release 暂缓；当前镜像发布以阿里云 ACR 为准。
+
 ## [1.1.1] - 2026-11-19
 
 V1.1.1 补丁：YAML 管理面写回与管理面板细节修正。

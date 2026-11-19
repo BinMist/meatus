@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use meatus_core::{ConfigFormat, LogFormat, ServerConfig};
+use meatus_core::{AuthMode, ClientEntry, ConfigFormat, LogFormat, ServerConfig};
 use meatus_proto::v1::{NewProxy, ProxyOptions, ProxyType};
 use rust_embed::RustEmbed;
 use serde_json::{Value, json};
@@ -423,6 +423,9 @@ fn is_api(path: &str) -> bool {
 }
 
 async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> HttpResponse {
+    if let Some(id) = request.path.strip_prefix("/api/v1/clients/") {
+        return clients_item(request, state, id).await;
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/healthz") => HttpResponse::json(
             200,
@@ -449,6 +452,8 @@ async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> Ht
                 cache_control: "no-store",
             }
         }
+        ("GET", "/api/v1/clients") => clients_list(request, state),
+        ("POST", "/api/v1/clients") => clients_create(request, state).await,
         ("POST", "/api/v1/proxies") => proxy_write(request, state, false).await,
         ("PUT", "/api/v1/proxies") => proxy_write(request, state, true).await,
         ("DELETE", "/api/v1/proxies") => proxy_delete(request, state).await,
@@ -586,6 +591,489 @@ async fn proxy_delete(request: &HttpRequest, state: &AdminState) -> HttpResponse
         Ok(Err(_)) => HttpResponse::json(502, json!({"error": "client command channel closed"})),
         Err(_) => HttpResponse::json(504, json!({"error": "client command timeout"})),
     }
+}
+
+fn clients_list(request: &HttpRequest, state: &AdminState) -> HttpResponse {
+    if !authorized(request, state) {
+        return HttpResponse::json(401, json!({"error": "unauthorized"}));
+    }
+    let config = &state.config;
+    let mut rows = configured_clients(state);
+    let snapshot = state.status.render(&state.metrics);
+    let online = snapshot
+        .get("clients")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for row in &mut rows {
+        let id = row["id"].as_str().unwrap_or_default().to_string();
+        let tenant = row["tenant"].as_str().unwrap_or_default().to_string();
+        let mut proxy_count = 0u64;
+        let mut online_runs = 0u64;
+        let mut last_connected = 0i64;
+        for entry in &online {
+            if entry["client_id"].as_str() == Some(id.as_str())
+                && entry["tenant_id"].as_str() == Some(tenant.as_str())
+            {
+                online_runs += 1;
+                proxy_count += entry["proxy_count"].as_u64().unwrap_or(0);
+                last_connected = last_connected.max(entry["connected_at_ms"].as_i64().unwrap_or(0));
+            }
+        }
+        row["online"] = json!(online_runs > 0);
+        row["run_count"] = json!(online_runs);
+        row["proxy_count"] = json!(proxy_count);
+        row["last_connected_ms"] = json!(last_connected);
+        row["can_delete"] = json!(
+            row["source"].as_str() == Some("clients") && state.config.auth.clients.len() >= 2
+        );
+    }
+    let (server_addr, server_name) = default_client_endpoint(config);
+    HttpResponse::json(
+        200,
+        json!({
+            "clients": rows,
+            "server_addr": server_addr,
+            "server_name": server_name,
+            "config_path": state.config_path.as_ref().map(|path| path.display().to_string()),
+            "config_format": state.config_path.as_deref().map(|path| ConfigFormat::from_path(path).label()),
+            "restart_required": false,
+            "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
+        }),
+    )
+}
+
+fn configured_clients(state: &AdminState) -> Vec<Value> {
+    if state.config.auth.clients.is_empty() {
+        return state
+            .config
+            .auth
+            .token_sha256
+            .as_deref()
+            .filter(|hash| !hash.trim().is_empty())
+            .map(|hash| {
+                vec![json!({
+                    "id": "default",
+                    "tenant": meatus_core::DEFAULT_TENANT,
+                    "token_fingerprint": fingerprint(hash),
+                    "allow_ports": Value::Null,
+                    "source": "token_sha256",
+                    "can_delete": false,
+                })]
+            })
+            .unwrap_or_default();
+    }
+    state
+        .config
+        .auth
+        .clients
+        .iter()
+        .map(|client| {
+            json!({
+                "id": client.id,
+                "tenant": client.tenant,
+                "token_fingerprint": client.token_sha256.as_deref().map(fingerprint).unwrap_or_else(|| "未配置".to_string()),
+                "allow_ports": client.allow_ports,
+                "source": "clients",
+                "can_delete": state.config.auth.clients.len() >= 2,
+            })
+        })
+        .collect()
+}
+
+async fn clients_create(request: &HttpRequest, state: &AdminState) -> HttpResponse {
+    if let Err(response) = write_allowed(request, state) {
+        return response;
+    }
+    if !local_auth_enabled(state) {
+        return HttpResponse::json(
+            409,
+            json!({"error": "客户端令牌管理要求 auth.mode=hmac 且 auth.provider=local"}),
+        );
+    }
+    let Some(path) = state.config_path.as_deref() else {
+        return HttpResponse::json(
+            409,
+            json!({"error": "server was started without a config path; online edit is disabled"}),
+        );
+    };
+    let body: Value = match serde_json::from_slice(&request.body) {
+        Ok(value) => value,
+        Err(_) => return HttpResponse::json(400, json!({"error": "invalid json"})),
+    };
+    let id = match validate_identifier(body.get("id").and_then(Value::as_str), "id") {
+        Ok(value) => value,
+        Err(error) => return HttpResponse::json(400, json!({"error": error})),
+    };
+    let tenant = match validate_identifier(
+        body.get("tenant")
+            .and_then(Value::as_str)
+            .or(Some(meatus_core::DEFAULT_TENANT)),
+        "tenant",
+    ) {
+        Ok(value) => value,
+        Err(error) => return HttpResponse::json(400, json!({"error": error})),
+    };
+    if state
+        .config
+        .auth
+        .clients
+        .iter()
+        .any(|client| client.id == id)
+    {
+        return HttpResponse::json(409, json!({"error": format!("client {id} already exists")}));
+    }
+    let allow_ports = match parse_allow_ports(body.get("allow_ports")) {
+        Ok(value) => value,
+        Err(error) => return HttpResponse::json(400, json!({"error": error})),
+    };
+    let endpoint = match client_endpoint(
+        body.get("server_addr").and_then(Value::as_str),
+        &state.config,
+    ) {
+        Ok(value) => value,
+        Err(error) => return HttpResponse::json(400, json!({"error": error})),
+    };
+    let token = match random_client_token() {
+        Ok(token) => token,
+        Err(error) => return HttpResponse::json(500, json!({"error": error})),
+    };
+    let hash = hex::encode(meatus_core::token_key(&token));
+    let entry = ClientEntry {
+        id: id.clone(),
+        tenant: tenant.clone(),
+        token_sha256: Some(hash.clone()),
+        allow_ports,
+    };
+    let backup = match meatus_core::upsert_server_client(path, &entry) {
+        Ok(backup) => backup,
+        Err(error) => {
+            warn!(%error, client = %id, "client write failed");
+            return HttpResponse::json(500, json!({"error": error}));
+        }
+    };
+    warn!(client = %id, "client created; process will restart to apply auth config");
+    schedule_restart();
+    let row = client_response_row(state, &entry);
+    HttpResponse::json(
+        200,
+        json!({
+            "ok": true,
+            "client": row,
+            "token": token,
+            "config": client_snippets(ConfigFormat::from_path(path), &endpoint.0, &endpoint.1, &id, &tenant, &token),
+            "restart_required": true,
+            "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
+            "backup": backup.as_ref().map(|path| path.display().to_string()),
+            "message": "客户端已创建；明文 token 只显示这一次。服务将在 1 秒后重启。",
+        }),
+    )
+}
+
+async fn clients_item(request: &HttpRequest, state: &AdminState, id: &str) -> HttpResponse {
+    let id = id.trim();
+    if id.is_empty() {
+        return HttpResponse::json(404, json!({"error": "client not found"}));
+    }
+    let action = if request.method == "PUT" {
+        "rotate"
+    } else if request.method == "DELETE" {
+        "delete"
+    } else {
+        return HttpResponse::json(405, json!({"error": "method not allowed"}));
+    };
+    if let Err(response) = write_allowed(request, state) {
+        return response;
+    }
+    if !local_auth_enabled(state) {
+        return HttpResponse::json(
+            409,
+            json!({"error": "客户端令牌管理要求 auth.mode=hmac 且 auth.provider=local"}),
+        );
+    }
+    let Some(path) = state.config_path.as_deref() else {
+        return HttpResponse::json(
+            409,
+            json!({"error": "server was started without a config path; online edit is disabled"}),
+        );
+    };
+    if state.config.auth.clients.is_empty() {
+        return HttpResponse::json(
+            409,
+            json!({"error": "当前为 auth.token_sha256 简写，请先新增一个 auth.clients 客户端再轮换或删除"}),
+        );
+    }
+    let Some(existing) = state
+        .config
+        .auth
+        .clients
+        .iter()
+        .find(|client| client.id == id)
+        .cloned()
+    else {
+        return HttpResponse::json(404, json!({"error": format!("client {id} not found")}));
+    };
+
+    if action == "delete" {
+        if state.config.auth.clients.len() <= 1 {
+            return HttpResponse::json(409, json!({"error": "不能删除最后一个客户端凭据"}));
+        }
+        let backup = match meatus_core::remove_server_client(path, id) {
+            Ok(backup) => backup,
+            Err(error) => {
+                warn!(%error, client = %id, "client delete failed");
+                return HttpResponse::json(500, json!({"error": error}));
+            }
+        };
+        warn!(client = %id, "client deleted; process will restart to apply auth config");
+        schedule_restart();
+        return HttpResponse::json(
+            200,
+            json!({
+                "ok": true,
+                "id": id,
+                "restart_required": true,
+                "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
+                "backup": backup.as_ref().map(|path| path.display().to_string()),
+            }),
+        );
+    }
+
+    let body: Value = if request.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(_) => return HttpResponse::json(400, json!({"error": "invalid json"})),
+        }
+    };
+    let allow_ports = match body.get("allow_ports") {
+        Some(value) => match parse_allow_ports(Some(value)) {
+            Ok(value) => value,
+            Err(error) => return HttpResponse::json(400, json!({"error": error})),
+        },
+        None => existing.allow_ports,
+    };
+    let endpoint = match client_endpoint(
+        body.get("server_addr").and_then(Value::as_str),
+        &state.config,
+    ) {
+        Ok(value) => value,
+        Err(error) => return HttpResponse::json(400, json!({"error": error})),
+    };
+    let token = match random_client_token() {
+        Ok(token) => token,
+        Err(error) => return HttpResponse::json(500, json!({"error": error})),
+    };
+    let hash = hex::encode(meatus_core::token_key(&token));
+    let entry = ClientEntry {
+        id: existing.id.clone(),
+        tenant: existing.tenant.clone(),
+        token_sha256: Some(hash),
+        allow_ports,
+    };
+    let backup = match meatus_core::upsert_server_client(path, &entry) {
+        Ok(backup) => backup,
+        Err(error) => {
+            warn!(%error, client = %id, "client rotate failed");
+            return HttpResponse::json(500, json!({"error": error}));
+        }
+    };
+    warn!(client = %id, "client token rotated; process will restart to apply auth config");
+    schedule_restart();
+    HttpResponse::json(
+        200,
+        json!({
+            "ok": true,
+            "client": client_response_row(state, &entry),
+            "token": token,
+            "config": client_snippets(ConfigFormat::from_path(path), &endpoint.0, &endpoint.1, &entry.id, &entry.tenant, &token),
+            "restart_required": true,
+            "restart_delay_s": SETTINGS_RESTART_DELAY.as_secs(),
+            "backup": backup.as_ref().map(|path| path.display().to_string()),
+            "message": "token 已轮换；旧 token 会在服务重启后失效。明文 token 只显示这一次。",
+        }),
+    )
+}
+
+fn client_response_row(state: &AdminState, entry: &ClientEntry) -> Value {
+    let snapshot = state.status.render(&state.metrics);
+    let online = snapshot
+        .get("clients")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let runs: Vec<&Value> = online
+        .iter()
+        .filter(|value| {
+            value["client_id"].as_str() == Some(entry.id.as_str())
+                && value["tenant_id"].as_str() == Some(entry.tenant.as_str())
+        })
+        .collect();
+    json!({
+        "id": entry.id,
+        "tenant": entry.tenant,
+        "token_fingerprint": entry.token_sha256.as_deref().map(fingerprint).unwrap_or_else(|| "未配置".to_string()),
+        "allow_ports": entry.allow_ports,
+        "online": !runs.is_empty(),
+        "proxy_count": runs.iter().map(|value| value["proxy_count"].as_u64().unwrap_or(0)).sum::<u64>(),
+    })
+}
+
+fn local_auth_enabled(state: &AdminState) -> bool {
+    state.config.auth.mode == AuthMode::Hmac
+        && matches!(
+            state.config.auth.provider,
+            meatus_core::config::AuthProviderKind::Local
+        )
+}
+
+fn validate_identifier(value: Option<&str>, field: &str) -> Result<String, String> {
+    let value = value.unwrap_or_default().trim();
+    if value.is_empty() {
+        return Err(format!("{field} is required"));
+    }
+    if value.len() > 64 {
+        return Err(format!("{field} must be <=64 characters"));
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(format!(
+            "{field} only supports letters, digits, '-', '_' and '.'"
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn parse_allow_ports(value: Option<&Value>) -> Result<Option<[u16; 2]>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(array) = value.as_array() else {
+        return Err("allow_ports must be [start, end] or null".to_string());
+    };
+    if array.len() != 2 {
+        return Err("allow_ports must contain exactly two ports".to_string());
+    };
+    let start = array[0]
+        .as_u64()
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| "allow_ports[0] is invalid".to_string())?;
+    let end = array[1]
+        .as_u64()
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| "allow_ports[1] is invalid".to_string())?;
+    if start < 1024 || start > end {
+        return Err("allow_ports must satisfy 1024 <= start <= end <= 65535".to_string());
+    }
+    Ok(Some([start, end]))
+}
+
+fn default_client_endpoint(config: &ServerConfig) -> (String, String) {
+    let domain = config.http.domain.trim();
+    let host = if !domain.is_empty()
+        && !domain.contains('*')
+        && meatus_core::normalize_domain(domain).is_ok()
+    {
+        meatus_core::normalize_domain(domain).unwrap_or_else(|_| "tunnel.example.com".to_string())
+    } else if config.server.bind_addr != "0.0.0.0" && config.server.bind_addr != "::" {
+        config.server.bind_addr.clone()
+    } else {
+        "tunnel.example.com".to_string()
+    };
+    let server_name = host.clone();
+    let addr = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{}", config.server.control_port)
+    } else {
+        format!("{host}:{}", config.server.control_port)
+    };
+    (addr, server_name)
+}
+
+fn client_endpoint(value: Option<&str>, config: &ServerConfig) -> Result<(String, String), String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(default_client_endpoint(config));
+    };
+    if value.chars().any(char::is_whitespace) || value.contains("://") {
+        return Err("server_addr must be host:port without scheme or whitespace".to_string());
+    }
+    let (host, port) = if let Some(rest) = value.strip_prefix('[') {
+        let (host, port) = rest
+            .split_once("]:")
+            .ok_or_else(|| "server_addr IPv6 form must be [addr]:port".to_string())?;
+        (format!("[{host}]"), port)
+    } else {
+        let (host, port) = value
+            .rsplit_once(':')
+            .ok_or_else(|| "server_addr must be host:port".to_string())?;
+        (host.to_string(), port)
+    };
+    let port: u16 = port
+        .parse()
+        .map_err(|_| "server_addr port must be 1..65535".to_string())?;
+    if port == 0 {
+        return Err("server_addr port must be 1..65535".to_string());
+    }
+    let bare = host.trim_matches(['[', ']']);
+    let name = if let Ok(ip) = bare.parse::<IpAddr>() {
+        ip.to_string()
+    } else {
+        meatus_core::normalize_domain(bare)
+            .map_err(|error| format!("server_addr host invalid: {error}"))?
+    };
+    let addr = if bare.parse::<IpAddr>().is_ok_and(|ip| ip.is_ipv6()) {
+        format!("[{name}]:{port}")
+    } else {
+        format!("{name}:{port}")
+    };
+    Ok((addr, name))
+}
+
+fn random_client_token() -> Result<String, String> {
+    use base64::Engine as _;
+    let mut buf = [0u8; 32];
+    getrandom::fill(&mut buf).map_err(|error| format!("generate client token: {error}"))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf))
+}
+
+fn fingerprint(hash: &str) -> String {
+    if hash.len() <= 16 {
+        return hash.to_string();
+    }
+    format!("{}…{}", &hash[..8], &hash[hash.len() - 8..])
+}
+
+fn client_snippets(
+    format: ConfigFormat,
+    server_addr: &str,
+    server_name: &str,
+    id: &str,
+    tenant: &str,
+    token: &str,
+) -> Value {
+    let toml = format!(
+        "[client]\nserver_addr = \"{server_addr}\"\nserver_name = \"{server_name}\"\nclient_id = \"{id}\"\ntenant = \"{tenant}\"\ntoken = \"{token}\"\n# server_ca_cert = \"certs/server.crt\"\n\n[log]\nlevel = \"info\"\nformat = \"text\"\n"
+    );
+    let yaml = format!(
+        "client:\n  server_addr: \"{server_addr}\"\n  server_name: \"{server_name}\"\n  client_id: \"{id}\"\n  tenant: \"{tenant}\"\n  token: \"{token}\"\n  # server_ca_cert: \"certs/server.crt\"\n\nlog:\n  level: info\n  format: text\n"
+    );
+    json!({
+        "toml": toml,
+        "yaml": yaml,
+        "format": format.label(),
+    })
+}
+
+fn schedule_restart() {
+    tokio::spawn(async move {
+        tokio::time::sleep(SETTINGS_RESTART_DELAY).await;
+        std::process::exit(0);
+    });
 }
 
 async fn settings_write(request: &HttpRequest, state: &AdminState) -> HttpResponse {
@@ -943,6 +1431,24 @@ fn new_proxy_from_json(body: &Value) -> Result<NewProxy, String> {
     if allow_cidrs.len() > 16 {
         return Err("at most 16 allow_cidrs are allowed".to_string());
     }
+    let mut allow_domains = Vec::new();
+    if let Some(array) = options.get("allow_domains").and_then(Value::as_array) {
+        for value in array {
+            let Some(domain) = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            allow_domains.push(domain.to_string());
+        }
+    }
+    if allow_domains.len() > 16 {
+        return Err("at most 16 allow_domains are allowed".to_string());
+    }
+    meatus_core::DomainPolicy::from_allow_domains(&allow_domains)
+        .map_err(|err| format!("allow_domains invalid: {err}"))?;
 
     let kind = ProxyType::try_from(proxy_type).map_err(|_| "invalid proxy type".to_string())?;
     if matches!(kind, ProxyType::Http | ProxyType::Https) {
@@ -975,6 +1481,7 @@ fn new_proxy_from_json(body: &Value) -> Result<NewProxy, String> {
             max_conns: u32::try_from(max_conns).unwrap_or(0),
             enable_compression: false,
             allow_cidrs,
+            allow_domains,
         }),
     })
 }

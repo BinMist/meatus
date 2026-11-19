@@ -874,6 +874,7 @@ async fn start_proxy(
                 max_conns: options.max_conns,
                 idle_timeout_s: options.idle_timeout_s,
                 allow_cidrs: options.allow_cidrs.clone(),
+                allow_domains: options.allow_domains.clone(),
                 tenant_id: tenant_id.to_string(),
                 client_id: client_id.to_string(),
                 run_id: run_id.to_string(),
@@ -1014,6 +1015,7 @@ async fn start_proxy(
                 max_conns: options.max_conns,
                 idle_timeout_s: options.idle_timeout_s,
                 allow_cidrs: options.allow_cidrs.clone(),
+                allow_domains: options.allow_domains.clone(),
                 tenant_id: tenant_id.to_string(),
                 client_id: client_id.to_string(),
                 run_id: run_id.to_string(),
@@ -1052,6 +1054,9 @@ async fn start_proxy(
             }
             let policy = TargetPolicy::from_allow_cidrs(&options.allow_cidrs)
                 .map_err(|err| (ErrorCode::Internal, err))?;
+            let domain_policy =
+                meatus_core::DomainPolicy::from_allow_domains(&options.allow_domains)
+                    .map_err(|err| (ErrorCode::Internal, err))?;
             let max_conns = if options.max_conns == 0 {
                 1024
             } else {
@@ -1067,6 +1072,7 @@ async fn start_proxy(
                 metrics: Arc::clone(&proxy_ctx.metrics),
                 next_trace: Arc::clone(&proxy_ctx.next_trace),
                 policy: Arc::new(policy),
+                domain_policy: Arc::new(domain_policy),
                 permits: Arc::new(Semaphore::new(max_conns)),
             };
             ctx.state
@@ -1084,6 +1090,7 @@ async fn start_proxy(
                 max_conns: options.max_conns,
                 idle_timeout_s: options.idle_timeout_s,
                 allow_cidrs: options.allow_cidrs.clone(),
+                allow_domains: options.allow_domains.clone(),
                 tenant_id: tenant_id.to_string(),
                 client_id: client_id.to_string(),
                 run_id: run_id.to_string(),

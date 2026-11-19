@@ -15,7 +15,14 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，HTTP proxy 的精确域名由 server 用 Let's Encrypt HTTP-01 自动签发、TLS 终止并缓存/续期
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **状态**：`1.1.0` 已发布并完成 Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>。当前发布形态为 macOS aarch64、Linux x86_64 musl 静态包 + 阿里云 ACR 多架构镜像（ACR 当前为私有，需先 `docker login`）；GHCR 与 GitHub Release 暂缓。`1.1.1` 是 YAML 写回补丁，代码已收口，发布资产待构建；安装示例仍指向已发布的 `1.1.0`。V1.1 已通过 88 passed / 1 ignored、fmt / clippy、fuzz 120s × 2、30min soak、20% 丢包 30min 回归；24h soak 待补最终记录。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **状态**：当前源码版本 `1.2.0`；公网已发布版本仍为 `1.1.0`（Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>），`1.1.1` 不单独发布，其 YAML 写回与面板修正并入 `1.2.0`。发布形态为 macOS aarch64、Linux x86_64 musl 静态包 + 阿里云 ACR 多架构镜像（ACR 当前为私有，需先 `docker login`）；GHCR 与 GitHub Release 暂缓。V1.1 已通过 88 passed / 1 ignored、fmt / clippy、fuzz 120s × 2、30min soak、20% 丢包 30min 回归；24h soak 待补最终记录。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+
+## V1.2 主要更新
+
+- **客户端与令牌管理**：管理面板新增「客户端」页，可创建、轮换、删除 `auth.clients` token；明文 token 只在创建/轮换响应中出现一次，服务端只落 `token_sha256`，并直接给出 TOML / YAML 客户端配置片段。
+- **新接入引导**：首次创建时自动把 `auth.token_sha256` 简写迁移为 `auth.clients`；TOML 内联 `clients = [{...}]` 会规范化为 `[[auth.clients]]`。写回后备份、原子替换，约 1 秒后重启。
+- **SOCKS5 域名目标**：`ATYP=3` 域名不再直接拒绝；`options.allow_domains` 支持精确域名与 `*.example.com`。域名由 client 解析一次，经 `allow_cidrs` 过滤后固定第一个允许 IP，规避 DNS rebinding。
+- **可观测性**：客户端列表显示在线状态、proxy 数量、token 指纹、端口范围；SOCKS5 proxy 状态与 API 回显 `allow_domains`。
 
 ## V1.1 主要更新
 
@@ -100,7 +107,9 @@ dig @127.0.0.1 -p <remote_port> example.com
 # 8. SOCKS5：server.toml 打开 [socks5] enabled = true，
 #    client.toml 增加 type = "socks5" 的 proxy 后：
 curl --socks5 127.0.0.1:2080 http://10.0.0.12:8080/
-# 只支持 IP 目标与 CONNECT；目标默认限定内网 CIDR，可用 options.allow_cidrs 覆盖
+curl --socks5-hostname 127.0.0.1:2080 http://nas.internal:8080/
+# 支持 IP / 域名目标与 CONNECT；目标默认限定内网 CIDR，可用 options.allow_cidrs 覆盖
+# 域名目标必须显式配置 options.allow_domains（精确或 *.suffix），空表示全部拒绝
 # 当前仅登记一个全局 SOCKS5 路由，多 client 路由策略留待后续
 
 # 9. 指标 / 健康检查 / 状态（默认只绑本机）

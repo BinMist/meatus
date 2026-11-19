@@ -669,3 +669,79 @@ token = "secret"
     let _ = server_task.await;
     let _ = proxy_port;
 }
+
+#[tokio::test]
+async fn admin_clients_list_reports_shorthand_metadata() {
+    let control_port = free_port();
+    let admin_port = free_port();
+    let dir = std::env::temp_dir().join(format!("meatus-admin-clients-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let toml_path = dir.join("server.toml");
+    std::fs::write(
+        &toml_path,
+        format!(
+            r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{}"
+tls_key = "{}"
+
+[auth]
+mode = "hmac"
+provider = "local"
+token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b"
+
+[ports]
+range = [24300, 24310]
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+admin_token = "admin-secret"
+"#,
+            cert_path.display(),
+            key_path.display()
+        ),
+    )
+    .expect("write toml config");
+
+    let config = parse_server_config(&std::fs::read_to_string(&toml_path).expect("read config"))
+        .expect("parse config");
+    let state = ServerState::new(config)
+        .expect("state")
+        .with_config_path(toml_path.clone());
+    let cancel = CancellationToken::new();
+    let run_cancel = cancel.clone();
+    let task = tokio::spawn(async move { meatus_server::run_until(state, run_cancel).await });
+    sleep(Duration::from_millis(300)).await;
+
+    let (status, head, body) = request(
+        admin_port,
+        "POST /api/v1/session HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 24\r\n\r\n{\"token\":\"admin-secret\"}",
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let cookie = cookie_from(&head);
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!("GET /api/v1/clients HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\n\r\n"),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"id\":\"default\""), "{body}");
+    assert!(body.contains("\"source\":\"token_sha256\""), "{body}");
+    assert!(body.contains("\"restart_required\":false"), "{body}");
+    assert!(body.contains("\"config_format\":\"toml\""), "{body}");
+
+    cancel.cancel();
+    let _ = task.await;
+    let _ = std::fs::remove_dir_all(dir);
+}

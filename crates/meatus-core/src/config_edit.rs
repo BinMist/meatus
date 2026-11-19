@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_yaml::{Mapping, Number, Sequence, Value as YamlValue};
 use toml_edit::{Array, ArrayOfTables, Document, InlineTable, Item, Table, Value, value};
 
-use crate::config::{ClientConfig, ConfigFormat, ProxySpec, ProxyType, ServerConfig};
+use crate::config::{ClientConfig, ClientEntry, ConfigFormat, ProxySpec, ProxyType, ServerConfig};
 
 /// 写回客户端 proxy：同名替换，不存在则追加。
 ///
@@ -208,6 +208,246 @@ fn write_server_config_yaml(path: &Path, next: &ServerConfig) -> Result<Option<P
     backup_and_write(path, &text)
 }
 
+/// 写入或替换一个 `auth.clients` 条目。
+///
+/// 如果配置仍在使用 `auth.token_sha256` 单客户端简写，会先把它迁移成
+/// `id=default, tenant=default` 的条目，再写入新客户端。成功时返回备份路径。
+pub fn upsert_server_client(path: &Path, entry: &ClientEntry) -> Result<Option<PathBuf>, String> {
+    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
+        return upsert_server_client_yaml(path, entry);
+    }
+    upsert_server_client_toml(path, entry)
+}
+
+/// 从 `auth.clients` 删除一个条目；不存在时视为成功。
+///
+/// 删除后如果配置不再有任何凭据，校验会失败，调用方应先做兜底检查。
+pub fn remove_server_client(path: &Path, id: &str) -> Result<Option<PathBuf>, String> {
+    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
+        return remove_server_client_yaml(path, id);
+    }
+    remove_server_client_toml(path, id)
+}
+
+fn upsert_server_client_toml(path: &Path, entry: &ClientEntry) -> Result<Option<PathBuf>, String> {
+    let raw = read_config(path)?;
+    let mut document = raw
+        .parse::<Document>()
+        .map_err(|err| format!("parse server config: {err}"))?;
+
+    if !document.as_table().contains_key("auth") {
+        document
+            .as_table_mut()
+            .insert("auth", Item::Table(Table::new()));
+    }
+    let auth = document["auth"]
+        .as_table_mut()
+        .ok_or_else(|| "server auth must be a table".to_string())?;
+
+    ensure_client_array(auth)?;
+    let array = auth
+        .get_mut("clients")
+        .and_then(Item::as_array_of_tables_mut)
+        .ok_or_else(|| "server auth.clients must be an array of tables".to_string())?;
+    let mut replaced = false;
+    for table in array.iter_mut() {
+        if table.get("id").and_then(Item::as_str) == Some(entry.id.as_str()) {
+            *table = client_table(entry);
+            replaced = true;
+            break;
+        }
+    }
+    if !replaced {
+        array.push(client_table(entry));
+    }
+
+    validate_server_text(&document.to_string())?;
+    backup_and_write(path, &document.to_string())
+}
+
+fn remove_server_client_toml(path: &Path, id: &str) -> Result<Option<PathBuf>, String> {
+    let raw = read_config(path)?;
+    let mut document = raw
+        .parse::<Document>()
+        .map_err(|err| format!("parse server config: {err}"))?;
+
+    let mut empty = false;
+    if let Some(auth) = document.get_mut("auth").and_then(Item::as_table_mut) {
+        ensure_client_array(auth)?;
+        if let Some(array) = auth
+            .get_mut("clients")
+            .and_then(Item::as_array_of_tables_mut)
+        {
+            array.retain(|table| table.get("id").and_then(Item::as_str) != Some(id));
+            empty = array.is_empty();
+        }
+    }
+    if empty && let Some(auth) = document.get_mut("auth").and_then(Item::as_table_mut) {
+        auth.remove("clients");
+    }
+
+    validate_server_text(&document.to_string())?;
+    backup_and_write(path, &document.to_string())
+}
+
+fn upsert_server_client_yaml(path: &Path, entry: &ClientEntry) -> Result<Option<PathBuf>, String> {
+    let mut root = read_yaml_config(path, "server")?;
+    {
+        let auth = yaml_map_mut(&mut root, "auth")?;
+        if !auth.contains_key(yaml_key("clients")) {
+            let mut array = Sequence::new();
+            if let Some(token) = auth
+                .get(yaml_key("token_sha256"))
+                .and_then(YamlValue::as_str)
+            {
+                array.push(client_yaml_value(&ClientEntry {
+                    id: crate::tenant::DEFAULT_TENANT.to_string(),
+                    tenant: crate::tenant::DEFAULT_TENANT.to_string(),
+                    token_sha256: Some(token.to_string()),
+                    allow_ports: None,
+                }));
+            }
+            auth.insert(yaml_key("clients"), YamlValue::Sequence(array));
+            auth.remove(yaml_key("token_sha256"));
+        }
+
+        let array = auth
+            .get_mut(yaml_key("clients"))
+            .and_then(YamlValue::as_sequence_mut)
+            .ok_or_else(|| "server auth.clients must be a sequence".to_string())?;
+        let mut replaced = false;
+        for item in array.iter_mut() {
+            if item
+                .as_mapping()
+                .and_then(|table| table.get(yaml_key("id")))
+                .and_then(YamlValue::as_str)
+                == Some(entry.id.as_str())
+            {
+                *item = client_yaml_value(entry);
+                replaced = true;
+                break;
+            }
+        }
+        if !replaced {
+            array.push(client_yaml_value(entry));
+        }
+    }
+
+    let text =
+        serde_yaml::to_string(&root).map_err(|err| format!("serialize server YAML: {err}"))?;
+    validate_server_yaml_text(&text)?;
+    backup_and_write(path, &text)
+}
+
+fn remove_server_client_yaml(path: &Path, id: &str) -> Result<Option<PathBuf>, String> {
+    let mut root = read_yaml_config(path, "server")?;
+    let empty = {
+        let auth = yaml_map_mut(&mut root, "auth")?;
+        if let Some(array) = auth
+            .get_mut(yaml_key("clients"))
+            .and_then(YamlValue::as_sequence_mut)
+        {
+            array.retain(|item| {
+                item.as_mapping()
+                    .and_then(|table| table.get(yaml_key("id")))
+                    .and_then(YamlValue::as_str)
+                    != Some(id)
+            });
+            array.is_empty()
+        } else {
+            false
+        }
+    };
+    if empty {
+        yaml_map_mut(&mut root, "auth")?.remove(yaml_key("clients"));
+    }
+
+    let text =
+        serde_yaml::to_string(&root).map_err(|err| format!("serialize server YAML: {err}"))?;
+    validate_server_yaml_text(&text)?;
+    backup_and_write(path, &text)
+}
+
+fn ensure_client_array(auth: &mut Table) -> Result<(), String> {
+    if !auth.contains_key("clients") {
+        let mut array = ArrayOfTables::new();
+        if let Some(token) = auth.get("token_sha256").and_then(Item::as_str) {
+            array.push(default_client_table(token));
+        }
+        auth.insert("clients", Item::ArrayOfTables(array));
+        auth.remove("token_sha256");
+        return Ok(());
+    }
+    let item = auth
+        .get_mut("clients")
+        .ok_or_else(|| "server auth.clients is missing".to_string())?;
+    if item.as_array_of_tables().is_some() {
+        auth.remove("token_sha256");
+        return Ok(());
+    }
+    let Some(values) = item.as_value().and_then(Value::as_array) else {
+        return Err("server auth.clients must be an array of tables".to_string());
+    };
+    let mut array = ArrayOfTables::new();
+    for value in values {
+        let Value::InlineTable(inline) = value else {
+            return Err("server auth.clients array entries must be inline tables".to_string());
+        };
+        let mut table = Table::new();
+        for (key, value) in inline.iter() {
+            table.insert(key, Item::Value(value.clone()));
+        }
+        array.push(table);
+    }
+    *item = Item::ArrayOfTables(array);
+    auth.remove("token_sha256");
+    Ok(())
+}
+
+fn default_client_table(token_sha256: &str) -> Table {
+    let mut table = Table::new();
+    table.insert("id", value(crate::tenant::DEFAULT_TENANT));
+    table.insert("tenant", value(crate::tenant::DEFAULT_TENANT));
+    table.insert("token_sha256", value(token_sha256));
+    table
+}
+
+fn client_table(entry: &ClientEntry) -> Table {
+    let mut table = Table::new();
+    table.insert("id", value(entry.id.as_str()));
+    table.insert("tenant", value(entry.tenant.as_str()));
+    if let Some(token) = entry.token_sha256.as_deref() {
+        table.insert("token_sha256", value(token));
+    }
+    if let Some([start, end]) = entry.allow_ports {
+        let mut ports = Array::new();
+        ports.push(Value::from(i64::from(start)));
+        ports.push(Value::from(i64::from(end)));
+        table.insert("allow_ports", Item::Value(Value::Array(ports)));
+    }
+    table
+}
+
+fn client_yaml_value(entry: &ClientEntry) -> YamlValue {
+    let mut table = Mapping::new();
+    table.insert(yaml_key("id"), YamlValue::String(entry.id.clone()));
+    table.insert(yaml_key("tenant"), YamlValue::String(entry.tenant.clone()));
+    if let Some(token) = entry.token_sha256.as_deref() {
+        table.insert(
+            yaml_key("token_sha256"),
+            YamlValue::String(token.to_string()),
+        );
+    }
+    if let Some([start, end]) = entry.allow_ports {
+        let ports = Sequence::from(vec![
+            YamlValue::Number(Number::from(u64::from(start))),
+            YamlValue::Number(Number::from(u64::from(end))),
+        ]);
+        table.insert(yaml_key("allow_ports"), YamlValue::Sequence(ports));
+    }
+    YamlValue::Mapping(table)
+}
+
 fn upsert_client_proxy_yaml(path: &Path, spec: &ProxySpec) -> Result<(), String> {
     let mut root = read_yaml_config(path, "client")?;
     let array = yaml_sequence_mut(&mut root, "proxy")?;
@@ -291,6 +531,7 @@ fn proxy_yaml_value(spec: &ProxySpec) -> YamlValue {
         || options.idle_timeout_s.is_some()
         || options.max_conns.is_some()
         || !options.allow_cidrs.is_empty()
+        || !options.allow_domains.is_empty()
     {
         let mut option_table = Mapping::new();
         if let Some(value) = options.rate_limit_bps {
@@ -317,6 +558,13 @@ fn proxy_yaml_value(spec: &ProxySpec) -> YamlValue {
                 cidrs.push(YamlValue::String(cidr.clone()));
             }
             option_table.insert(yaml_key("allow_cidrs"), YamlValue::Sequence(cidrs));
+        }
+        if !options.allow_domains.is_empty() {
+            let mut domains = Sequence::new();
+            for domain in &options.allow_domains {
+                domains.push(YamlValue::String(domain.clone()));
+            }
+            option_table.insert(yaml_key("allow_domains"), YamlValue::Sequence(domains));
         }
         table.insert(yaml_key("options"), YamlValue::Mapping(option_table));
     }
@@ -433,6 +681,7 @@ fn proxy_table(spec: &ProxySpec) -> Table {
         || options.idle_timeout_s.is_some()
         || options.max_conns.is_some()
         || !options.allow_cidrs.is_empty()
+        || !options.allow_domains.is_empty()
     {
         let mut inline = InlineTable::new();
         if let Some(value) = options.rate_limit_bps {
@@ -450,6 +699,13 @@ fn proxy_table(spec: &ProxySpec) -> Table {
                 cidrs.push(Value::from(cidr.as_str()));
             }
             inline.insert("allow_cidrs", Value::Array(cidrs));
+        }
+        if !options.allow_domains.is_empty() {
+            let mut domains = Array::new();
+            for domain in &options.allow_domains {
+                domains.push(Value::from(domain.as_str()));
+            }
+            inline.insert("allow_domains", Value::Array(domains));
         }
         table["options"] = Item::Value(Value::InlineTable(inline));
     }
@@ -610,11 +866,10 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::config::ProxyOptions;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |value| value.as_nanos());
         std::env::temp_dir().join(format!(
             "meatus-config-edit-{}-{stamp}-{name}",
@@ -651,6 +906,7 @@ remote_port = 21000
                 idle_timeout_s: Some(30),
                 max_conns: Some(4),
                 allow_cidrs: vec!["10.0.0.0/8".to_string()],
+                allow_domains: Vec::new(),
             },
         };
         upsert_client_proxy(&path, &spec).expect("upsert");
@@ -701,6 +957,7 @@ proxy:
                 idle_timeout_s: Some(30),
                 max_conns: Some(4),
                 allow_cidrs: vec!["10.0.0.0/8".to_string()],
+                allow_domains: Vec::new(),
             },
         };
         upsert_client_proxy(&path, &spec).expect("upsert yaml");
@@ -811,5 +1068,98 @@ log:
         if let Some(backup) = backup {
             let _ = fs::remove_file(backup);
         }
+    }
+    #[test]
+    fn upsert_server_client_migrates_inline_auth_clients() {
+        let path = std::env::temp_dir().join(format!(
+            "meatus-config-edit-client-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |value| value.as_nanos())
+        ));
+        let original = r#"
+# server comment
+[server]
+bind_addr = "127.0.0.1"
+control_port = 17000
+
+[auth]
+mode = "hmac"
+clients = [
+  { id = "old", tenant = "default", token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b" },
+]
+"#;
+        fs::write(&path, original).expect("write original");
+        let entry = ClientEntry {
+            id: "new".to_string(),
+            tenant: "default".to_string(),
+            token_sha256: Some(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            ),
+            allow_ports: Some([20000, 21000]),
+        };
+        upsert_server_client(&path, &entry).expect("upsert");
+        let raw = fs::read_to_string(&path).expect("read");
+        assert!(raw.contains("# server comment"));
+        let parsed = crate::config::parse_server_config(&raw).expect("parse");
+        assert_eq!(parsed.auth.clients.len(), 2);
+        assert!(parsed.auth.clients.iter().any(|client| client.id == "new"));
+        assert!(parsed.auth.clients.iter().any(|client| client.id == "old"));
+
+        remove_server_client(&path, "old").expect("remove old");
+        let parsed = crate::config::parse_server_config(&fs::read_to_string(&path).expect("read"))
+            .expect("parse after remove");
+        assert_eq!(parsed.auth.clients.len(), 1);
+        assert_eq!(parsed.auth.clients[0].id, "new");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn upsert_server_client_migrates_token_shorthand() {
+        let path = std::env::temp_dir().join(format!(
+            "meatus-config-edit-shorthand-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |value| value.as_nanos())
+        ));
+        let original = r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = 17000
+
+[auth]
+token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b"
+"#;
+        fs::write(&path, original).expect("write original");
+        let entry = ClientEntry {
+            id: "home-nas".to_string(),
+            tenant: "default".to_string(),
+            token_sha256: Some(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            ),
+            allow_ports: None,
+        };
+        upsert_server_client(&path, &entry).expect("upsert");
+        let raw = fs::read_to_string(&path).expect("read");
+        let parsed = crate::config::parse_server_config(&raw).expect("parse");
+        assert!(parsed.auth.token_sha256.is_none());
+        assert_eq!(parsed.auth.clients.len(), 2);
+        assert!(
+            parsed
+                .auth
+                .clients
+                .iter()
+                .any(|client| client.id == "default")
+        );
+        assert!(
+            parsed
+                .auth
+                .clients
+                .iter()
+                .any(|client| client.id == "home-nas")
+        );
+        let _ = fs::remove_file(path);
     }
 }

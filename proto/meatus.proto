@@ -41,6 +41,7 @@ message ProxyOptions {
   uint32 max_conns         = 3;
   bool   enable_compression = 4;
   repeated string allow_cidrs = 5;
+  repeated string allow_domains = 6;
 }
 
 message NewProxy {

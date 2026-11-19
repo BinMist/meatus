@@ -31,6 +31,7 @@ pub struct ProxyEntry {
     pub max_conns: u32,
     pub idle_timeout_s: u32,
     pub allow_cidrs: Vec<String>,
+    pub allow_domains: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -141,6 +142,7 @@ impl StatusRegistry {
                 "max_conns": entry.max_conns,
                 "idle_timeout_s": entry.idle_timeout_s,
                 "allow_cidrs": entry.allow_cidrs,
+                "allow_domains": entry.allow_domains,
                 "active_conns": snapshot.active_conns,
                 "conn_total": snapshot.total_conns,
                 "bytes_in": snapshot.bytes_in,

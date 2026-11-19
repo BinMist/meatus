@@ -37,15 +37,18 @@ remote_port = 20022
 # remote_port = 0
 # custom_domains = ["secure.tunnel.example.com"]
 
-# SOCKS5（M4）：server 必须 [socks5] enabled = true；只支持 IP 目标、CONNECT
+# SOCKS5（M4）：server 必须 [socks5] enabled = true；支持 CONNECT 的 IP / 域名目标
 # 目标默认白名单为内网（10/8、100.64/10、127/8、169.254/16、172.16/12、192.168/16、
 # ::1/128、fc00::/7、fe80::/10）；显式 options.allow_cidrs 会替换默认集合
 # local_addr 仅作配置占位，实际目标来自 SOCKS5 请求；remote_port 必须为 0
+# allow_domains 支持精确域名与 *.example.com；空表示拒绝全部域名目标
+# 域名由 client 解析一次，按 allow_cidrs 过滤后固定第一个允许 IP 连接
 # [[proxy]]
 # name = "socks"
 # type = "socks5"
 # local_addr = "127.0.0.1:0"
 # options.allow_cidrs = ["10.0.0.0/8", "192.168.1.0/24", "127.0.0.1/32"]
+# options.allow_domains = ["localhost", "*.internal.example"]
 
 # UDP（M2 已支持）
 # 单包 ≤1500B；会话空闲 60s 回收（可用 options.idle_timeout_s 调整）

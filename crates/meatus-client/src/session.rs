@@ -37,6 +37,7 @@ const PONG_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_SLICE: Duration = Duration::from_secs(35);
 const DATA_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DNS_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 const STATS_INTERVAL: Duration = Duration::from_secs(10);
 const UDP_MAX_PACKET: usize = 1500;
 const UDP_MAX_SESSIONS: usize = 2048;
@@ -235,6 +236,9 @@ fn spec_from_new_proxy(request: NewProxy) -> anyhow::Result<ProxySpec> {
         meatus_core::TargetPolicy::from_allow_cidrs(&allow_cidrs)
             .map_err(|err| anyhow::anyhow!("proxy {name} allow_cidrs invalid: {err}"))?;
     }
+    let allow_domains = options.allow_domains;
+    meatus_core::DomainPolicy::from_allow_domains(&allow_domains)
+        .map_err(|err| anyhow::anyhow!("proxy {name} allow_domains invalid: {err}"))?;
     Ok(ProxySpec {
         name,
         kind,
@@ -246,6 +250,7 @@ fn spec_from_new_proxy(request: NewProxy) -> anyhow::Result<ProxySpec> {
             idle_timeout_s: (options.idle_timeout_s > 0).then_some(options.idle_timeout_s),
             max_conns: (options.max_conns > 0).then_some(options.max_conns),
             allow_cidrs,
+            allow_domains,
         },
     })
 }
@@ -271,6 +276,7 @@ fn new_proxy_msg(proxy: &ProxySpec) -> ControlMsg {
                 max_conns: proxy.options.max_conns.unwrap_or(0),
                 enable_compression: false,
                 allow_cidrs: proxy.options.allow_cidrs.clone(),
+                allow_domains: proxy.options.allow_domains.clone(),
             }),
         })),
     }
@@ -670,15 +676,7 @@ async fn handle_tcp_inner(
         if raw.is_empty() {
             bail!("socks5 stream is missing dst_hint");
         }
-        let target: SocketAddr = raw
-            .parse()
-            .with_context(|| format!("invalid socks5 target {raw:?}"))?;
-        let policy = TargetPolicy::from_allow_cidrs(&proxy.options.allow_cidrs)
-            .map_err(|err| anyhow::anyhow!("invalid allow_cidrs: {err}"))?;
-        if !policy.allows(target.ip()) {
-            bail!("socks5 target {target} is outside allow_cidrs");
-        }
-        target.to_string()
+        resolve_socks_target(proxy, raw).await?.to_string()
     } else {
         proxy.local_addr.clone()
     };
@@ -714,6 +712,52 @@ async fn handle_tcp_inner(
         counter.add_bytes(tunnel_to_local, local_to_tunnel);
     }
     Ok(())
+}
+
+async fn resolve_socks_target(proxy: &ProxySpec, raw: &str) -> anyhow::Result<SocketAddr> {
+    let policy = TargetPolicy::from_allow_cidrs(&proxy.options.allow_cidrs)
+        .map_err(|err| anyhow::anyhow!("invalid allow_cidrs: {err}"))?;
+    let domains = meatus_core::DomainPolicy::from_allow_domains(&proxy.options.allow_domains)
+        .map_err(|err| anyhow::anyhow!("invalid allow_domains: {err}"))?;
+
+    if let Ok(target) = raw.parse::<SocketAddr>() {
+        if !policy.allows(target.ip()) {
+            bail!("socks5 target {target} is outside allow_cidrs");
+        }
+        return Ok(target);
+    }
+
+    let (host, port) = raw
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("invalid socks5 target {raw:?}"))?;
+    if port.is_empty() {
+        bail!("socks5 target {raw:?} is missing a port");
+    }
+    let port: u16 = port
+        .parse()
+        .with_context(|| format!("invalid socks5 target port in {raw:?}"))?;
+    if port == 0 {
+        bail!("socks5 target {raw:?} port must be 1..65535");
+    }
+    let host = meatus_core::normalize_domain(host)
+        .map_err(|err| anyhow::anyhow!("invalid socks5 target {raw:?}: {err}"))?;
+    if !domains.allows(&host) {
+        bail!("socks5 target {host} is outside allow_domains");
+    }
+
+    let resolved = timeout(
+        DNS_LOOKUP_TIMEOUT,
+        tokio::net::lookup_host((host.as_str(), port)),
+    )
+    .await
+    .with_context(|| format!("dns lookup {raw} timed out"))?
+    .with_context(|| format!("dns lookup {raw}"))?;
+    let mut allowed = resolved.filter(|addr| policy.allows(addr.ip()));
+    let target = allowed
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("socks5 target {host} has no address inside allow_cidrs"))?;
+    // 固定已校验的 IP，后续 connect 不再二次解析，避免 DNS rebinding。
+    Ok(target)
 }
 
 struct UdpClientSession {

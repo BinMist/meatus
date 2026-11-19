@@ -1,14 +1,24 @@
-# Meatus 完整使用教程（V1.1）
+# Meatus 完整使用教程（V1.2）
 
-> 适用版本：Meatus `1.1.1`（`1.1.0` 的 YAML 写回补丁；完全开源、Apache-2.0、自托管）
-> 发布状态：`1.1.0` 已发布，Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>；`1.1.1` 代码已收口，发布资产待构建。当前安装示例仍指向已发布的 `1.1.0` 镜像与安装包；GHCR / GitHub Release 暂缓。
+> 适用版本：Meatus `1.2.0`（包含 `1.1.1` 的 YAML 写回补丁；完全开源、Apache-2.0、自托管）
+> 发布状态：当前源码版本 `1.2.0`；已发布公网版本仍为 `1.1.0`（Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.1.0>）。`1.1.1` 不单独发布，其补丁并入 `1.2.0`；`1.2.0` 安装包 / 镜像构建后替换示例中的版本号。GHCR / GitHub Release 暂缓。
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
 > 依赖：单二进制 + TOML（默认）/ YAML（管理面可写，规范化重写）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 > 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 
 本教程覆盖：本机跑通、公网部署、systemd、Docker Compose、纯 `docker run`、配置项、YAML、管理面 TLS、TCP / UDP / HTTP / HTTPS / ACME / SOCKS5、管理面板、指标与日志、热重载、升级备份、故障排查和安全基线。
 
-## V1.1 更新与升级
+## V1.2 更新与升级
+
+### V1.2 带来的变化
+
+| 能力 | 说明 |
+| --- | --- |
+| 客户端与令牌管理 | 面板「客户端」页可创建、轮换、删除 `auth.clients` token；明文 token 只在响应中出现一次 |
+| 新客户端接入引导 | 创建后直接给出 TOML / YAML 客户端配置片段；首次创建自动迁移 `auth.token_sha256` 简写 |
+| SOCKS5 域名目标 | `ATYP=3` 支持域名；`options.allow_domains` 精确 / `*.suffix` 白名单，client 单次解析 + CIDR 过滤 |
+| 配置写回 | TOML 内联 `clients = [{...}]` 规范化为 `[[auth.clients]]`；写回前备份、原子替换、约 1 秒后重启 |
+| 可观测性 | 客户端页显示在线状态、proxy 数量、token 指纹、端口范围；SOCKS5 状态回显 `allow_domains` |
 
 ### V1.1 带来的变化
 
@@ -23,12 +33,12 @@
 | 发布物料      | 发布包内置 `SBOM.spdx.json`、第三方许可证声明与原文；安装到 `/usr/share/doc/meatus`                                   |
 | 多架构镜像     | ACR 提供 linux/amd64、linux/arm64；标签 `1.1.0` / `1.1` / `latest`                                     |
 
-### V1.1.1 补丁
+### V1.1.1 补丁（并入 1.2.0）
 
 - YAML 配置从只读改为管理面可写：`server.yaml` 系统设置、`client.yaml` proxy 增删都会持久化；写回采用规范化重写，注释和键顺序不保证保留。
 - 管理设置响应新增 `config_format`，设置页底部显示当前配置格式；server YAML 写回前生成 `.bak` 备份。
 - 管理面板补充搜索栏操作按钮、日志页桌面端滚动、操作列与表单栅格细节修正。
-- `1.1.1` 的安装包 / 镜像尚未构建；本文安装命令继续使用已发布的 `1.1.0`，升级补丁后把 `VERSION` 与镜像标签替换为 `1.1.1` 即可。
+- `1.1.1` 不单独发布；安装命令使用当前已发布的 `1.1.0`，`1.2.0` 资产构建后把版本号与镜像标签替换为 `1.2.0`。
 
 ### 兼容性
 
@@ -1077,24 +1087,22 @@ sha256  <64 hex>
 
 使用方式：
 
-
-
 1. 明文填 client `client.token`；
-
 2. sha256 填 server `auth.clients[].token_sha256`；
-
-3. 重启 /reload client。
+3. 重启 / reload client。
 
 轮换 token：
 
+1. 推荐在面板「客户端」页点击「轮换」；服务端生成新 token、写回 `server.toml` / `server.yaml` 并重启；
+2. 把弹窗里的新明文 token 更新到 client `token`；
+3. 重启 / SIGHUP client；
+4. 旧 token 失效。
 
+手工方式：
 
 1. `gen-token` 生成新 token；
-
 2. 更新 server `clients[].token_sha256` 并重启 server（或先加一个新条目）；
-
 3. 更新 client `token`，重启 / SIGHUP client；
-
 4. 旧 token 失效。
 
 ### 4.2 自签证书
@@ -1837,12 +1845,23 @@ remote_port = 0
 options.allow_cidrs = ["10.0.0.0/8", "192.168.1.0/24", "127.0.0.1/32"]
 ```
 
+域名目标：
+
+```
+[[proxy]]
+name = "socks"
+type = "socks5"
+local_addr = "127.0.0.1:0"
+remote_port = 0
+options.allow_cidrs = ["10.0.0.0/8", "192.168.0.0/16"]
+options.allow_domains = ["localhost", "*.internal.example"]
+```
+
 验证：
-
-
 
 ```
 curl --socks5 <server>:2080 http://10.0.0.12:8080/
+curl --socks5-hostname <server>:2080 http://nas.internal.example:8080/
 ```
 
 边界：
@@ -1851,7 +1870,11 @@ curl --socks5 <server>:2080 http://10.0.0.12:8080/
 
 * 只支持 `CONNECT`；
 
-* 只支持 IPv4 / IPv6 目标，域名目标暂不支持；
+* 支持 IPv4 / IPv6 与域名目标（`ATYP=3`）；域名必须显式配置 `options.allow_domains`，空表示全部拒绝；
+
+* `allow_domains` 支持精确域名与 `*.example.com` 通配，通配只匹配子域，不匹配根域；最多 16 条，不接受 IP 字面量；
+
+* 域名先过服务端 `DomainPolicy`，再由 client 解析一次 DNS，按 `allow_cidrs` 过滤后固定第一个允许 IP 连接，避免 DNS rebinding；
 
 * 目标先过服务端白名单，再由 client 做第二层校验；
 
@@ -2012,7 +2035,7 @@ docker exec meatus-server cat /data/admin.token
 
 * 连续失败 5 次锁定 10 分钟。
 
-### 6.3 六个页面
+### 6.3 七个页面
 
 
 
@@ -2020,10 +2043,27 @@ docker exec meatus-server cat /data/admin.token
 | -------- | -------------------------------------------------- | ----------------------------------------------------------------------------- |
 | 总览       | 在线客户端、活跃 proxy、连接数、uptime、累计流量                     | 5 秒轮询 `/api/v1/status`                                                        |
 | Proxy 管理 | 新增 / 编辑 / 删除运行中的 proxy                             | 通过 server 下发管理帧，等待 client ack；client 带 `--config` 时**同步写回 client.toml / client.yaml**，重启后保留 |
+| 客户端 | 创建 / 轮换 / 删除 `auth.clients` token，查看在线状态与 token 指纹 | 明文 token 只显示一次；写回 `server.toml` / `server.yaml` 后约 1 秒重启；不能删除最后一个凭据 |
 | 证书状态     | ACME 证书 SAN、到期、剩余天数、序列号、链长度                        | 读取 `acme.cert_dir`                                                            |
 | 实时日志     | 最近 300 行日志                                         | 2 秒轮询；进程内 2000 行环形缓冲，重启清空，不落盘                                                 |
 | 系统设置     | 在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志 | 保存写回 `server.toml` / `server.yaml` 并自动重启；TLS、admin、token、会话策略只读；YAML 会规范化重写 |
 | 登录       | token 换会话                                          | 失败限流                                                                          |
+
+### 6.3.1 新客户端接入
+
+1. 打开面板「客户端」页，点击「新增客户端」。
+2. 填写客户端 ID（例如 `home-nas`）、租户（默认 `default`）、服务端地址、可选端口范围。
+3. 保存后弹窗会显示一次性明文 token、token 指纹，以及 TOML / YAML 两份客户端配置。
+4. 把配置片段保存为客户端 `client.toml` / `client.yaml`，token 字段只在这里出现；关闭弹窗后无法再次查看。
+5. 服务端约 1 秒后重启；客户端执行 `meatus client -c client.toml` 即可接入。
+6. 轮换 token 会立即让旧 token 失效；轮换后同步更新客户端并重连。
+
+边界：
+
+* 首次创建时，如果服务端还是单客户端简写 `auth.token_sha256`，面板会先迁移为 `[[auth.clients]]`，原凭据保留为 `id = "default"`。
+* 服务端只会存 `token_sha256`，不存明文 token；面板也无法反查明文。
+* 删除最后一个客户端凭据会被拒绝，避免把服务端锁死。
+* 管理面写回失败不会覆盖原配置；写回前会生成 `.bak` 备份。
 
 ### 6.4 Proxy 管理的重要边界
 

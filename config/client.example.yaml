@@ -15,6 +15,14 @@ proxy:
     local_addr: "127.0.0.1:22"
     remote_port: 20022
 
+  # SOCKS5 域名目标示例
+  # - name: "socks"
+  #   type: "socks5"
+  #   local_addr: "127.0.0.1:0"
+  #   options:
+  #     allow_cidrs: ["10.0.0.0/8", "192.168.1.0/24", "127.0.0.1/32"]
+  #     allow_domains: ["localhost", "*.internal.example"]
+
   # HTTP 代理示例
   # - name: "nas-web"
   #   type: "http"

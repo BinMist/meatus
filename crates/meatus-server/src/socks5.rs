@@ -9,7 +9,8 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, bail};
 use meatus_core::{
-    OpenHandle, RateLimiter, TargetPolicy, UsageRecord, copy_bidirectional_limited, write_frame,
+    DomainPolicy, OpenHandle, RateLimiter, TargetPolicy, UsageRecord, copy_bidirectional_limited,
+    write_frame,
 };
 use meatus_proto::v1::{StreamHeader, StreamKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -38,6 +39,7 @@ pub struct Socks5Route {
     pub metrics: Arc<ProxyMetrics>,
     pub next_trace: Arc<AtomicU64>,
     pub policy: Arc<TargetPolicy>,
+    pub domain_policy: Arc<DomainPolicy>,
     pub permits: Arc<Semaphore>,
 }
 
@@ -142,11 +144,24 @@ async fn handle(
         }
     };
 
-    if !route.policy.allows(target.ip()) {
-        let _ = reply(&mut user, 0x02).await;
-        warn!(proxy = %route.proxy_name, %target, "socks5 target denied by allow_cidrs");
-        return Ok(());
-    }
+    let dst_hint = match &target {
+        SocksTarget::Ip(addr) => {
+            if !route.policy.allows(addr.ip()) {
+                let _ = reply(&mut user, 0x02).await;
+                warn!(proxy = %route.proxy_name, target = ?target, "socks5 target denied by allow_cidrs");
+                return Ok(());
+            }
+            addr.to_string()
+        }
+        SocksTarget::Domain { host, port } => {
+            if !route.domain_policy.allows(host) {
+                let _ = reply(&mut user, 0x02).await;
+                warn!(proxy = %route.proxy_name, host = %host, port, "socks5 target denied by allow_domains");
+                return Ok(());
+            }
+            format!("{host}:{port}")
+        }
+    };
 
     let permit = match Arc::clone(&route.permits).try_acquire_owned() {
         Ok(permit) => permit,
@@ -172,7 +187,7 @@ async fn handle(
         proxy_name: route.proxy_name.clone(),
         kind: StreamKind::UserConn as i32,
         src_addr: peer.to_string(),
-        dst_hint: target.to_string(),
+        dst_hint,
         created_ms: now_ms(),
         trace_id: format!("{:016x}", route.next_trace.fetch_add(1, Ordering::Relaxed)),
         udp_session_id: 0,
@@ -221,7 +236,13 @@ async fn read_greeting(user: &mut TcpStream) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-async fn read_request(user: &mut TcpStream) -> anyhow::Result<SocketAddr> {
+#[derive(Debug)]
+enum SocksTarget {
+    Ip(SocketAddr),
+    Domain { host: String, port: u16 },
+}
+
+async fn read_request(user: &mut TcpStream) -> anyhow::Result<SocksTarget> {
     let version = user.read_u8().await?;
     let command = user.read_u8().await?;
     let reserved = user.read_u8().await?;
@@ -233,30 +254,43 @@ async fn read_request(user: &mut TcpStream) -> anyhow::Result<SocketAddr> {
         bail!("only socks5 CONNECT is supported, got command {command}");
     }
 
-    let ip = match atyp {
+    let target = match atyp {
         1 => {
             let mut buf = [0u8; 4];
             user.read_exact(&mut buf).await?;
-            IpAddr::from(buf)
+            let port = read_port(user).await?;
+            SocksTarget::Ip(SocketAddr::new(IpAddr::from(buf), port))
         }
         4 => {
             let mut buf = [0u8; 16];
             user.read_exact(&mut buf).await?;
-            IpAddr::from(buf)
+            let port = read_port(user).await?;
+            SocksTarget::Ip(SocketAddr::new(IpAddr::from(buf), port))
         }
         3 => {
             let len = user.read_u8().await? as usize;
+            if len == 0 {
+                bail!("socks5 domain target is empty");
+            }
             let mut buf = vec![0u8; len];
             user.read_exact(&mut buf).await?;
-            bail!(
-                "socks5 domain targets are not supported: {:?}",
-                String::from_utf8_lossy(&buf)
-            );
+            let host = String::from_utf8(buf).context("socks5 domain target is not UTF-8")?;
+            let host = meatus_core::normalize_domain(&host)
+                .map_err(|err| anyhow::anyhow!("invalid socks5 domain target: {err}"))?;
+            let port = read_port(user).await?;
+            SocksTarget::Domain { host, port }
         }
         other => bail!("unsupported socks5 address type {other}"),
     };
+    Ok(target)
+}
+
+async fn read_port(user: &mut TcpStream) -> anyhow::Result<u16> {
     let port = u16::from_be_bytes([user.read_u8().await?, user.read_u8().await?]);
-    Ok(SocketAddr::new(ip, port))
+    if port == 0 {
+        bail!("socks5 target port must be 1..65535");
+    }
+    Ok(port)
 }
 
 async fn reply(user: &mut TcpStream, code: u8) -> anyhow::Result<()> {

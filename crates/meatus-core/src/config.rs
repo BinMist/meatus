@@ -674,6 +674,8 @@ pub struct ProxyOptions {
     pub max_conns: Option<u32>,
     #[serde(default)]
     pub allow_cidrs: Vec<String>,
+    #[serde(default)]
+    pub allow_domains: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -790,6 +792,18 @@ impl ClientConfig {
                 crate::net::TargetPolicy::from_allow_cidrs(&proxy.options.allow_cidrs).map_err(
                     |err| invalid(format!("proxy[{}].options.allow_cidrs: {err}", proxy.name)),
                 )?;
+                crate::net::DomainPolicy::from_allow_domains(&proxy.options.allow_domains)
+                    .map_err(|err| {
+                        invalid(format!(
+                            "proxy[{}].options.allow_domains: {err}",
+                            proxy.name
+                        ))
+                    })?;
+            } else if !proxy.options.allow_domains.is_empty() {
+                return Err(invalid(format!(
+                    "proxy[{}].options.allow_domains is only supported for socks5",
+                    proxy.name
+                )));
             }
             for domain in &proxy.custom_domains {
                 if domain.trim().is_empty() || domain.contains(char::is_whitespace) {

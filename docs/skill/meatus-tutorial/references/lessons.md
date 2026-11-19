@@ -28,7 +28,7 @@
 在将要运行 Meatus 的机器上执行。
 
 ```bash
-VERSION=1.1.0
+VERSION=1.2.0
 # 按平台选择包名：
 # macOS Apple Silicon: aarch64-apple-darwin
 # macOS Intel:         x86_64-apple-darwin
@@ -41,7 +41,7 @@ cd "meatus-${VERSION}-${TARGET}"
 ./meatus --version
 ```
 
-预期：输出 `meatus 1.1.0` 或同版本信息。
+预期：输出 `meatus 1.2.0` 或同版本信息。
 
 ```bash
 ./meatus gen-cert --domain localhost --domain 127.0.0.1 --out certs
@@ -58,6 +58,7 @@ sha256  ed35c7e7bfefdcaade04956001ac051f4509b6b74cd2cfb03f3008b00d900eff
 - `token` 后面的明文给客户端 `token`。
 - `sha256` 后面的值给服务端 `token_sha256`。
 - 证书目录应有 `certs/server.crt`、`certs/server.key`。
+- 如果使用管理面板，可跳过 `gen-token`，在「客户端」页创建并复制配置；首次创建会自动迁移 `auth.token_sha256` 简写。
 
 检查点：`ls certs` 能看到两个文件；token 已保存。
 
@@ -172,7 +173,7 @@ http://127.0.0.1:20080
 以下命令在公网 Linux 服务器执行。
 
 ```bash
-VERSION=1.1.0
+VERSION=1.2.0
 TARGET=x86_64-unknown-linux-musl
 curl -LO "https://gitee.com/binsail/meatus/releases/download/v${VERSION}/meatus-${VERSION}-${TARGET}.tar.gz"
 tar xzf "meatus-${VERSION}-${TARGET}.tar.gz"

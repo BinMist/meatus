@@ -3,6 +3,9 @@
 //!
 //! `allow_cidrs` 为空时只允许常见内网/回环/链路本地地址，避免把 SOCKS5
 //! 变成一个无约束的公网出口；显式配置后以用户列表为准。
+//!
+//! 域名目标还需要 `allow_domains` 显式放行；域名只做格式与后缀校验，
+//! 真正的 DNS 解析和 CIDR 二次校验在 client 侧完成。
 
 use std::net::IpAddr;
 
@@ -95,6 +98,107 @@ impl TargetPolicy {
     }
 }
 
+/// SOCKS5 域名目标白名单。
+///
+/// 支持精确域名与 `*.` 后缀；空列表表示不允许任何域名目标。
+/// `*.example.com` 只匹配子域名，不匹配 `example.com` 本身。
+#[derive(Debug, Clone, Default)]
+pub struct DomainPolicy {
+    patterns: Vec<DomainPattern>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DomainPattern {
+    suffix: String,
+    wildcard: bool,
+}
+
+impl DomainPolicy {
+    pub fn from_allow_domains(domains: &[String]) -> Result<Self, String> {
+        if domains.len() > 16 {
+            return Err("allow_domains supports at most 16 entries".to_string());
+        }
+        let mut patterns = Vec::with_capacity(domains.len());
+        for value in domains {
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+            patterns.push(parse_domain_pattern(value)?);
+        }
+        Ok(Self { patterns })
+    }
+
+    #[must_use]
+    pub fn allows(&self, domain: &str) -> bool {
+        let Ok(domain) = normalize_domain(domain) else {
+            return false;
+        };
+        self.patterns.iter().any(|pattern| {
+            if pattern.wildcard {
+                domain
+                    .strip_suffix(&pattern.suffix)
+                    .is_some_and(|prefix| prefix.ends_with('.'))
+                    && domain.len() > pattern.suffix.len()
+            } else {
+                domain == pattern.suffix
+            }
+        })
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
+}
+
+fn parse_domain_pattern(value: &str) -> Result<DomainPattern, String> {
+    let wildcard = value.starts_with("*.");
+    let raw = if wildcard { &value[2..] } else { value };
+    let suffix = normalize_domain(raw)
+        .map_err(|err| format!("invalid allow_domains entry {value:?}: {err}"))?;
+    if wildcard && suffix.is_empty() {
+        return Err("wildcard domain must include a suffix".to_string());
+    }
+    Ok(DomainPattern { suffix, wildcard })
+}
+
+/// 规范化并校验一个 DNS 主机名；返回小写、无尾点的形式。
+pub fn normalize_domain(value: &str) -> Result<String, String> {
+    let value = value.trim().trim_end_matches('.');
+    if value.is_empty() {
+        return Err("domain must not be empty".to_string());
+    }
+    if value.len() > 253 {
+        return Err("domain is longer than 253 bytes".to_string());
+    }
+    if value.parse::<IpAddr>().is_ok() {
+        return Err("domain must not be an IP literal".to_string());
+    }
+    if value.contains("://") || value.contains('/') || value.contains(char::is_whitespace) {
+        return Err("domain contains invalid characters".to_string());
+    }
+    let value = value.to_ascii_lowercase();
+    if value.starts_with('.') || value.ends_with('.') || value.contains("..") {
+        return Err("domain has an empty label".to_string());
+    }
+    for label in value.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return Err("domain label length must be 1..63".to_string());
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err("domain label must not start or end with '-'".to_string());
+        }
+        if !label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        {
+            return Err("domain label contains unsupported characters".to_string());
+        }
+    }
+    Ok(value)
+}
+
 fn parse_network(value: &str) -> Result<Network, String> {
     let (addr, prefix) = match value.split_once('/') {
         Some((addr, prefix)) => (addr, Some(prefix)),
@@ -157,5 +261,35 @@ mod tests {
         assert!(policy.allows(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10))));
         assert!(!policy.allows(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11))));
         assert!(policy.allows(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
+    }
+
+    #[test]
+    fn domain_policy_supports_exact_and_wildcard() {
+        let policy = DomainPolicy::from_allow_domains(&[
+            "db.internal.example".to_string(),
+            "*.apps.example".to_string(),
+        ])
+        .expect("valid");
+        assert!(policy.allows("db.internal.example"));
+        assert!(policy.allows("a.apps.example"));
+        assert!(policy.allows("A.APPS.EXAMPLE."));
+        assert!(!policy.allows("apps.example"));
+        assert!(!policy.allows("notapps.example"));
+        assert!(!policy.allows("db.internal.example.evil"));
+    }
+
+    #[test]
+    fn empty_domain_policy_rejects_everything() {
+        let policy = DomainPolicy::from_allow_domains(&[]).expect("valid");
+        assert!(policy.is_empty());
+        assert!(!policy.allows("example.com"));
+    }
+
+    #[test]
+    fn invalid_domains_are_rejected() {
+        assert!(DomainPolicy::from_allow_domains(&["203.0.113.10".to_string()]).is_err());
+        assert!(DomainPolicy::from_allow_domains(&["bad domain".to_string()]).is_err());
+        assert!(DomainPolicy::from_allow_domains(&["-bad.example".to_string()]).is_err());
+        assert!(DomainPolicy::from_allow_domains(&["*.example.com".to_string()]).is_ok());
     }
 }

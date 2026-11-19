@@ -22,9 +22,12 @@ pub use config::{
     parse_client_config, parse_client_config_with_format, parse_server_config,
     parse_server_config_with_format, resolve_config_format,
 };
-pub use config_edit::{remove_client_proxy, upsert_client_proxy, write_server_config};
+pub use config_edit::{
+    remove_client_proxy, remove_server_client, upsert_client_proxy, upsert_server_client,
+    write_server_config,
+};
 pub use multiplex::{Inbound, MultiplexError, MultiplexedStream, OpenHandle};
-pub use net::TargetPolicy;
+pub use net::{DomainPolicy, TargetPolicy, normalize_domain};
 pub use pin::parse_spki_pin;
 pub use rate::{RateLimiter, copy_bidirectional_limited};
 pub use seams::{
