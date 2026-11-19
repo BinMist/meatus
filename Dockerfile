@@ -17,7 +17,7 @@ ARG RUST_VERSION=1.96.0
 ARG NODE_VERSION=22
 # 可选 crates 镜像（如 https://rsproxy.cn/index/），用于 crates.io 不可达的环境
 ARG CARGO_REGISTRY=""
-ARG VERSION=1.2.0
+ARG VERSION=1.2.1
 
 FROM ${BASE_REGISTRY}node:${NODE_VERSION}-alpine AS web
 WORKDIR /src/web
@@ -43,7 +43,7 @@ RUN cargo build --release --locked --bin meatus \
     && strip target/release/meatus
 
 FROM ${BASE_REGISTRY}alpine:3.22
-ARG VERSION=1.2.0
+ARG VERSION=1.2.1
 RUN apk add --no-cache ca-certificates tzdata su-exec \
     && addgroup -S meatus \
     && adduser -S -G meatus -h /data meatus
@@ -53,7 +53,8 @@ COPY config/server.example.yaml config/client.example.yaml /etc/meatus/
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/meatus/
 COPY docs/THIRD_PARTY_LICENSES.md docs/THIRD_PARTY_LICENSE_TEXTS.txt /usr/share/doc/meatus/
 COPY deploy/docker/entrypoint.sh /usr/local/bin/meatus-entrypoint
-RUN chmod 0755 /usr/local/bin/meatus-entrypoint \
+COPY deploy/docker/healthcheck.sh /usr/local/bin/meatus-healthcheck
+RUN chmod 0755 /usr/local/bin/meatus-entrypoint /usr/local/bin/meatus-healthcheck \
     && mkdir -p /data/certs /data/acme \
     && chown -R meatus:meatus /data /etc/meatus
 # 入口以 root 修正 /data 权限后，通过 su-exec 降权到 meatus 运行；
@@ -65,5 +66,9 @@ LABEL org.opencontainers.image.title="meatus" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.description="Self-hosted reverse tunnel: server + client + web panel" \
       org.opencontainers.image.licenses="Apache-2.0"
+# 1.2.1：镜像自带健康检查，避免部署时依赖手工 --health-cmd。
+# 默认管理面监听 127.0.0.1:7400；改过 [admin].bind 时用 MEATUS_HEALTH_URL 覆盖。
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
+    CMD /usr/local/bin/meatus-healthcheck
 ENTRYPOINT ["/usr/local/bin/meatus-entrypoint"]
 CMD ["server", "--config", "/data/server.toml"]
