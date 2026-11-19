@@ -114,6 +114,66 @@
         </sl-form-item>
       </div>
 
+      <div class="mt-form-grid-title">授权与配额</div>
+
+      <div class="mt-form-grid mt-form-grid--two">
+        <sl-form-item label="允许的 Proxy 类型" prop="allowTypes">
+          <template #label="{ label }">
+            <FormLabel :label="label" hint="逗号分隔：tcp,udp,http,https,socks5；留空表示不限。" />
+          </template>
+          <sl-input v-model:value="form.allowTypes" placeholder="tcp,udp（可留空）" :disabled="mode === 'rotate'" />
+        </sl-form-item>
+
+        <sl-form-item label="域名白名单" prop="allowDomains">
+          <template #label="{ label }">
+            <FormLabel :label="label" hint="逗号分隔，支持 *.example.com；留空表示不限。" />
+          </template>
+          <sl-input v-model:value="form.allowDomains" placeholder="*.example.com（可留空）" :disabled="mode === 'rotate'" />
+        </sl-form-item>
+
+        <sl-form-item label="最大 Proxy 数" prop="maxProxies">
+          <template #label="{ label }">
+            <FormLabel :label="label" hint="1–1024，留空表示不限。" />
+          </template>
+          <sl-input v-model:value="form.maxProxies" placeholder="例如 10（可留空）" :disabled="mode === 'rotate'" />
+        </sl-form-item>
+
+        <sl-form-item label="带宽上限（bps）" prop="rateLimit">
+          <template #label="{ label }">
+            <FormLabel :label="label" hint="每个连接/代理的带宽上限，留空表示不限。" />
+          </template>
+          <sl-input v-model:value="form.rateLimit" placeholder="例如 8388608（可留空）" :disabled="mode === 'rotate'" />
+        </sl-form-item>
+
+        <sl-form-item label="月流量配额（bytes）" prop="monthlyBytes">
+          <template #label="{ label }">
+            <FormLabel :label="label" hint="按 UTC 自然月累计，留空表示不限。" />
+          </template>
+          <sl-input v-model:value="form.monthlyBytes" placeholder="例如 107374182400（可留空）" :disabled="mode === 'rotate'" />
+        </sl-form-item>
+
+        <sl-form-item label="并发连接上限" prop="maxConns">
+          <template #label="{ label }">
+            <FormLabel :label="label" hint="1–65535，留空表示不限。" />
+          </template>
+          <sl-input v-model:value="form.maxConns" placeholder="例如 128（可留空）" :disabled="mode === 'rotate'" />
+        </sl-form-item>
+
+        <sl-form-item label="新建连接速率（/s）" prop="connRate">
+          <template #label="{ label }">
+            <FormLabel :label="label" hint="每秒允许的新建连接数，留空表示不限。" />
+          </template>
+          <sl-input v-model:value="form.connRate" placeholder="例如 20（可留空）" :disabled="mode === 'rotate'" />
+        </sl-form-item>
+
+        <sl-form-item label="超配额动作" prop="quotaAction">
+          <template #label="{ label }">
+            <FormLabel :label="label" hint="reject 拒绝新连接；throttle 降速到 64 KiB/s。" />
+          </template>
+          <sl-input v-model:value="form.quotaAction" placeholder="reject / throttle" :disabled="mode === 'rotate'" />
+        </sl-form-item>
+      </div>
+
       <sl-alert
         v-if="error"
         class="mt-dialog-error"
@@ -149,7 +209,20 @@ const props = defineProps<{
   open: boolean
   mode: 'create' | 'rotate'
   client: ClientRow | null
-  form: { id: string; tenant: string; serverAddr: string; allowPorts: string }
+  form: {
+    id: string
+    tenant: string
+    serverAddr: string
+    allowPorts: string
+    allowTypes: string
+    allowDomains: string
+    maxProxies: string
+    rateLimit: string
+    monthlyBytes: string
+    maxConns: string
+    connRate: string
+    quotaAction: string
+  }
   error: string
   saving: boolean
   result: ClientWriteResponse | null

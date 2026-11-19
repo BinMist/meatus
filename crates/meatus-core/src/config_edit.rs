@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use serde_yaml::{Mapping, Number, Sequence, Value as YamlValue};
 use toml_edit::{Array, ArrayOfTables, Document, InlineTable, Item, Table, Value, value};
 
-use crate::config::{ClientConfig, ClientEntry, ConfigFormat, ProxySpec, ProxyType, ServerConfig};
+use crate::config::{
+    ClientConfig, ClientEntry, ClientLimits, ConfigFormat, ProxySpec, ProxyType, QuotaAction,
+    ServerConfig,
+};
 
 /// 写回客户端 proxy：同名替换，不存在则追加。
 ///
@@ -330,6 +333,10 @@ fn upsert_server_client_yaml(path: &Path, entry: &ClientEntry) -> Result<Option<
                     tenant: crate::tenant::DEFAULT_TENANT.to_string(),
                     token_sha256: Some(token.to_string()),
                     allow_ports: None,
+                    allow_types: Vec::new(),
+                    allow_domains: Vec::new(),
+                    max_proxies: None,
+                    limits: ClientLimits::default(),
                 }));
             }
             auth.insert(yaml_key("clients"), YamlValue::Sequence(array));
@@ -429,6 +436,23 @@ fn ensure_client_array(auth: &mut Table) -> Result<(), String> {
     Ok(())
 }
 
+fn proxy_type_name(kind: crate::config::ProxyType) -> &'static str {
+    match kind {
+        crate::config::ProxyType::Tcp => "tcp",
+        crate::config::ProxyType::Udp => "udp",
+        crate::config::ProxyType::Http => "http",
+        crate::config::ProxyType::Https => "https",
+        crate::config::ProxyType::Socks5 => "socks5",
+    }
+}
+
+fn quota_action_name(action: QuotaAction) -> &'static str {
+    match action {
+        QuotaAction::Reject => "reject",
+        QuotaAction::Throttle => "throttle",
+    }
+}
+
 fn default_client_table(token_sha256: &str) -> Table {
     let mut table = Table::new();
     table.insert("id", value(crate::tenant::DEFAULT_TENANT));
@@ -450,6 +474,48 @@ fn client_table(entry: &ClientEntry) -> Table {
         ports.push(Value::from(i64::from(end)));
         table.insert("allow_ports", Item::Value(Value::Array(ports)));
     }
+    if !entry.allow_types.is_empty() {
+        let mut types = Array::new();
+        for kind in &entry.allow_types {
+            types.push(Value::from(proxy_type_name(*kind)));
+        }
+        table.insert("allow_types", Item::Value(Value::Array(types)));
+    }
+    if !entry.allow_domains.is_empty() {
+        let mut domains = Array::new();
+        for domain in &entry.allow_domains {
+            domains.push(Value::from(domain.as_str()));
+        }
+        table.insert("allow_domains", Item::Value(Value::Array(domains)));
+    }
+    if let Some(max) = entry.max_proxies {
+        table.insert("max_proxies", value(i64::from(max)));
+    }
+    if entry.limits != ClientLimits::default() {
+        let mut limits = Table::new();
+        if let Some(rate) = entry.limits.rate_limit_bps {
+            limits.insert(
+                "rate_limit_bps",
+                value(i64::try_from(rate).unwrap_or(i64::MAX)),
+            );
+        }
+        if let Some(bytes) = entry.limits.monthly_bytes {
+            limits.insert(
+                "monthly_bytes",
+                value(i64::try_from(bytes).unwrap_or(i64::MAX)),
+            );
+        }
+        if let Some(conns) = entry.limits.max_conns {
+            limits.insert("max_conns", value(i64::from(conns)));
+        }
+        if let Some(rate) = entry.limits.conn_rate_per_s {
+            limits.insert("conn_rate_per_s", value(i64::from(rate)));
+        }
+        if let Some(action) = entry.limits.quota_action {
+            limits.insert("quota_action", value(quota_action_name(action)));
+        }
+        table.insert("limits", Item::Table(limits));
+    }
     table
 }
 
@@ -469,6 +535,60 @@ fn client_yaml_value(entry: &ClientEntry) -> YamlValue {
             YamlValue::Number(Number::from(u64::from(end))),
         ]);
         table.insert(yaml_key("allow_ports"), YamlValue::Sequence(ports));
+    }
+    if !entry.allow_types.is_empty() {
+        let mut types = Sequence::new();
+        for kind in &entry.allow_types {
+            types.push(YamlValue::String(proxy_type_name(*kind).to_string()));
+        }
+        table.insert(yaml_key("allow_types"), YamlValue::Sequence(types));
+    }
+    if !entry.allow_domains.is_empty() {
+        let mut domains = Sequence::new();
+        for domain in &entry.allow_domains {
+            domains.push(YamlValue::String(domain.clone()));
+        }
+        table.insert(yaml_key("allow_domains"), YamlValue::Sequence(domains));
+    }
+    if let Some(max) = entry.max_proxies {
+        table.insert(
+            yaml_key("max_proxies"),
+            YamlValue::Number(Number::from(u64::from(max))),
+        );
+    }
+    if entry.limits != ClientLimits::default() {
+        let mut limits = Mapping::new();
+        if let Some(rate) = entry.limits.rate_limit_bps {
+            limits.insert(
+                yaml_key("rate_limit_bps"),
+                YamlValue::Number(Number::from(rate)),
+            );
+        }
+        if let Some(bytes) = entry.limits.monthly_bytes {
+            limits.insert(
+                yaml_key("monthly_bytes"),
+                YamlValue::Number(Number::from(bytes)),
+            );
+        }
+        if let Some(conns) = entry.limits.max_conns {
+            limits.insert(
+                yaml_key("max_conns"),
+                YamlValue::Number(Number::from(u64::from(conns))),
+            );
+        }
+        if let Some(rate) = entry.limits.conn_rate_per_s {
+            limits.insert(
+                yaml_key("conn_rate_per_s"),
+                YamlValue::Number(Number::from(u64::from(rate))),
+            );
+        }
+        if let Some(action) = entry.limits.quota_action {
+            limits.insert(
+                yaml_key("quota_action"),
+                YamlValue::String(quota_action_name(action).to_string()),
+            );
+        }
+        table.insert(yaml_key("limits"), YamlValue::Mapping(limits));
     }
     YamlValue::Mapping(table)
 }
@@ -930,6 +1050,9 @@ remote_port = 21000
                 rate_limit_bps: Some(1_000_000),
                 idle_timeout_s: Some(30),
                 max_conns: Some(4),
+                monthly_bytes: None,
+                conn_rate_per_s: None,
+                quota_action: None,
                 allow_cidrs: vec!["10.0.0.0/8".to_string()],
                 allow_domains: Vec::new(),
             },
@@ -981,6 +1104,9 @@ proxy:
                 rate_limit_bps: Some(1_000_000),
                 idle_timeout_s: Some(30),
                 max_conns: Some(4),
+                monthly_bytes: None,
+                conn_rate_per_s: None,
+                quota_action: None,
                 allow_cidrs: vec!["10.0.0.0/8".to_string()],
                 allow_domains: Vec::new(),
             },
@@ -1123,6 +1249,10 @@ clients = [
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
             ),
             allow_ports: Some([20000, 21000]),
+            allow_types: Vec::new(),
+            allow_domains: Vec::new(),
+            max_proxies: None,
+            limits: ClientLimits::default(),
         };
         upsert_server_client(&path, &entry).expect("upsert");
         let raw = fs::read_to_string(&path).expect("read");
@@ -1165,6 +1295,10 @@ token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
             ),
             allow_ports: None,
+            allow_types: Vec::new(),
+            allow_domains: Vec::new(),
+            max_proxies: None,
+            limits: ClientLimits::default(),
         };
         upsert_server_client(&path, &entry).expect("upsert");
         let raw = fs::read_to_string(&path).expect("read");

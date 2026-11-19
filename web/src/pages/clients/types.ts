@@ -3,12 +3,24 @@ export interface ClientRow {
   tenant: string
   token_fingerprint: string
   allow_ports: [number, number] | null
+  allow_types: string[]
+  allow_domains: string[]
+  max_proxies: number | null
+  limits: ClientLimits
   source: 'clients' | 'token_sha256'
   online: boolean
   run_count: number
   proxy_count: number
   last_connected_ms: number
   can_delete: boolean
+}
+
+export interface ClientLimits {
+  rate_limit_bps: number | null
+  monthly_bytes: number | null
+  max_conns: number | null
+  conn_rate_per_s: number | null
+  quota_action: 'reject' | 'throttle' | null
 }
 
 export interface ClientsSnapshot {

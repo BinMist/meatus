@@ -8,6 +8,7 @@ mod control;
 mod http;
 pub mod logbuf;
 mod metrics;
+pub mod quota;
 mod routes;
 mod runtime;
 mod socks5;
@@ -46,6 +47,7 @@ pub struct ServerState {
     pub config_path: Option<PathBuf>,
     pub allocator: Arc<dyn NameAllocator>,
     pub quota: Arc<dyn QuotaPolicy>,
+    pub quotas: Arc<quota::MonthlyQuota>,
     pub usage: Arc<dyn UsageSink>,
     pub metrics: Arc<Metrics>,
     pub domains: Arc<DomainRouter>,
@@ -84,6 +86,7 @@ impl ServerState {
             config_path: None,
             allocator: Arc::new(allocator),
             quota: Arc::new(AllowAllQuota),
+            quotas: Arc::new(quota::MonthlyQuota::default()),
             usage: Arc::new(NullUsageSink),
             metrics: Arc::new(Metrics::new()),
             domains: Arc::new(DomainRouter::new()),
@@ -221,6 +224,7 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
     let admin_state = admin::AdminState::new(
         Arc::clone(&state.metrics),
         Arc::clone(&state.status),
+        Arc::clone(&state.quotas),
         Arc::new(state.config.clone()),
         Arc::clone(&state.runtime),
         Arc::clone(&state.logs),

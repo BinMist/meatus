@@ -241,7 +241,7 @@ fn spec_from_new_proxy(request: NewProxy) -> anyhow::Result<ProxySpec> {
     meatus_core::DomainPolicy::from_allow_domains(&allow_domains)
         .map_err(|err| anyhow::anyhow!("proxy {name} allow_domains invalid: {err}"))?;
     Ok(ProxySpec {
-        name,
+        name: name.clone(),
         kind,
         local_addr: request.local_addr,
         remote_port,
@@ -250,6 +250,17 @@ fn spec_from_new_proxy(request: NewProxy) -> anyhow::Result<ProxySpec> {
             rate_limit_bps: (options.rate_limit_bps > 0).then_some(options.rate_limit_bps),
             idle_timeout_s: (options.idle_timeout_s > 0).then_some(options.idle_timeout_s),
             max_conns: (options.max_conns > 0).then_some(options.max_conns),
+            monthly_bytes: (options.monthly_bytes > 0).then_some(options.monthly_bytes),
+            conn_rate_per_s: (options.conn_rate_per_s > 0).then_some(options.conn_rate_per_s),
+            quota_action: match options.quota_action.as_str() {
+                "throttle" => Some(meatus_core::QuotaAction::Throttle),
+                "reject" | "" => None,
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "proxy {name} quota_action must be reject or throttle, got {other}"
+                    ));
+                }
+            },
             allow_cidrs,
             allow_domains,
         },
@@ -275,6 +286,12 @@ fn new_proxy_msg(proxy: &ProxySpec) -> ControlMsg {
                 rate_limit_bps: proxy.options.rate_limit_bps.unwrap_or(0),
                 idle_timeout_s: proxy.options.idle_timeout_s.unwrap_or(0),
                 max_conns: proxy.options.max_conns.unwrap_or(0),
+                monthly_bytes: proxy.options.monthly_bytes.unwrap_or(0),
+                conn_rate_per_s: proxy.options.conn_rate_per_s.unwrap_or(0),
+                quota_action: match proxy.options.quota_action {
+                    Some(meatus_core::QuotaAction::Throttle) => "throttle".to_string(),
+                    Some(meatus_core::QuotaAction::Reject) | None => "reject".to_string(),
+                },
                 enable_compression: false,
                 allow_cidrs: proxy.options.allow_cidrs.clone(),
                 allow_domains: proxy.options.allow_domains.clone(),

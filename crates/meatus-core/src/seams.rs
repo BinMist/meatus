@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::trace;
 
-use crate::config::{ConfigError, ServerConfig, parse_server_config};
+use crate::config::{ClientPolicy, ConfigError, ServerConfig, parse_server_config};
 
 // ---------------------------------------------------------------------------
 // AuthProvider
@@ -54,12 +54,18 @@ pub trait AuthProvider: Send + Sync {
         nonce: &[u8],
         proof: &[u8],
     ) -> Result<ClientIdentity, AuthError>;
+
+    /// 该 client 的授权快照；默认返回不限制，保持 remote provider 兼容。
+    fn client_policy(&self, _tenant_id: &str, _client_id: &str) -> ClientPolicy {
+        ClientPolicy::default()
+    }
 }
 
 struct Credential {
     tenant_id: String,
     client_id: String,
     token_sha256: [u8; 32],
+    policy: ClientPolicy,
 }
 
 /// 本地鉴权：token 的 SHA-256 存在配置里，比较用常量时间。
@@ -78,6 +84,12 @@ impl LocalTokenAuth {
                 ConfigError::Invalid(format!("token_sha256 for {client_id} must be 32 bytes"))
             })?;
             credentials.push(Credential {
+                policy: config
+                    .auth
+                    .clients
+                    .iter()
+                    .find(|entry| entry.tenant == tenant_id && entry.id == client_id)
+                    .map_or_else(ClientPolicy::default, crate::config::ClientEntry::policy),
                 tenant_id,
                 client_id,
                 token_sha256,
@@ -143,6 +155,17 @@ impl AuthProvider for LocalTokenAuth {
         } else {
             Err(AuthError::UnknownClient)
         }
+    }
+
+    fn client_policy(&self, tenant_id: &str, client_id: &str) -> ClientPolicy {
+        self.credentials
+            .iter()
+            .find(|credential| {
+                credential.tenant_id == tenant_id && credential.client_id == client_id
+            })
+            .map_or_else(ClientPolicy::default, |credential| {
+                credential.policy.clone()
+            })
     }
 }
 
@@ -288,17 +311,19 @@ impl LocalPortAllocator {
     }
 }
 
-impl NameAllocator for LocalPortAllocator {
-    fn alloc_port(
+impl LocalPortAllocator {
+    fn alloc_port_between(
         &self,
         tenant_id: &str,
         proxy_name: &str,
         preferred: Option<u16>,
+        start: u16,
+        end: u16,
     ) -> Result<u16, AllocError> {
         let mut inner = self.lock();
 
         if let Some(port) = preferred {
-            if port < self.start || port > self.end {
+            if port < start || port > end {
                 return Err(AllocError::OutOfRange(port));
             }
             if let Some(lease) = inner.leases.get(&port) {
@@ -323,7 +348,7 @@ impl NameAllocator for LocalPortAllocator {
         }
 
         // 保留期内重连且未指定 remote_port 时，优先取回原租约。
-        for port in self.start..=self.end {
+        for port in start..=end {
             if inner
                 .leases
                 .get(&port)
@@ -333,10 +358,11 @@ impl NameAllocator for LocalPortAllocator {
             }
         }
 
-        let span = u32::from(self.end) - u32::from(self.start) + 1;
+        let span = u32::from(end) - u32::from(start) + 1;
+        let cursor_start = inner.cursor.clamp(start, end);
         for offset in 0..span {
-            let cursor_offset = (u32::from(inner.cursor) - u32::from(self.start)) % span;
-            let port = self.start + ((cursor_offset + offset) % span) as u16;
+            let cursor_offset = (u32::from(cursor_start) - u32::from(start)) % span;
+            let port = start + ((cursor_offset + offset) % span) as u16;
             if let Some(lease) = inner.leases.get(&port) {
                 if lease.tenant_id == tenant_id && lease.proxy_name == proxy_name {
                     return Ok(port);
@@ -358,6 +384,35 @@ impl NameAllocator for LocalPortAllocator {
         }
 
         Err(AllocError::Exhausted)
+    }
+}
+
+impl NameAllocator for LocalPortAllocator {
+    fn alloc_port(
+        &self,
+        tenant_id: &str,
+        proxy_name: &str,
+        preferred: Option<u16>,
+    ) -> Result<u16, AllocError> {
+        self.alloc_port_between(tenant_id, proxy_name, preferred, self.start, self.end)
+    }
+
+    fn alloc_port_in_range(
+        &self,
+        tenant_id: &str,
+        proxy_name: &str,
+        preferred: Option<u16>,
+        allowed: Option<[u16; 2]>,
+    ) -> Result<u16, AllocError> {
+        let Some([allowed_start, allowed_end]) = allowed else {
+            return self.alloc_port(tenant_id, proxy_name, preferred);
+        };
+        let start = self.start.max(allowed_start);
+        let end = self.end.min(allowed_end);
+        if start > end {
+            return Err(AllocError::Exhausted);
+        }
+        self.alloc_port_between(tenant_id, proxy_name, preferred, start, end)
     }
 
     fn release_port(&self, tenant_id: &str, port: u16) -> bool {
@@ -394,6 +449,26 @@ pub trait NameAllocator: Send + Sync {
     ) -> Result<u16, AllocError>;
 
     fn release_port(&self, tenant_id: &str, port: u16) -> bool;
+
+    /// 在全局端口池与客户端授权范围的交集内分配端口。
+    fn alloc_port_in_range(
+        &self,
+        tenant_id: &str,
+        proxy_name: &str,
+        preferred: Option<u16>,
+        allowed: Option<[u16; 2]>,
+    ) -> Result<u16, AllocError> {
+        let Some([start, end]) = allowed else {
+            return self.alloc_port(tenant_id, proxy_name, preferred);
+        };
+        let port = self.alloc_port(tenant_id, proxy_name, preferred)?;
+        if port >= start && port <= end {
+            Ok(port)
+        } else {
+            self.release_port(tenant_id, port);
+            Err(AllocError::OutOfRange(port))
+        }
+    }
 
     /// 仅当租约仍属于该 tenant + proxy 时释放，避免延迟释放误删新租约。
     fn release_lease(&self, tenant_id: &str, proxy_name: &str, port: u16) -> bool {

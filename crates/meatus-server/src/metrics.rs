@@ -15,6 +15,8 @@ pub struct ProxyMetrics {
     bytes_out: AtomicU64,
     local_fail: AtomicU64,
     udp_packets: AtomicU64,
+    quota_denied: AtomicU64,
+    quota_throttled: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -24,6 +26,8 @@ pub struct ProxySnapshot {
     pub bytes_in: u64,
     pub bytes_out: u64,
     pub local_fail: u64,
+    pub quota_denied: u64,
+    pub quota_throttled: u64,
 }
 
 impl ProxyMetrics {
@@ -50,6 +54,14 @@ impl ProxyMetrics {
         self.local_fail.store(value, Ordering::Relaxed);
     }
 
+    pub fn quota_denied(&self) {
+        self.quota_denied.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn quota_throttled(&self) {
+        self.quota_throttled.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn active(&self) -> u64 {
         self.active.load(Ordering::Relaxed)
     }
@@ -74,6 +86,14 @@ impl ProxyMetrics {
         self.udp_packets.load(Ordering::Relaxed)
     }
 
+    fn quota_denied_count(&self) -> u64 {
+        self.quota_denied.load(Ordering::Relaxed)
+    }
+
+    fn quota_throttled_count(&self) -> u64 {
+        self.quota_throttled.load(Ordering::Relaxed)
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> ProxySnapshot {
         ProxySnapshot {
@@ -82,6 +102,8 @@ impl ProxyMetrics {
             bytes_in: self.bytes_in(),
             bytes_out: self.bytes_out(),
             local_fail: self.local_fail(),
+            quota_denied: self.quota_denied_count(),
+            quota_throttled: self.quota_throttled_count(),
         }
     }
 }
@@ -238,6 +260,34 @@ impl Metrics {
                 "meatus_local_connect_fail_total{{proxy=\"{}\"}} {}",
                 escape(name),
                 metrics.local_fail()
+            );
+        }
+
+        let _ = writeln!(
+            out,
+            "# HELP meatus_quota_denied_total Rejected by monthly quota."
+        );
+        let _ = writeln!(out, "# TYPE meatus_quota_denied_total counter");
+        for (name, metrics) in &proxies {
+            let _ = writeln!(
+                out,
+                "meatus_quota_denied_total{{proxy=\"{}\"}} {}",
+                escape(name),
+                metrics.quota_denied_count()
+            );
+        }
+
+        let _ = writeln!(
+            out,
+            "# HELP meatus_quota_throttled_total Throttled by monthly quota."
+        );
+        let _ = writeln!(out, "# TYPE meatus_quota_throttled_total counter");
+        for (name, metrics) in &proxies {
+            let _ = writeln!(
+                out,
+                "meatus_quota_throttled_total{{proxy=\"{}\"}} {}",
+                escape(name),
+                metrics.quota_throttled_count()
             );
         }
 

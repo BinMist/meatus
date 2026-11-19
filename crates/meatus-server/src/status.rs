@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::metrics::Metrics;
+use crate::quota::MonthlyQuota;
 
 #[derive(Debug, Clone)]
 struct ClientEntry {
@@ -41,6 +42,8 @@ pub struct ProxyEntry {
     pub local_addr: String,
     pub rate_limit_bps: u64,
     pub max_conns: u32,
+    pub monthly_bytes: u64,
+    pub quota_action: String,
     pub idle_timeout_s: u32,
     pub allow_cidrs: Vec<String>,
     pub allow_domains: Vec<String>,
@@ -154,6 +157,18 @@ impl StatusRegistry {
         });
     }
 
+    /// 跨 run 统计某 client 当前持有的 proxy 数，用于 `max_proxies` 校验。
+    #[must_use]
+    pub fn client_proxy_count(&self, tenant_id: &str, client_id: &str) -> usize {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .proxies
+            .values()
+            .filter(|proxy| proxy.tenant_id == tenant_id && proxy.client_id == client_id)
+            .count()
+    }
+
     /// 全局 claim `tenant + proxy name`。同一名称只允许一个活跃 owner。
     pub fn claim_proxy(
         &self,
@@ -232,7 +247,12 @@ impl StatusRegistry {
             .collect()
     }
 
-    pub fn render(&self, metrics: &Metrics) -> Value {
+    pub fn render(
+        &self,
+        metrics: &Metrics,
+        quotas: &MonthlyQuota,
+        config: &meatus_core::ServerConfig,
+    ) -> Value {
         let now = now_ms();
         let inner = self
             .inner
@@ -262,6 +282,15 @@ impl StatusRegistry {
                 proxy_names.push(proxy.name.clone());
             }
             proxy_names.sort();
+            let client_limit = config
+                .auth
+                .clients
+                .iter()
+                .find(|client| client.tenant == entry.tenant_id && client.id == entry.client_id)
+                .and_then(|client| client.limits.monthly_bytes)
+                .unwrap_or(0);
+            let client_key = format!("{}\0{}", entry.tenant_id, entry.client_id);
+            let client_quota = quotas.snapshot(&client_key, &client_key, client_limit);
             clients.push(json!({
                 "tenant_id": entry.tenant_id,
                 "client_id": entry.client_id,
@@ -274,6 +303,12 @@ impl StatusRegistry {
                 "active_conns": active_conns,
                 "bytes_in": bytes_in,
                 "bytes_out": bytes_out,
+                "quota": {
+                    "month": month_label(client_quota.reset_at_ms),
+                    "used_bytes": client_quota.used_bytes,
+                    "limit_bytes": client_quota.limit_bytes,
+                    "reset_at_ms": client_quota.reset_at_ms,
+                },
             }));
         }
         clients.sort_by(|a, b| {
@@ -287,6 +322,9 @@ impl StatusRegistry {
         let mut proxies: Vec<Value> = Vec::new();
         for entry in inner.proxies.values() {
             let snapshot = metrics.proxy(&entry.name).snapshot();
+            let client_key = format!("{}\0{}", entry.tenant_id, entry.client_id);
+            let proxy_key = format!("{}\0{}", entry.tenant_id, entry.name);
+            let quota = quotas.snapshot(&client_key, &proxy_key, entry.monthly_bytes);
             proxies.push(json!({
                 "name": entry.name,
                 "type": entry.proxy_type,
@@ -306,6 +344,15 @@ impl StatusRegistry {
                 "bytes_in": snapshot.bytes_in,
                 "bytes_out": snapshot.bytes_out,
                 "local_connect_fail": snapshot.local_fail,
+                "quota_denied": snapshot.quota_denied,
+                "quota_throttled": snapshot.quota_throttled,
+                "quota": {
+                    "month": month_label(quota.reset_at_ms),
+                    "used_bytes": quota.used_bytes,
+                    "limit_bytes": quota.limit_bytes,
+                    "reset_at_ms": quota.reset_at_ms,
+                    "action": entry.quota_action,
+                },
             }));
         }
         proxies.sort_by(|a, b| {
@@ -334,6 +381,11 @@ impl StatusRegistry {
     }
 }
 
+fn month_label(_reset_at_ms: i64) -> String {
+    // 面板只需要“自然月（UTC）”重置语义，具体月份由前端按 reset_at_ms 展示。
+    "UTC".to_string()
+}
+
 fn client_key(tenant_id: &str, client_id: &str, run_id: &str) -> String {
     format!("{tenant_id}\0{client_id}\0{run_id}")
 }
@@ -359,6 +411,13 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
+    fn test_config() -> meatus_core::ServerConfig {
+        meatus_core::parse_server_config(
+            "[server]\nbind_addr = \"127.0.0.1\"\ncontrol_port = 17000\n\n[auth]\ntoken_sha256 = \"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b\"\n",
+        )
+        .expect("config")
+    }
+
     fn entry(tenant: &str, client: &str, run: &str, name: &str) -> ProxyEntry {
         ProxyEntry {
             name: name.to_string(),
@@ -371,6 +430,8 @@ mod tests {
             local_addr: "127.0.0.1:8080".to_string(),
             rate_limit_bps: 0,
             max_conns: 0,
+            monthly_bytes: 0,
+            quota_action: "reject".to_string(),
             idle_timeout_s: 0,
             allow_cidrs: Vec::new(),
             allow_domains: Vec::new(),
@@ -390,7 +451,9 @@ mod tests {
                 .expect("claim");
             claim.commit(entry("default", &client, &run, &format!("proxy-{index}")));
         }
-        let snapshot = status.render(&metrics);
+        let quotas = MonthlyQuota::default();
+        let config = test_config();
+        let snapshot = status.render(&metrics, &quotas, &config);
         assert_eq!(snapshot["totals"]["clients"], 10);
         assert_eq!(snapshot["totals"]["proxies"], 10);
         for client in snapshot["clients"].as_array().expect("clients") {
@@ -444,7 +507,9 @@ mod tests {
         metrics.proxy("web").add_bytes(120, 80);
         std::thread::sleep(std::time::Duration::from_millis(20));
         status.client_heartbeat("default", "nas", "run");
-        let snapshot = status.render(&metrics);
+        let quotas = MonthlyQuota::default();
+        let config = test_config();
+        let snapshot = status.render(&metrics, &quotas, &config);
         let client = &snapshot["clients"][0];
         assert_eq!(client["bytes_in"], 120);
         assert_eq!(client["bytes_out"], 80);
@@ -462,7 +527,9 @@ mod tests {
             .expect("claim");
         claim.commit(entry("default", "nas", "run", "web"));
         status.client_disconnected("default", "nas", "run");
-        let snapshot = status.render(&metrics);
+        let quotas = MonthlyQuota::default();
+        let config = test_config();
+        let snapshot = status.render(&metrics, &quotas, &config);
         assert_eq!(snapshot["totals"]["clients"], 0);
         assert_eq!(snapshot["totals"]["proxies"], 0);
         assert!(status.claim_proxy("default", "nas", "run-2", "web").is_ok());

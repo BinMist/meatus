@@ -18,6 +18,16 @@
 | DNS-01 泛域名 | 支持 Cloudflare 与腾讯云 DNSPod，可签发 `*.example.com`；到期前 30 天自动续期，失败保留旧证书 |
 | 镜像健康检查 | Docker 镜像内置 `HEALTHCHECK`，默认探测 `http://127.0.0.1:7400/healthz`；改过管理面端口时用 `MEATUS_HEALTH_URL` 覆盖 |
 
+### V1.3 带来的变化
+
+| 能力 | 说明 |
+| --- | --- |
+| 配置热加载 | server 接收 `SIGHUP` 或管理面板保存后重建鉴权/端口策略，已建立连接不受影响 |
+| 多客户端调度 | 同一 tenant 下按 client 隔离 proxy 名称与 owner；离线域名 `503`，端口按 `release_policy` 回收/保留 |
+| 客户端级授权 | `auth.clients[]` 支持 `allow_types`、`allow_domains`、`max_proxies`，在 proxy 创建时校验，越权返回 `PolicyDenied` |
+| 客户端级配额 | 支持 `rate_limit_bps`、`monthly_bytes`、`max_conns`、`conn_rate_per_s`、`quota_action`；按 UTC 自然月累计 |
+| 可观测性 | 客户端页展示授权摘要与配额；`/metrics` 增加 `meatus_quota_denied_total`、`meatus_quota_throttled_total` |
+
 ### V1.2 带来的变化
 
 | 能力 | 说明 |
@@ -726,6 +736,22 @@ clients = [
 | `tenant`       | 租户，V1 写 `default`                    |
 | `token_sha256` | `gen-token` 输出的 sha256，64 位小写 hex    |
 | `allow_ports`  | 可选，限制该 client 可申请的端口范围               |
+| `allow_types`  | 可选，允许的 proxy 类型：`tcp/udp/http/https/socks5`；空表示全部 |
+| `allow_domains`| 可选，域名白名单，支持 `*.example.com`；空表示不限 |
+| `max_proxies`  | 可选，该 client 跨 run 允许存在的 proxy 总数，1–1024 |
+| `limits`       | 可选，客户端级配额，见下表 |
+
+`limits` 字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `rate_limit_bps` | 带宽上限，bytes/s；空或 0 表示不限 |
+| `monthly_bytes` | 月流量上限，bytes；空或 0 表示不限，按 UTC 自然月归零 |
+| `max_conns` | 并发连接上限，1–65535 |
+| `conn_rate_per_s` | 新建连接速率上限，连接/秒，≤100000 |
+| `quota_action` | `reject` 拒绝新连接；`throttle` 降到 64 KiB/s，均不超过原带宽上限 |
+
+proxy 自身的 `options.rate_limit_bps` / `options.max_conns` / `options.monthly_bytes` / `options.conn_rate_per_s` 与 client `limits` 同时存在时取较小值；proxy 设置会覆盖 client 的 `quota_action`。
 
 注意：
 
@@ -734,6 +760,10 @@ clients = [
 * 同一个 tenant 下 `id` 不能重复。
 
 * 每个 client 建议单独 token；一个 token 泄露只影响一个客户端。
+
+* `max_proxies` 统计的是该 tenant + client 当前跨 run 的 proxy 总数；达到上限后新建返回 `PolicyDenied`。
+
+* 月配额按 UTC 自然月累计，跨月首次请求时归零；`throttle` 只作用于新连接，不会提高已有连接速度。
 
 * server 不保存明文 token，无法从 server 反查 token。
 

@@ -4,6 +4,7 @@
 //! 首次可突发 1 秒额度，之后按字节补充。
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -15,7 +16,7 @@ struct Bucket {
 }
 
 pub struct RateLimiter {
-    rate: f64,
+    rate: AtomicU64,
     bucket: Mutex<Bucket>,
 }
 
@@ -24,7 +25,7 @@ impl RateLimiter {
     pub fn new(bytes_per_sec: u64) -> Self {
         let rate = bytes_per_sec as f64;
         Self {
-            rate,
+            rate: AtomicU64::new(bytes_per_sec),
             bucket: Mutex::new(Bucket {
                 tokens: rate,
                 last: Instant::now(),
@@ -32,13 +33,32 @@ impl RateLimiter {
         }
     }
 
+    /// 运行时调整速率；用于月配额耗尽后的降速与下个周期恢复。
+    pub fn set_rate(&self, bytes_per_sec: u64) {
+        self.rate.store(bytes_per_sec, Ordering::Relaxed);
+        let cap = bytes_per_sec as f64;
+        let mut bucket = self
+            .bucket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        bucket.tokens = bucket.tokens.min(cap);
+        bucket.last = Instant::now();
+    }
+
+    #[must_use]
+    pub fn rate(&self) -> u64 {
+        self.rate.load(Ordering::Relaxed)
+    }
+
     /// 等待直到本次 `bytes` 的额度可用。`0` 表示不限速。
     pub async fn consume(&self, bytes: u64) {
-        if self.rate <= 0.0 || bytes == 0 {
+        let rate = self.rate();
+        if rate == 0 || bytes == 0 {
             return;
         }
 
         let wait = {
+            let rate = rate as f64;
             let mut bucket = self
                 .bucket
                 .lock()
@@ -46,10 +66,10 @@ impl RateLimiter {
             let now = Instant::now();
             let elapsed = now.duration_since(bucket.last).as_secs_f64();
             bucket.last = now;
-            bucket.tokens = (bucket.tokens + elapsed * self.rate).min(self.rate);
+            bucket.tokens = (bucket.tokens + elapsed * rate).min(rate);
             bucket.tokens -= bytes as f64;
             if bucket.tokens < 0.0 {
-                Duration::from_secs_f64(-bucket.tokens / self.rate)
+                Duration::from_secs_f64(-bucket.tokens / rate)
             } else {
                 Duration::ZERO
             }
@@ -57,6 +77,31 @@ impl RateLimiter {
 
         if !wait.is_zero() {
             sleep(wait).await;
+        }
+    }
+
+    /// 非阻塞消费；额度不足直接返回 `false`，用于新建连接速率。
+    #[must_use]
+    pub fn try_consume(&self, bytes: u64) -> bool {
+        let rate = self.rate();
+        if rate == 0 || bytes == 0 {
+            return true;
+        }
+
+        let rate = rate as f64;
+        let mut bucket = self
+            .bucket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        let elapsed = now.duration_since(bucket.last).as_secs_f64();
+        bucket.last = now;
+        bucket.tokens = (bucket.tokens + elapsed * rate).min(rate);
+        if bucket.tokens >= bytes as f64 {
+            bucket.tokens -= bytes as f64;
+            true
+        } else {
+            false
         }
     }
 }
@@ -125,6 +170,16 @@ mod tests {
     #[test]
     fn rate_is_stored() {
         let limiter = RateLimiter::new(4096);
-        assert!(limiter.rate > 0.0);
+        assert_eq!(limiter.rate(), 4096);
+        limiter.set_rate(1024);
+        assert_eq!(limiter.rate(), 1024);
+    }
+
+    #[test]
+    fn try_consume_rejects_when_tokens_empty() {
+        let limiter = RateLimiter::new(2);
+        assert!(limiter.try_consume(1));
+        assert!(limiter.try_consume(1));
+        assert!(!limiter.try_consume(1));
     }
 }

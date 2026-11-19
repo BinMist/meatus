@@ -42,6 +42,9 @@ message ProxyOptions {
   bool   enable_compression = 4;
   repeated string allow_cidrs = 5;
   repeated string allow_domains = 6;
+  uint64 monthly_bytes     = 7;
+  uint32 conn_rate_per_s   = 8;
+  string quota_action      = 9; // reject | throttle
 }
 
 message NewProxy {

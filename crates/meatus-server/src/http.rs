@@ -115,6 +115,10 @@ async fn handle_http(
         }
         return Ok(());
     };
+    if !route.allow_connection() {
+        write_http_error(&mut client, 503, "Service Unavailable").await?;
+        return Ok(());
+    }
     let permit = match Arc::clone(&route.connections).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
@@ -153,6 +157,10 @@ async fn handle_https(
         debug!(%peer, %host, "https sni route not found");
         return Ok(());
     };
+    if !route.allow_connection() {
+        debug!(%peer, %host, "https route denied by quota or rate limit");
+        return Ok(());
+    }
     let permit = match Arc::clone(&route.connections).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
@@ -189,6 +197,10 @@ where
         }
         return Ok(());
     };
+    if !route.allow_connection() {
+        write_http_error(client, 503, "Service Unavailable").await?;
+        return Ok(());
+    }
     let permit = match Arc::clone(&route.connections).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
@@ -216,6 +228,7 @@ where
     route.metrics.connection_finished();
     if let Ok((bytes_in, bytes_out)) = result {
         route.metrics.add_bytes(bytes_in, bytes_out);
+        route.quota.record(bytes_in, bytes_out);
         state.usage.record(&UsageRecord {
             tenant_id: route.tenant_id.clone(),
             client_id: route.client_id.clone(),

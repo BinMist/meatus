@@ -9,8 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
 use meatus_core::{
-    MultiplexedStream, OpenHandle, PortReleasePolicy, RateLimiter, TargetPolicy, UsageRecord,
-    WireError, copy_bidirectional_limited, read_frame, write_frame,
+    ClientPolicy, MultiplexedStream, OpenHandle, PortReleasePolicy, QuotaAction, RateLimiter,
+    TargetPolicy, UsageRecord, WireError, copy_bidirectional_limited, read_frame, write_frame,
 };
 use meatus_proto::{
     ErrorCode, PROTOCOL_VERSION,
@@ -30,6 +30,7 @@ use tracing::{debug, info, warn};
 use crate::ServerState;
 use crate::admin_bus::AdminProxyCommand;
 use crate::metrics::ProxyMetrics;
+use crate::quota::ProxyQuota;
 use crate::routes::{DomainRoute, RouteKind};
 use crate::socks5::Socks5Route;
 use crate::status::ProxyEntry;
@@ -139,8 +140,20 @@ struct ProxyContext {
     client_id: String,
     proxy_name: String,
     limiter: Arc<RateLimiter>,
+    conn_limiter: Arc<RateLimiter>,
+    quota: Arc<ProxyQuota>,
     metrics: Arc<ProxyMetrics>,
     next_trace: Arc<AtomicU64>,
+}
+
+impl ProxyContext {
+    fn allow_connection(&self) -> bool {
+        self.conn_limiter.try_consume(1) && self.quota.allow_connection()
+    }
+
+    fn record_usage(&self, bytes_in: u64, bytes_out: u64) {
+        self.quota.record(bytes_in, bytes_out);
+    }
 }
 
 pub async fn serve(control: MultiplexedStream, ctx: SessionContext) -> anyhow::Result<()> {
@@ -217,6 +230,8 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
             bail!("authentication failed: {err}");
         }
     }
+
+    let client_policy = auth_provider.client_policy(&hello.tenant_id, &hello.client_id);
 
     let run_id = hex::encode(random_bytes(16)?);
     write_frame(
@@ -311,6 +326,7 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
                     &hello.client_id,
                     &run_id,
                     &hello.caps,
+                    &client_policy,
                     next_trace.clone(),
                     &mut next_admin_id,
                 ).await?;
@@ -357,6 +373,8 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
                             &hello.client_id,
                             &run_id,
                             request,
+                            &client_policy,
+                            false,
                             next_trace.clone(),
                         )
                         .await {
@@ -430,6 +448,7 @@ async fn handle_admin_command(
     client_id: &str,
     run_id: &str,
     caps: &[String],
+    policy: &ClientPolicy,
     next_trace: Arc<AtomicU64>,
     next_admin_id: &mut u64,
 ) -> anyhow::Result<()> {
@@ -449,6 +468,7 @@ async fn handle_admin_command(
                 tenant_id,
                 client_id,
                 run_id,
+                policy,
                 next_trace,
                 next_admin_id,
             )
@@ -465,6 +485,7 @@ async fn handle_admin_command(
                 tenant_id,
                 client_id,
                 run_id,
+                policy,
                 next_trace.clone(),
                 next_admin_id,
             )
@@ -574,6 +595,7 @@ async fn admin_set_proxy(
     tenant_id: &str,
     client_id: &str,
     run_id: &str,
+    policy: &ClientPolicy,
     next_trace: Arc<AtomicU64>,
     next_admin_id: &mut u64,
 ) -> Result<ProxyOk, String> {
@@ -610,6 +632,7 @@ async fn admin_set_proxy(
                 tenant_id,
                 client_id,
                 run_id,
+                policy,
                 next_trace.clone(),
                 next_admin_id,
             )
@@ -625,6 +648,8 @@ async fn admin_set_proxy(
             client_id,
             run_id,
             request.clone(),
+            policy,
+            true,
             next_trace.clone(),
         )
         .await
@@ -647,6 +672,7 @@ async fn admin_set_proxy(
                         tenant_id,
                         client_id,
                         run_id,
+                        policy,
                         next_trace,
                         next_admin_id,
                     )
@@ -673,6 +699,7 @@ async fn admin_set_proxy(
                     tenant_id,
                     client_id,
                     run_id,
+                    policy,
                     next_trace,
                     next_admin_id,
                 )
@@ -686,7 +713,11 @@ async fn admin_set_proxy(
         if let Err(err) = send_admin_add(reader, writer, &name, &request, next_admin_id).await {
             return Err(format!("client did not accept proxy: {err}"));
         }
-        match start_proxy(ctx, tenant_id, client_id, run_id, request, next_trace).await {
+        match start_proxy(
+            ctx, tenant_id, client_id, run_id, request, policy, false, next_trace,
+        )
+        .await
+        {
             Ok(runtime) => {
                 let port = runtime.port.unwrap_or(0);
                 let domains = runtime.domains.clone();
@@ -716,6 +747,7 @@ async fn admin_remove_proxy(
     tenant_id: &str,
     client_id: &str,
     run_id: &str,
+    policy: &ClientPolicy,
     next_trace: Arc<AtomicU64>,
     next_admin_id: &mut u64,
 ) -> Result<(), String> {
@@ -743,6 +775,7 @@ async fn admin_remove_proxy(
                 tenant_id,
                 client_id,
                 run_id,
+                policy,
                 next_trace,
                 next_admin_id,
             )
@@ -765,6 +798,7 @@ async fn restore_proxy(
     tenant_id: &str,
     client_id: &str,
     run_id: &str,
+    policy: &ClientPolicy,
     next_trace: Arc<AtomicU64>,
     next_admin_id: &mut u64,
 ) -> bool {
@@ -778,6 +812,8 @@ async fn restore_proxy(
         client_id,
         run_id,
         old_spec.clone(),
+        policy,
+        true,
         next_trace,
     )
     .await
@@ -905,6 +941,8 @@ async fn start_proxy(
     client_id: &str,
     run_id: &str,
     request: NewProxy,
+    policy: &ClientPolicy,
+    replacing: bool,
     next_trace: Arc<AtomicU64>,
 ) -> Result<ProxyRuntime, (ErrorCode, String)> {
     if request.name.trim().is_empty() {
@@ -929,9 +967,50 @@ async fn start_proxy(
         }
     };
 
+    if !policy.allows_type(policy_proxy_type(kind)) {
+        return Err((
+            ErrorCode::PolicyDenied,
+            format!(
+                "client is not allowed to create {} proxies",
+                proxy_type_name(kind)
+            ),
+        ));
+    }
+    if let Some(max) = policy.max_proxies
+        && !replacing
+        && ctx.state.status.client_proxy_count(tenant_id, client_id) >= max as usize
+    {
+        return Err((
+            ErrorCode::PolicyDenied,
+            format!("client reached max_proxies={max}"),
+        ));
+    }
+
     let options = request.options.clone().unwrap_or_default();
-    let limiter = Arc::new(RateLimiter::new(options.rate_limit_bps));
+    let rate_limit_bps = effective_u64(options.rate_limit_bps, policy.rate_limit_bps());
+    let max_conns = effective_u32(options.max_conns, policy.max_conns());
+    let conn_rate_per_s = effective_u32(options.conn_rate_per_s, policy.conn_rate_per_s());
+    let monthly_bytes = effective_u64(options.monthly_bytes, policy.monthly_bytes());
+    let quota_action = match options.quota_action.as_str() {
+        "throttle" => QuotaAction::Throttle,
+        "reject" | "" => policy.quota_action(),
+        other => return Err((ErrorCode::Internal, format!("unknown quota_action={other}"))),
+    };
+    let idle_timeout_s = options.idle_timeout_s;
+    let limiter = Arc::new(RateLimiter::new(rate_limit_bps));
+    let conn_limiter = Arc::new(RateLimiter::new(u64::from(conn_rate_per_s)));
     let metrics = ctx.state.metrics.proxy(&request.name);
+    let quota = Arc::new(ProxyQuota::new(
+        Arc::clone(&ctx.state.quotas),
+        tenant_id,
+        client_id,
+        &request.name,
+        monthly_bytes,
+        quota_action,
+        Arc::clone(&limiter),
+        rate_limit_bps,
+        Arc::clone(&metrics),
+    ));
     let proxy_ctx = ProxyContext {
         state: Arc::clone(&ctx.state),
         open: ctx.open.clone(),
@@ -939,6 +1018,8 @@ async fn start_proxy(
         client_id: client_id.to_string(),
         proxy_name: request.name.clone(),
         limiter,
+        conn_limiter,
+        quota,
         metrics,
         next_trace,
     };
@@ -963,6 +1044,12 @@ async fn start_proxy(
                     "http/https proxy requires custom_domains".to_string(),
                 ));
             }
+            if !policy.allows_domains(&request.custom_domains) {
+                return Err((
+                    ErrorCode::PolicyDenied,
+                    "custom_domains are not allowed for this client".to_string(),
+                ));
+            }
             let route_kind = if kind == ProxyType::Http {
                 RouteKind::Http
             } else {
@@ -976,12 +1063,14 @@ async fn start_proxy(
                 client_id: client_id.to_string(),
                 open: proxy_ctx.open.clone(),
                 limiter: Arc::clone(&proxy_ctx.limiter),
+                conn_limiter: Arc::clone(&proxy_ctx.conn_limiter),
+                quota: Arc::clone(&proxy_ctx.quota),
                 metrics: Arc::clone(&proxy_ctx.metrics),
                 next_trace: Arc::clone(&proxy_ctx.next_trace),
-                connections: Arc::new(Semaphore::new(if options.max_conns == 0 {
+                connections: Arc::new(Semaphore::new(if max_conns == 0 {
                     1024
                 } else {
-                    options.max_conns as usize
+                    max_conns as usize
                 })),
             };
             ctx.state
@@ -1013,9 +1102,11 @@ async fn start_proxy(
                 remote_port: 0,
                 domains: request.custom_domains.clone(),
                 local_addr: request.local_addr.clone(),
-                rate_limit_bps: options.rate_limit_bps,
-                max_conns: options.max_conns,
-                idle_timeout_s: options.idle_timeout_s,
+                rate_limit_bps,
+                max_conns,
+                monthly_bytes,
+                quota_action: quota_action_name(quota_action).to_string(),
+                idle_timeout_s,
                 allow_cidrs: options.allow_cidrs.clone(),
                 allow_domains: options.allow_domains.clone(),
                 tenant_id: tenant_id.to_string(),
@@ -1058,7 +1149,7 @@ async fn start_proxy(
             let port = ctx
                 .state
                 .allocator
-                .alloc_port(tenant_id, &request.name, preferred)
+                .alloc_port_in_range(tenant_id, &request.name, preferred, policy.allow_ports)
                 .map_err(|err| match err {
                     meatus_core::AllocError::Taken(port) => (
                         ErrorCode::PortInUse,
@@ -1068,7 +1159,10 @@ async fn start_proxy(
                         ErrorCode::PortPoolExhausted,
                         "port pool exhausted".to_string(),
                     ),
-                    other => (ErrorCode::Internal, other.to_string()),
+                    meatus_core::AllocError::OutOfRange(port) => (
+                        ErrorCode::PolicyDenied,
+                        format!("port {port} is outside the client allow_ports range"),
+                    ),
                 })?;
 
             let bind = format!("{}:{}", ctx.state.config.server.bind_addr, port);
@@ -1082,10 +1176,10 @@ async fn start_proxy(
                         }
                     };
                     info!(proxy = %request.name, client = %client_id, %bind, "public tcp listener bound");
-                    let max_conns = if options.max_conns == 0 {
+                    let max_conns = if max_conns == 0 {
                         1024
                     } else {
-                        options.max_conns as usize
+                        max_conns as usize
                     };
                     let semaphore = Arc::new(Semaphore::new(max_conns));
                     let cancel = ctx.cancel.child_token();
@@ -1134,10 +1228,10 @@ async fn start_proxy(
                         .filter(|value| *value > 0)
                         .unwrap_or(UDP_MAX_SESSIONS)
                         .min(UDP_MAX_SESSIONS);
-                    let idle = if options.idle_timeout_s == 0 {
+                    let idle = if idle_timeout_s == 0 {
                         UDP_DEFAULT_IDLE
                     } else {
-                        Duration::from_secs(u64::from(options.idle_timeout_s).clamp(15, 3600))
+                        Duration::from_secs(u64::from(idle_timeout_s).clamp(15, 3600))
                     };
                     let cancel = ctx.cancel.child_token();
                     let proxy_ctx = proxy_ctx;
@@ -1154,9 +1248,11 @@ async fn start_proxy(
                 remote_port: port,
                 domains: Vec::new(),
                 local_addr: request.local_addr.clone(),
-                rate_limit_bps: options.rate_limit_bps,
-                max_conns: options.max_conns,
-                idle_timeout_s: options.idle_timeout_s,
+                rate_limit_bps,
+                max_conns,
+                monthly_bytes,
+                quota_action: quota_action_name(quota_action).to_string(),
+                idle_timeout_s,
                 allow_cidrs: options.allow_cidrs.clone(),
                 allow_domains: options.allow_domains.clone(),
                 tenant_id: tenant_id.to_string(),
@@ -1200,10 +1296,10 @@ async fn start_proxy(
             let domain_policy =
                 meatus_core::DomainPolicy::from_allow_domains(&options.allow_domains)
                     .map_err(|err| (ErrorCode::Internal, err))?;
-            let max_conns = if options.max_conns == 0 {
+            let max_conns_usize = if max_conns == 0 {
                 1024
             } else {
-                options.max_conns as usize
+                max_conns as usize
             };
             let route = Socks5Route {
                 proxy_name: request.name.clone(),
@@ -1212,11 +1308,13 @@ async fn start_proxy(
                 run_id: run_id.to_string(),
                 open: proxy_ctx.open.clone(),
                 limiter: Arc::clone(&proxy_ctx.limiter),
+                conn_limiter: Arc::clone(&proxy_ctx.conn_limiter),
+                quota: Arc::clone(&proxy_ctx.quota),
                 metrics: Arc::clone(&proxy_ctx.metrics),
                 next_trace: Arc::clone(&proxy_ctx.next_trace),
                 policy: Arc::new(policy),
                 domain_policy: Arc::new(domain_policy),
-                permits: Arc::new(Semaphore::new(max_conns)),
+                permits: Arc::new(Semaphore::new(max_conns_usize)),
             };
             ctx.state
                 .socks5
@@ -1229,9 +1327,11 @@ async fn start_proxy(
                 remote_port: 0,
                 domains: Vec::new(),
                 local_addr: request.local_addr.clone(),
-                rate_limit_bps: options.rate_limit_bps,
-                max_conns: options.max_conns,
-                idle_timeout_s: options.idle_timeout_s,
+                rate_limit_bps,
+                max_conns,
+                monthly_bytes,
+                quota_action: quota_action_name(quota_action).to_string(),
+                idle_timeout_s,
                 allow_cidrs: options.allow_cidrs.clone(),
                 allow_domains: options.allow_domains.clone(),
                 tenant_id: tenant_id.to_string(),
@@ -1251,6 +1351,38 @@ async fn start_proxy(
                 state: Arc::clone(&ctx.state),
             })
         }
+    }
+}
+
+/// 两级限制合并：0 视为未设置，双方都设置时取较小值。
+fn policy_proxy_type(kind: ProxyType) -> meatus_core::ProxyType {
+    match kind {
+        ProxyType::Tcp => meatus_core::ProxyType::Tcp,
+        ProxyType::Udp => meatus_core::ProxyType::Udp,
+        ProxyType::Http => meatus_core::ProxyType::Http,
+        ProxyType::Https => meatus_core::ProxyType::Https,
+        ProxyType::Socks5 => meatus_core::ProxyType::Socks5,
+    }
+}
+
+fn quota_action_name(action: QuotaAction) -> &'static str {
+    match action {
+        QuotaAction::Reject => "reject",
+        QuotaAction::Throttle => "throttle",
+    }
+}
+
+fn effective_u64(proxy: u64, client: u64) -> u64 {
+    match (proxy, client) {
+        (0, value) | (value, 0) => value,
+        (a, b) => a.min(b),
+    }
+}
+
+fn effective_u32(proxy: u32, client: u32) -> u32 {
+    match (proxy, client) {
+        (0, value) | (value, 0) => value,
+        (a, b) => a.min(b),
     }
 }
 
@@ -1281,6 +1413,10 @@ async fn tcp_accept_loop(
                         continue;
                     }
                 };
+                if !ctx.allow_connection() {
+                    debug!(proxy = %ctx.proxy_name, "connection denied by quota or rate limit");
+                    continue;
+                }
                 let permit = match Arc::clone(&semaphore).try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
@@ -1311,6 +1447,7 @@ async fn pipe_connection(
     match &result {
         Ok((bytes_in, bytes_out)) => {
             ctx.metrics.add_bytes(*bytes_in, *bytes_out);
+            ctx.record_usage(*bytes_in, *bytes_out);
             ctx.state.usage.record(&UsageRecord {
                 tenant_id: ctx.tenant_id.clone(),
                 client_id: ctx.client_id.clone(),
@@ -1393,6 +1530,7 @@ async fn udp_proxy_loop(
                     if let Some(session) = by_id.remove(&id) {
                         by_addr.remove(&session.addr);
                         ctx.metrics.connection_finished();
+                        ctx.record_usage(session.bytes_in, session.bytes_out);
                         ctx.state.usage.record(&UsageRecord {
                             tenant_id: ctx.tenant_id.clone(),
                             client_id: ctx.client_id.clone(),
@@ -1424,6 +1562,10 @@ async fn udp_proxy_loop(
                 } else {
                     if by_id.len() >= max_sessions {
                         debug!(proxy = %ctx.proxy_name, "udp session limit reached");
+                        continue;
+                    }
+                    if !ctx.allow_connection() {
+                        debug!(proxy = %ctx.proxy_name, "udp session denied by quota");
                         continue;
                     }
                     let id = loop {

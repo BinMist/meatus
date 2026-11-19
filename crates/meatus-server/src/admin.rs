@@ -56,6 +56,7 @@ pub struct AuthSummary {
 pub struct AdminState {
     metrics: Arc<Metrics>,
     status: Arc<StatusRegistry>,
+    quotas: Arc<crate::quota::MonthlyQuota>,
     config: Arc<ServerConfig>,
     runtime: Arc<crate::RuntimeConfig>,
     reloader: Option<Arc<crate::ConfigReloader>>,
@@ -81,6 +82,7 @@ impl AdminState {
     pub fn new(
         metrics: Arc<Metrics>,
         status: Arc<StatusRegistry>,
+        quotas: Arc<crate::quota::MonthlyQuota>,
         config: Arc<ServerConfig>,
         runtime: Arc<crate::RuntimeConfig>,
         logs: Arc<LogBuffer>,
@@ -97,6 +99,7 @@ impl AdminState {
         Self {
             metrics,
             status,
+            quotas,
             config,
             runtime,
             reloader,
@@ -463,7 +466,14 @@ async fn route(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState) -> Ht
             if !authorized(request, state) {
                 return HttpResponse::json(401, json!({"error": "unauthorized"}));
             }
-            HttpResponse::json(200, state.status.render(&state.metrics))
+            HttpResponse::json(
+                200,
+                state.status.render(
+                    &state.metrics,
+                    &state.quotas,
+                    state.runtime.config().as_ref(),
+                ),
+            )
         }
         ("GET", "/metrics") => {
             if !authorized(request, state) {
@@ -738,7 +748,11 @@ fn clients_list(request: &HttpRequest, state: &AdminState) -> HttpResponse {
     let config = state.current_config();
     let config = config.as_ref();
     let mut rows = configured_clients(state);
-    let snapshot = state.status.render(&state.metrics);
+    let snapshot = state.status.render(
+        &state.metrics,
+        &state.quotas,
+        state.runtime.config().as_ref(),
+    );
     let online = snapshot
         .get("clients")
         .and_then(Value::as_array)
@@ -795,6 +809,10 @@ fn configured_clients(state: &AdminState) -> Vec<Value> {
                     "tenant": meatus_core::DEFAULT_TENANT,
                     "token_fingerprint": fingerprint(hash),
                     "allow_ports": Value::Null,
+                    "allow_types": [],
+                    "allow_domains": [],
+                    "max_proxies": Value::Null,
+                    "limits": {},
                     "source": "token_sha256",
                     "can_delete": false,
                 })]
@@ -811,6 +829,10 @@ fn configured_clients(state: &AdminState) -> Vec<Value> {
                 "tenant": client.tenant,
                 "token_fingerprint": client.token_sha256.as_deref().map(fingerprint).unwrap_or_else(|| "未配置".to_string()),
                 "allow_ports": client.allow_ports,
+                "allow_types": client.allow_types.iter().map(|kind| proxy_type_label(*kind)).collect::<Vec<_>>(),
+                "allow_domains": client.allow_domains,
+                "max_proxies": client.max_proxies,
+                "limits": client_limits_json(&client.limits),
                 "source": "clients",
                 "can_delete": config.auth.clients.len() >= 2,
             })
@@ -860,6 +882,10 @@ async fn clients_create(request: &HttpRequest, state: &AdminState) -> HttpRespon
         Ok(value) => value,
         Err(error) => return HttpResponse::json(400, json!({"error": error})),
     };
+    let (allow_types, allow_domains, max_proxies, limits) = match parse_client_policy(&body) {
+        Ok(value) => value,
+        Err(error) => return HttpResponse::json(400, json!({"error": error})),
+    };
     let endpoint = match client_endpoint(body.get("server_addr").and_then(Value::as_str), current) {
         Ok(value) => value,
         Err(error) => return HttpResponse::json(400, json!({"error": error})),
@@ -874,6 +900,10 @@ async fn clients_create(request: &HttpRequest, state: &AdminState) -> HttpRespon
         tenant: tenant.clone(),
         token_sha256: Some(hash.clone()),
         allow_ports,
+        allow_types,
+        allow_domains,
+        max_proxies,
+        limits,
     };
     let backup = match meatus_core::upsert_server_client(path, &entry) {
         Ok(backup) => backup,
@@ -1009,6 +1039,10 @@ async fn clients_item(request: &HttpRequest, state: &AdminState, id: &str) -> Ht
         tenant: existing.tenant.clone(),
         token_sha256: Some(hash),
         allow_ports,
+        allow_types: existing.allow_types.clone(),
+        allow_domains: existing.allow_domains.clone(),
+        max_proxies: existing.max_proxies,
+        limits: existing.limits.clone(),
     };
     let backup = match meatus_core::upsert_server_client(path, &entry) {
         Ok(backup) => backup,
@@ -1039,8 +1073,131 @@ async fn clients_item(request: &HttpRequest, state: &AdminState, id: &str) -> Ht
     )
 }
 
+fn proxy_type_label(kind: meatus_core::ProxyType) -> &'static str {
+    match kind {
+        meatus_core::ProxyType::Tcp => "tcp",
+        meatus_core::ProxyType::Udp => "udp",
+        meatus_core::ProxyType::Http => "http",
+        meatus_core::ProxyType::Https => "https",
+        meatus_core::ProxyType::Socks5 => "socks5",
+    }
+}
+
+fn client_limits_json(limits: &meatus_core::ClientLimits) -> Value {
+    json!({
+        "rate_limit_bps": limits.rate_limit_bps,
+        "monthly_bytes": limits.monthly_bytes,
+        "max_conns": limits.max_conns,
+        "conn_rate_per_s": limits.conn_rate_per_s,
+        "quota_action": limits.quota_action.map(|action| match action {
+            meatus_core::QuotaAction::Reject => "reject",
+            meatus_core::QuotaAction::Throttle => "throttle",
+        }),
+    })
+}
+
+type ClientPolicyInput = (
+    Vec<meatus_core::ProxyType>,
+    Vec<String>,
+    Option<u32>,
+    meatus_core::ClientLimits,
+);
+
+fn parse_client_policy(body: &Value) -> Result<ClientPolicyInput, String> {
+    let mut allow_types = Vec::new();
+    if let Some(array) = body.get("allow_types").and_then(Value::as_array) {
+        for item in array {
+            let raw = item.as_str().unwrap_or_default().trim();
+            let kind = match raw {
+                "tcp" => meatus_core::ProxyType::Tcp,
+                "udp" => meatus_core::ProxyType::Udp,
+                "http" => meatus_core::ProxyType::Http,
+                "https" => meatus_core::ProxyType::Https,
+                "socks5" => meatus_core::ProxyType::Socks5,
+                other => return Err(format!("invalid allow_types entry: {other}")),
+            };
+            if !allow_types.contains(&kind) {
+                allow_types.push(kind);
+            }
+        }
+    }
+    if allow_types.len() > 5 {
+        return Err("allow_types supports at most 5 entries".to_string());
+    }
+
+    let mut allow_domains = Vec::new();
+    if let Some(array) = body.get("allow_domains").and_then(Value::as_array) {
+        for item in array {
+            let domain = item.as_str().unwrap_or_default().trim();
+            if domain.is_empty() {
+                continue;
+            }
+            allow_domains.push(domain.to_ascii_lowercase());
+        }
+    }
+    if allow_domains.len() > 16 {
+        return Err("allow_domains supports at most 16 entries".to_string());
+    }
+    meatus_core::DomainPolicy::from_allow_domains(&allow_domains)
+        .map_err(|err| format!("allow_domains invalid: {err}"))?;
+
+    let max_proxies = body
+        .get("max_proxies")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .map(|value| u32::try_from(value).unwrap_or(0));
+    if max_proxies.is_some_and(|value| !(1..=1024).contains(&value)) {
+        return Err("max_proxies must be 1..=1024".to_string());
+    }
+
+    let limits = body.get("limits").cloned().unwrap_or_else(|| json!({}));
+    let opt_u64 = |key: &str| {
+        limits
+            .get(key)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+    };
+    let opt_u32 = |key: &str| {
+        limits
+            .get(key)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .map(|value| u32::try_from(value).unwrap_or(u32::MAX))
+    };
+    let max_conns = opt_u32("max_conns");
+    if max_conns.is_some_and(|value| value > 65535) {
+        return Err("limits.max_conns must be <=65535".to_string());
+    }
+    let conn_rate_per_s = opt_u32("conn_rate_per_s");
+    if conn_rate_per_s.is_some_and(|value| value > 100_000) {
+        return Err("limits.conn_rate_per_s must be <=100000".to_string());
+    }
+    let quota_action = match limits.get("quota_action").and_then(Value::as_str) {
+        Some("reject") => Some(meatus_core::QuotaAction::Reject),
+        Some("throttle") => Some(meatus_core::QuotaAction::Throttle),
+        Some("") | None => None,
+        Some(other) => return Err(format!("invalid quota_action: {other}")),
+    };
+    Ok((
+        allow_types,
+        allow_domains,
+        max_proxies,
+        meatus_core::ClientLimits {
+            rate_limit_bps: opt_u64("rate_limit_bps"),
+            monthly_bytes: opt_u64("monthly_bytes"),
+            max_conns,
+            conn_rate_per_s,
+            quota_action,
+        },
+    ))
+}
+
 fn client_response_row(state: &AdminState, entry: &ClientEntry) -> Value {
-    let snapshot = state.status.render(&state.metrics);
+    let snapshot = state.status.render(
+        &state.metrics,
+        &state.quotas,
+        state.runtime.config().as_ref(),
+    );
     let online = snapshot
         .get("clients")
         .and_then(Value::as_array)
@@ -1058,6 +1215,10 @@ fn client_response_row(state: &AdminState, entry: &ClientEntry) -> Value {
         "tenant": entry.tenant,
         "token_fingerprint": entry.token_sha256.as_deref().map(fingerprint).unwrap_or_else(|| "未配置".to_string()),
         "allow_ports": entry.allow_ports,
+        "allow_types": entry.allow_types.iter().map(|kind| proxy_type_label(*kind)).collect::<Vec<_>>(),
+        "allow_domains": entry.allow_domains,
+        "max_proxies": entry.max_proxies,
+        "limits": client_limits_json(&entry.limits),
         "online": !runs.is_empty(),
         "proxy_count": runs.iter().map(|value| value["proxy_count"].as_u64().unwrap_or(0)).sum::<u64>(),
     })
@@ -1667,6 +1828,25 @@ fn new_proxy_from_json(body: &Value) -> Result<NewProxy, String> {
     if max_conns > 4096 {
         return Err("max_conns must be <=4096".to_string());
     }
+    let monthly_bytes = options
+        .get("monthly_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let conn_rate_per_s = options
+        .get("conn_rate_per_s")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if conn_rate_per_s > 100_000 {
+        return Err("conn_rate_per_s must be <=100000".to_string());
+    }
+    let quota_action = options
+        .get("quota_action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if !matches!(quota_action.as_str(), "" | "reject" | "throttle") {
+        return Err("quota_action must be reject or throttle".to_string());
+    }
     let idle_timeout_s = options
         .get("idle_timeout_s")
         .and_then(Value::as_u64)
@@ -1739,6 +1919,9 @@ fn new_proxy_from_json(body: &Value) -> Result<NewProxy, String> {
             idle_timeout_s: u32::try_from(idle_timeout_s).unwrap_or(0),
             max_conns: u32::try_from(max_conns).unwrap_or(0),
             enable_compression: false,
+            monthly_bytes,
+            conn_rate_per_s: u32::try_from(conn_rate_per_s).unwrap_or(0),
+            quota_action,
             allow_cidrs,
             allow_domains,
         }),
@@ -2062,7 +2245,11 @@ fn certificate_covers(cert: &CachedCertificate, domain: &str) -> bool {
 }
 
 fn certificates_json(state: &AdminState) -> Value {
-    let snapshot = state.status.render(&state.metrics);
+    let snapshot = state.status.render(
+        &state.metrics,
+        &state.quotas,
+        state.runtime.config().as_ref(),
+    );
     let cached = read_cached_certificates(&state.config.acme.cert_dir);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2290,6 +2477,38 @@ fn is_loopback_bind(bind: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_client_policy_validates_type_domains_and_limits() {
+        let body = json!({
+            "allow_types": ["tcp", "tcp"],
+            "allow_domains": ["*.example.com"],
+            "max_proxies": 3,
+            "limits": { "monthly_bytes": 100, "conn_rate_per_s": 5, "quota_action": "throttle" },
+        });
+        let (types, domains, max, limits) = parse_client_policy(&body).expect("policy");
+        assert_eq!(types, vec![meatus_core::ProxyType::Tcp]);
+        assert_eq!(domains, vec!["*.example.com".to_string()]);
+        assert_eq!(max, Some(3));
+        assert_eq!(limits.monthly_bytes, Some(100));
+        assert_eq!(
+            limits.quota_action,
+            Some(meatus_core::QuotaAction::Throttle)
+        );
+
+        assert!(
+            parse_client_policy(&json!({ "allow_types": ["icmp"] })).is_err(),
+            "unknown type must be rejected"
+        );
+        assert!(
+            parse_client_policy(&json!({ "limits": { "max_conns": 70000 } })).is_err(),
+            "max_conns above 65535 must be rejected"
+        );
+        assert!(
+            parse_client_policy(&json!({ "max_proxies": 2000 })).is_err(),
+            "max_proxies above 1024 must be rejected"
+        );
+    }
 
     #[test]
     fn cookie_parser_handles_multiple_entries() {

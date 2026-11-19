@@ -22,6 +22,7 @@ use tracing::{debug, info, warn};
 
 use crate::ServerState;
 use crate::metrics::ProxyMetrics;
+use crate::quota::ProxyQuota;
 
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -36,6 +37,8 @@ pub struct Socks5Route {
     pub run_id: String,
     pub open: OpenHandle,
     pub limiter: Arc<RateLimiter>,
+    pub conn_limiter: Arc<RateLimiter>,
+    pub quota: Arc<ProxyQuota>,
     pub metrics: Arc<ProxyMetrics>,
     pub next_trace: Arc<AtomicU64>,
     pub policy: Arc<TargetPolicy>,
@@ -163,6 +166,10 @@ async fn handle(
         }
     };
 
+    if !route.conn_limiter.try_consume(1) || !route.quota.allow_connection() {
+        let _ = reply(&mut user, 0x01).await;
+        return Ok(());
+    }
     let permit = match Arc::clone(&route.permits).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
@@ -202,6 +209,7 @@ async fn handle(
     match &result {
         Ok((bytes_in, bytes_out)) => {
             route.metrics.add_bytes(*bytes_in, *bytes_out);
+            route.quota.record(*bytes_in, *bytes_out);
             state.usage.record(&UsageRecord {
                 tenant_id: route.tenant_id.clone(),
                 client_id: route.client_id.clone(),

@@ -200,6 +200,112 @@ pub struct ClientEntry {
     pub tenant: String,
     pub token_sha256: Option<String>,
     pub allow_ports: Option<[u16; 2]>,
+    /// 允许创建的 proxy 类型；空表示不限制。
+    #[serde(default)]
+    pub allow_types: Vec<ProxyType>,
+    /// 允许的域名白名单，支持精确域名与 `*.suffix`；空表示不限制。
+    #[serde(default)]
+    pub allow_domains: Vec<String>,
+    /// 该 client 最多同时存在的 proxy 数（跨 run 统计）；空表示不限制。
+    pub max_proxies: Option<u32>,
+    /// 客户端级配额与限速；proxy 级 `options` 可进一步收紧。
+    #[serde(default)]
+    pub limits: ClientLimits,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuotaAction {
+    #[default]
+    Reject,
+    Throttle,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientLimits {
+    /// 带宽上限，单位 bytes/s；空或 0 表示不限速。
+    pub rate_limit_bps: Option<u64>,
+    /// 自然月流量上限，单位 bytes；空或 0 表示不限额。
+    pub monthly_bytes: Option<u64>,
+    /// 并发连接上限；空或 0 表示使用默认上限。
+    pub max_conns: Option<u32>,
+    /// 新建连接速率上限，单位连接/秒；空或 0 表示不限制。
+    pub conn_rate_per_s: Option<u32>,
+    /// 月配额耗尽后的动作；空表示 `reject`。
+    pub quota_action: Option<QuotaAction>,
+}
+
+/// 认证成功后固化的客户端授权快照；热加载只影响新建立的会话。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientPolicy {
+    pub allow_types: Vec<ProxyType>,
+    pub allow_ports: Option<[u16; 2]>,
+    pub allow_domains: Vec<String>,
+    pub max_proxies: Option<u32>,
+    pub limits: ClientLimits,
+}
+
+impl ClientPolicy {
+    #[must_use]
+    pub fn allows_type(&self, kind: ProxyType) -> bool {
+        self.allow_types.is_empty() || self.allow_types.contains(&kind)
+    }
+
+    #[must_use]
+    pub fn allows_port(&self, port: u16) -> bool {
+        self.allow_ports
+            .is_none_or(|[start, end]| port >= start && port <= end)
+    }
+
+    #[must_use]
+    pub fn allows_domains(&self, domains: &[String]) -> bool {
+        if self.allow_domains.is_empty() {
+            return true;
+        }
+        let Ok(policy) = crate::net::DomainPolicy::from_allow_domains(&self.allow_domains) else {
+            return false;
+        };
+        !policy.is_empty() && domains.iter().all(|domain| policy.allows(domain))
+    }
+
+    #[must_use]
+    pub fn monthly_bytes(&self) -> u64 {
+        self.limits.monthly_bytes.unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn quota_action(&self) -> QuotaAction {
+        self.limits.quota_action.unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn rate_limit_bps(&self) -> u64 {
+        self.limits.rate_limit_bps.unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn max_conns(&self) -> u32 {
+        self.limits.max_conns.unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn conn_rate_per_s(&self) -> u32 {
+        self.limits.conn_rate_per_s.unwrap_or(0)
+    }
+}
+
+impl ClientEntry {
+    #[must_use]
+    pub fn policy(&self) -> ClientPolicy {
+        ClientPolicy {
+            allow_types: self.allow_types.clone(),
+            allow_ports: self.allow_ports,
+            allow_domains: self.allow_domains.clone(),
+            max_proxies: self.max_proxies,
+            limits: self.limits.clone(),
+        }
+    }
 }
 
 impl AuthSection {
@@ -668,6 +774,57 @@ impl AuthSection {
                     client.id
                 )));
             }
+            if client
+                .max_proxies
+                .is_some_and(|value| value == 0 || value > 1024)
+            {
+                return Err(invalid(format!(
+                    "auth.clients[{}].max_proxies must be 1..=1024",
+                    client.id
+                )));
+            }
+            if client.allow_types.len() > 5 {
+                return Err(invalid(format!(
+                    "auth.clients[{}].allow_types supports at most 5 entries",
+                    client.id
+                )));
+            }
+            let mut seen_types = HashSet::new();
+            if client
+                .allow_types
+                .iter()
+                .any(|kind| !seen_types.insert(*kind))
+            {
+                return Err(invalid(format!(
+                    "auth.clients[{}].allow_types contains duplicates",
+                    client.id
+                )));
+            }
+            if client.allow_domains.len() > 16 {
+                return Err(invalid(format!(
+                    "auth.clients[{}].allow_domains supports at most 16 entries",
+                    client.id
+                )));
+            }
+            crate::net::DomainPolicy::from_allow_domains(&client.allow_domains).map_err(|err| {
+                invalid(format!("auth.clients[{}].allow_domains: {err}", client.id))
+            })?;
+            if client.limits.max_conns.is_some_and(|value| value > 65535) {
+                return Err(invalid(format!(
+                    "auth.clients[{}].limits.max_conns must be <=65535",
+                    client.id
+                )));
+            }
+            if client
+                .limits
+                .conn_rate_per_s
+                .is_some_and(|value| value > 100_000)
+            {
+                return Err(invalid(format!(
+                    "auth.clients[{}].limits.conn_rate_per_s must be <=100000",
+                    client.id
+                )));
+            }
         }
         Ok(())
     }
@@ -712,7 +869,7 @@ fn default_client_id() -> String {
     "default".to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProxyType {
     Tcp,
@@ -728,6 +885,12 @@ pub struct ProxyOptions {
     pub rate_limit_bps: Option<u64>,
     pub idle_timeout_s: Option<u32>,
     pub max_conns: Option<u32>,
+    /// proxy 级自然月流量上限；与 client 级取较小值。
+    pub monthly_bytes: Option<u64>,
+    /// proxy 级新建连接速率；与 client 级取较小值。
+    pub conn_rate_per_s: Option<u32>,
+    /// proxy 级月配额动作，覆盖 client 级。
+    pub quota_action: Option<QuotaAction>,
     #[serde(default)]
     pub allow_cidrs: Vec<String>,
     #[serde(default)]
@@ -1143,6 +1306,30 @@ token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         assert_eq!(config.server.bind_addr, "0.0.0.0");
         assert_eq!(config.ports.range, [20000, 30000]);
         assert_eq!(config.auth.credential_entries().len(), 1);
+    }
+
+    #[test]
+    fn client_policy_enforces_type_domain_and_port() {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+clients = [
+  { id = "nas", tenant = "default", token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", allow_ports = [21000, 21010], allow_types = ["http"], allow_domains = ["*.example.com"], max_proxies = 2, limits = { monthly_bytes = 104857600, quota_action = "throttle", conn_rate_per_s = 5 } },
+]
+"#;
+        let config = parse_server_config(toml).expect("valid");
+        let policy = config.auth.clients[0].policy();
+        assert!(policy.allows_type(ProxyType::Http));
+        assert!(!policy.allows_type(ProxyType::Tcp));
+        assert!(policy.allows_port(21005));
+        assert!(!policy.allows_port(21011));
+        assert!(policy.allows_domains(&["a.example.com".to_string()]));
+        assert!(!policy.allows_domains(&["a.other.com".to_string()]));
+        assert_eq!(policy.monthly_bytes(), 104857600);
+        assert_eq!(policy.quota_action(), QuotaAction::Throttle);
+        assert_eq!(policy.conn_rate_per_s(), 5);
     }
 
     #[test]

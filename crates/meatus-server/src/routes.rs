@@ -13,6 +13,7 @@ use meatus_core::{OpenHandle, RateLimiter};
 use tokio::sync::Semaphore;
 
 use crate::metrics::ProxyMetrics;
+use crate::quota::ProxyQuota;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteKind {
@@ -39,9 +40,18 @@ pub struct DomainRoute {
     pub client_id: String,
     pub open: OpenHandle,
     pub limiter: Arc<RateLimiter>,
+    pub conn_limiter: Arc<RateLimiter>,
+    pub quota: Arc<ProxyQuota>,
     pub metrics: Arc<ProxyMetrics>,
     pub next_trace: Arc<AtomicU64>,
     pub connections: Arc<Semaphore>,
+}
+
+impl DomainRoute {
+    #[must_use]
+    pub fn allow_connection(&self) -> bool {
+        self.conn_limiter.try_consume(1) && self.quota.allow_connection()
+    }
 }
 
 pub struct DomainRouter {

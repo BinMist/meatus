@@ -145,7 +145,7 @@ import PageActionsBar from '../../components/PageActionsBar.vue'
 import { apiGet, apiWrite, formatTime } from '../../services/api'
 import { notifyError, notifySuccess, notifyWarning } from '../../services/notifications'
 import ClientFormDialog from './ClientFormDialog.vue'
-import type { ClientRow, ClientsSnapshot, ClientWriteResponse } from './types'
+import type { ClientLimits, ClientRow, ClientsSnapshot, ClientWriteResponse } from './types'
 
 const snapshot = ref<ClientsSnapshot | null>(null)
 const updatedAt = ref('')
@@ -161,6 +161,14 @@ const form = reactive({
   tenant: 'default',
   serverAddr: '',
   allowPorts: '',
+  allowTypes: '',
+  allowDomains: '',
+  maxProxies: '',
+  rateLimit: '',
+  monthlyBytes: '',
+  maxConns: '',
+  connRate: '',
+  quotaAction: 'reject',
 })
 let timer: number | undefined
 
@@ -171,6 +179,12 @@ const rows = computed(() =>
   (snapshot.value?.clients ?? []).map((client) => ({
     ...client,
     allow_ports: client.allow_ports ? `${client.allow_ports[0]}–${client.allow_ports[1]}` : '不限制',
+    policyText: [
+      client.allow_types.length ? client.allow_types.join('/') : '类型不限',
+      client.allow_domains.length ? `${client.allow_domains.length} 个域名` : '域名不限',
+      client.max_proxies ? `最多 ${client.max_proxies} 个` : '数量不限',
+    ].join(' · '),
+    quotaText: formatLimits(client.limits),
     lastText: client.last_connected_ms ? formatTime(client.last_connected_ms) : '—',
     proxiesText: `${client.proxy_count} 个`,
     tenant: client.tenant,
@@ -184,6 +198,8 @@ const columns: DataTableColumn[] = [
   { key: 'proxiesText', header: 'Proxy', type: 'text', align: 'end', width: 74 },
   { key: 'token_fingerprint', header: 'Token 指纹', type: 'text', width: 180 },
   { key: 'allow_ports', header: '端口范围', type: 'text', width: 116 },
+  { key: 'policyText', header: '授权', type: 'text', width: 200 },
+  { key: 'quotaText', header: '配额/限速', type: 'text', width: 190 },
   { key: 'source', header: '来源', type: 'text', width: 130 },
   { key: 'actions', header: '操作', type: 'actions', width: 100 },
 ]
@@ -209,6 +225,14 @@ function openCreate() {
   form.tenant = 'default'
   form.serverAddr = snapshot.value?.server_addr ?? ''
   form.allowPorts = ''
+  form.allowTypes = ''
+  form.allowDomains = ''
+  form.maxProxies = ''
+  form.rateLimit = ''
+  form.monthlyBytes = ''
+  form.maxConns = ''
+  form.connRate = ''
+  form.quotaAction = 'reject'
   dialogOpen.value = true
 }
 
@@ -225,6 +249,14 @@ function openRotate(client: ClientRow) {
   form.tenant = client.tenant
   form.serverAddr = snapshot.value?.server_addr ?? ''
   form.allowPorts = client.allow_ports ? `${client.allow_ports[0]}-${client.allow_ports[1]}` : ''
+  form.allowTypes = client.allow_types.join(',')
+  form.allowDomains = client.allow_domains.join(',')
+  form.maxProxies = client.max_proxies ? String(client.max_proxies) : ''
+  form.rateLimit = client.limits.rate_limit_bps ? String(client.limits.rate_limit_bps) : ''
+  form.monthlyBytes = client.limits.monthly_bytes ? String(client.limits.monthly_bytes) : ''
+  form.maxConns = client.limits.max_conns ? String(client.limits.max_conns) : ''
+  form.connRate = client.limits.conn_rate_per_s ? String(client.limits.conn_rate_per_s) : ''
+  form.quotaAction = client.limits.quota_action || 'reject'
   dialogOpen.value = true
 }
 
@@ -238,6 +270,31 @@ function onDialogOpenChange(value: boolean) {
   if (!value && saving.value) return
   dialogOpen.value = value
   if (!value) result.value = null
+}
+
+function splitList(value: string): string[] {
+  return value
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function formatLimits(limits: ClientLimits): string {
+  const parts: string[] = []
+  if (limits.rate_limit_bps) parts.push(`带宽 ${formatBytes(limits.rate_limit_bps)}/s`)
+  if (limits.monthly_bytes) parts.push(`月流量 ${formatBytes(limits.monthly_bytes)}`)
+  if (limits.max_conns) parts.push(`并发 ${limits.max_conns}`)
+  if (limits.conn_rate_per_s) parts.push(`新建 ${limits.conn_rate_per_s}/s`)
+  if (!parts.length) return '不限制'
+  parts.push(limits.quota_action === 'throttle' ? '超额降速' : '超额拒绝')
+  return parts.join(' · ')
+}
+
+function formatBytes(value: number): string {
+  if (value >= 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(1)} GiB`
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MiB`
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`
+  return `${value} B`
 }
 
 function parseAllowPorts(value: string): [number, number] | null | string {
@@ -265,6 +322,16 @@ async function submit() {
     const body: Record<string, unknown> = {
       allow_ports: allowPorts,
       server_addr: form.serverAddr.trim(),
+      allow_types: splitList(form.allowTypes),
+      allow_domains: splitList(form.allowDomains),
+      max_proxies: form.maxProxies.trim() ? Number(form.maxProxies) : null,
+      limits: {
+        rate_limit_bps: form.rateLimit.trim() ? Number(form.rateLimit) : null,
+        monthly_bytes: form.monthlyBytes.trim() ? Number(form.monthlyBytes) : null,
+        max_conns: form.maxConns.trim() ? Number(form.maxConns) : null,
+        conn_rate_per_s: form.connRate.trim() ? Number(form.connRate) : null,
+        quota_action: form.quotaAction || null,
+      },
     }
     if (dialogMode.value === 'create') {
       body.id = form.id.trim()
