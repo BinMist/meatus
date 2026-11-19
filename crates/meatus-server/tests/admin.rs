@@ -1056,3 +1056,216 @@ users = [
     let _ = task.await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn admin_api_tokens_are_scoped_revocable_and_not_echoed() {
+    let control_port = free_port();
+    let admin_port = free_port();
+    let dir = std::env::temp_dir().join(format!("meatus-admin-tokens-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+    let config_path = dir.join("server.toml");
+    let config_text = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{}"
+tls_key = "{}"
+
+[auth]
+clients = [{{ id = "client", tenant = "default", token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b" }}]
+
+[ports]
+range = [24400, 24410]
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+admin_token = "admin-secret"
+"#,
+        cert_path.display(),
+        key_path.display()
+    );
+    std::fs::write(&config_path, &config_text).expect("write config");
+    let config = parse_server_config(&config_text).expect("parse config");
+    let state = ServerState::new(config)
+        .expect("state")
+        .with_config_path(config_path.clone());
+    let cancel = CancellationToken::new();
+    let run_cancel = cancel.clone();
+    let task = tokio::spawn(async move { meatus_server::run_until(state, run_cancel).await });
+    sleep(Duration::from_millis(300)).await;
+
+    let (status, cookie, csrf, body) = login_as(admin_port, "admin-secret").await;
+    assert_eq!(status, 200, "{body}");
+
+    let create_body = json_body(r#"{"name":"ci-read","scopes":["status:read"]}"#);
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/api-tokens HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{create_body}\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let created: serde_json::Value = serde_json::from_str(&body).expect("create json");
+    let plaintext = created["token"]
+        .as_str()
+        .expect("plaintext token")
+        .to_string();
+    assert!(plaintext.starts_with("mtk_"), "{body}");
+    assert_eq!(
+        created["fingerprint"]
+            .as_str()
+            .map(|value| value.chars().count()),
+        Some(17)
+    );
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {plaintext}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/proxies HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {plaintext}\r\n{}\r\n",
+            json_body(r#"{"name":"read-token-proxy","client_id":"client","type":"tcp","local_addr":"127.0.0.1:9000","remote_port":24400}"#)
+        ),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("proxies:write"), "{body}");
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/api-tokens HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {plaintext}\r\n{}\r\n",
+            json_body(r#"{"name":"escalate","scopes":["proxies:write"]}"#)
+        ),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/api-tokens HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let listed: serde_json::Value = serde_json::from_str(&body).expect("list json");
+    assert_eq!(listed["tokens"][0]["name"], "ci-read");
+    assert!(listed["tokens"][0]["last_used_at_ms"].is_number(), "{body}");
+    assert!(!body.contains(&plaintext), "{body}");
+    assert!(body.contains("fingerprint"), "{body}");
+
+    let write_body = json_body(r#"{"name":"ci-write","scopes":["proxies:write"]}"#);
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/api-tokens HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{write_body}\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let write_token =
+        serde_json::from_str::<serde_json::Value>(&body).expect("write json")["token"]
+            .as_str()
+            .expect("write token")
+            .to_string();
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/proxies HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {write_token}\r\n{}\r\n",
+            json_body(r#"{"name":"write-token-proxy","client_id":"client","type":"tcp","local_addr":"127.0.0.1:9000","remote_port":24400}"#)
+        ),
+    )
+    .await;
+    assert_ne!(status, 403, "{body}");
+
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as i64
+        + 1_000;
+    let expire_body = json_body(&format!(
+        r#"{{"name":"ci-expire","scopes":["status:read"],"expires_at_ms":{expires_at}}} "#
+    ));
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "POST /api/v1/api-tokens HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\n{expire_body}\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let expire_token =
+        serde_json::from_str::<serde_json::Value>(&body).expect("expire json")["token"]
+            .as_str()
+            .expect("expire token")
+            .to_string();
+    sleep(Duration::from_millis(1_400)).await;
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {expire_token}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 401, "{body}");
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/audit HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(!body.contains(&plaintext), "{body}");
+    assert!(!body.contains(&write_token), "{body}");
+    assert!(!body.contains(&expire_token), "{body}");
+    assert!(body.contains("api_token.create"), "{body}");
+
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "DELETE /api/v1/api-tokens/ci-read HTTP/1.1\r\nHost: localhost\r\nCookie: {cookie}\r\nX-Meatus-CSRF: {csrf}\r\nContent-Length: 0\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let (status, _, body) = request(
+        admin_port,
+        &format!(
+            "GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {plaintext}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(status, 401, "{body}");
+
+    let config_after = std::fs::read_to_string(&config_path).expect("read config");
+    assert!(!config_after.contains(&plaintext), "{config_after}");
+    assert!(
+        !config_after.contains("admin-secret") || config_after.contains("admin_token"),
+        "{config_after}"
+    );
+    assert!(config_after.contains("ci-write"), "{config_after}");
+    assert!(!config_after.contains("ci-read"), "{config_after}");
+
+    cancel.cancel();
+    let _ = task.await;
+    let _ = std::fs::remove_dir_all(dir);
+}

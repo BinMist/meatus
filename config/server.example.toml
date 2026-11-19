@@ -82,6 +82,16 @@ panel = true # false 时面板静态资源返回 404
 # name = "auditor"
 # role = "auditor"
 # token_sha256 = "REPLACE_WITH_64_HEX_SHA256"
+#
+# V1.3 API Token：仅存 SHA256；明文只在创建响应返回一次，过期或吊销后立即 401
+# scopes 可选 status:read / proxies:write / certs:read / audit:read
+# 建议通过面板“API Token”页或 POST /api/v1/api-tokens 创建，不要手写 token_sha256
+# [[admin.api_tokens]]
+# name = "ci-deploy"
+# token_sha256 = "REPLACE_WITH_64_HEX_SHA256"
+# scopes = ["status:read", "proxies:write"]
+# created_at_ms = 1760000000000
+# expires_at_ms = 1790000000000
 # 仅当管理面在可信反向代理之后时开启；默认不信任 X-Forwarded-Proto
 trust_forwarded_proto = false
 

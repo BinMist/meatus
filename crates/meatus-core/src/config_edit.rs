@@ -10,8 +10,8 @@ use serde_yaml::{Mapping, Number, Sequence, Value as YamlValue};
 use toml_edit::{Array, ArrayOfTables, Document, InlineTable, Item, Table, Value, value};
 
 use crate::config::{
-    ClientConfig, ClientEntry, ClientLimits, ConfigFormat, ProxySpec, ProxyType, QuotaAction,
-    ServerConfig,
+    AdminApiToken, ClientConfig, ClientEntry, ClientLimits, ConfigFormat, ProxySpec, ProxyType,
+    QuotaAction, ServerConfig,
 };
 
 /// 写回客户端 proxy：同名替换，不存在则追加。
@@ -86,6 +86,103 @@ fn remove_client_proxy_toml(path: &Path, name: &str) -> Result<(), String> {
 /// 将 server 的可编辑字段写回 TOML / YAML；成功时返回备份文件路径。
 ///
 /// TOML 保留注释与键顺序；YAML 规范化重写。
+pub fn set_admin_api_tokens(
+    path: &Path,
+    tokens: &[AdminApiToken],
+) -> Result<Option<PathBuf>, String> {
+    if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
+        return set_admin_api_tokens_yaml(path, tokens);
+    }
+    set_admin_api_tokens_toml(path, tokens)
+}
+
+fn set_admin_api_tokens_toml(
+    path: &Path,
+    tokens: &[AdminApiToken],
+) -> Result<Option<PathBuf>, String> {
+    let raw = read_config(path)?;
+    let mut document = raw
+        .parse::<Document>()
+        .map_err(|err| format!("parse server config: {err}"))?;
+    let root = document.as_table_mut();
+    if !root.contains_key("admin") {
+        root.insert("admin", Item::Table(Table::new()));
+    }
+    let admin = root
+        .get_mut("admin")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| "admin must be a table".to_string())?;
+    if tokens.is_empty() {
+        admin.remove("api_tokens");
+    } else {
+        let mut array = ArrayOfTables::new();
+        for token in tokens {
+            let mut table = Table::new();
+            table["name"] = value(token.name.as_str());
+            table["token_sha256"] = value(token.token_sha256.as_str());
+            let mut scopes = Array::new();
+            for scope in &token.scopes {
+                scopes.push(Value::from(scope.as_str()));
+            }
+            table["scopes"] = Item::Value(Value::Array(scopes));
+            if let Some(created) = token.created_at_ms {
+                table["created_at_ms"] = value(created);
+            }
+            if let Some(expires) = token.expires_at_ms {
+                table["expires_at_ms"] = value(expires);
+            }
+            array.push(table);
+        }
+        admin.insert("api_tokens", Item::ArrayOfTables(array));
+    }
+    validate_server_text(&document.to_string())?;
+    backup_and_write(path, &document.to_string())
+}
+
+fn set_admin_api_tokens_yaml(
+    path: &Path,
+    tokens: &[AdminApiToken],
+) -> Result<Option<PathBuf>, String> {
+    let mut root = read_yaml_config(path, "server")?;
+    let admin = yaml_map_mut(&mut root, "admin")?;
+    if tokens.is_empty() {
+        admin.remove(yaml_key("api_tokens"));
+    } else {
+        let mut sequence = Sequence::new();
+        for token in tokens {
+            let mut entry = Mapping::new();
+            entry.insert(yaml_key("name"), YamlValue::String(token.name.clone()));
+            entry.insert(
+                yaml_key("token_sha256"),
+                YamlValue::String(token.token_sha256.clone()),
+            );
+            let mut scopes = Sequence::new();
+            for scope in &token.scopes {
+                scopes.push(YamlValue::String(scope.as_str().to_string()));
+            }
+            entry.insert(yaml_key("scopes"), YamlValue::Sequence(scopes));
+            if let Some(created) = token.created_at_ms {
+                entry.insert(
+                    yaml_key("created_at_ms"),
+                    YamlValue::Number(Number::from(created)),
+                );
+            }
+            if let Some(expires) = token.expires_at_ms {
+                entry.insert(
+                    yaml_key("expires_at_ms"),
+                    YamlValue::Number(Number::from(expires)),
+                );
+            }
+            sequence.push(YamlValue::Mapping(entry));
+        }
+        admin.insert(yaml_key("api_tokens"), YamlValue::Sequence(sequence));
+    }
+    let text =
+        serde_yaml::to_string(&root).map_err(|err| format!("serialize server YAML: {err}"))?;
+    validate_server_yaml_text(&text)?;
+    backup_and_write(path, &text)
+}
+
 pub fn write_server_config(path: &Path, next: &ServerConfig) -> Result<Option<PathBuf>, String> {
     if ConfigFormat::from_path(path) == ConfigFormat::Yaml {
         return write_server_config_yaml(path, next);
@@ -1136,6 +1233,7 @@ proxy:
 #[cfg(test)]
 mod server_tests {
     use super::*;
+    use crate::ApiTokenScope;
 
     #[test]
     fn server_write_preserves_comments_and_updates_editable_fields() {
@@ -1158,6 +1256,100 @@ mod server_tests {
         let parsed: ServerConfig = toml::from_str(&raw).expect("parse result");
         assert_eq!(parsed.log.level, "warn");
         assert_eq!(parsed.log.format, crate::config::LogFormat::Json);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn admin_api_tokens_are_rewritten_and_removed() {
+        let path = std::env::temp_dir().join(format!(
+            "meatus-server-api-tokens-{}.toml",
+            std::process::id()
+        ));
+        let original = r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = 7000
+
+[auth]
+clients = [{ id = "client", tenant = "default", token_sha256 = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b" }]
+
+[ports]
+range = [20000, 20010]
+
+[admin]
+bind = "127.0.0.1:7400"
+admin_token = "legacy" # keep this comment
+"#;
+        fs::write(&path, original).expect("write original");
+        let tokens = vec![AdminApiToken {
+            name: "ci".to_string(),
+            token_sha256: "a".repeat(64),
+            scopes: vec![ApiTokenScope::StatusRead, ApiTokenScope::ProxiesWrite],
+            created_at_ms: Some(1_760_000_000_000),
+            expires_at_ms: None,
+        }];
+        set_admin_api_tokens(&path, &tokens).expect("write tokens");
+        let raw = fs::read_to_string(&path).expect("read");
+        assert!(raw.contains("# keep this comment"), "{raw}");
+        assert!(raw.contains("[[admin.api_tokens]]"), "{raw}");
+        assert!(
+            raw.contains("scopes = [\"status:read\", \"proxies:write\"]"),
+            "{raw}"
+        );
+        let parsed: ServerConfig = toml::from_str(&raw).expect("parse tokens");
+        assert_eq!(parsed.admin.api_tokens.len(), 1);
+        assert_eq!(parsed.admin.api_tokens[0].name, "ci");
+
+        set_admin_api_tokens(&path, &[]).expect("remove tokens");
+        let raw = fs::read_to_string(&path).expect("read");
+        assert!(!raw.contains("[[admin.api_tokens]]"), "{raw}");
+        let parsed: ServerConfig = toml::from_str(&raw).expect("parse removed");
+        assert!(parsed.admin.api_tokens.is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn admin_api_tokens_are_rewritten_in_yaml() {
+        let path = std::env::temp_dir().join(format!(
+            "meatus-server-api-tokens-{}.yaml",
+            std::process::id()
+        ));
+        let original = r#"
+server:
+  bind_addr: "127.0.0.1"
+  control_port: 7000
+
+auth:
+  clients:
+    - id: "client"
+      tenant: "default"
+      token_sha256: "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b"
+
+ports:
+  range: [20000, 20010]
+
+admin:
+  bind: "127.0.0.1:7400"
+  admin_token: "legacy"
+"#;
+        fs::write(&path, original).expect("write original");
+        let tokens = vec![AdminApiToken {
+            name: "ci".to_string(),
+            token_sha256: "b".repeat(64),
+            scopes: vec![ApiTokenScope::AuditRead],
+            created_at_ms: None,
+            expires_at_ms: Some(1_790_000_000_000),
+        }];
+        set_admin_api_tokens(&path, &tokens).expect("write tokens");
+        let raw = fs::read_to_string(&path).expect("read");
+        assert!(raw.contains("api_tokens:"), "{raw}");
+        assert!(raw.contains("audit:read"), "{raw}");
+        let parsed: ServerConfig = serde_yaml::from_str(&raw).expect("parse tokens");
+        assert_eq!(parsed.admin.api_tokens.len(), 1);
+        assert_eq!(
+            parsed.admin.api_tokens[0].expires_at_ms,
+            Some(1_790_000_000_000)
+        );
         let _ = fs::remove_file(path);
     }
 

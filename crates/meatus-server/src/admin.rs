@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use meatus_core::{
-    AuthMode, ClientEntry, ConfigFormat, LogFormat, PortReleasePolicy, ServerConfig,
-    config::AdminRole,
+    AdminApiToken, ApiTokenScope, AuthMode, ClientEntry, ConfigFormat, LogFormat,
+    PortReleasePolicy, ServerConfig, config::AdminRole,
 };
 use meatus_proto::v1::{NewProxy, ProxyOptions, ProxyType};
 use rust_embed::RustEmbed;
@@ -70,6 +70,7 @@ pub struct AdminState {
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     failures: Arc<Mutex<HashMap<IpAddr, LoginFailure>>>,
     probes: Arc<Mutex<HashMap<String, Instant>>>,
+    api_token_usage: Arc<Mutex<HashMap<String, i64>>>,
 }
 
 impl AdminState {
@@ -110,6 +111,7 @@ impl AdminState {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             failures: Arc::new(Mutex::new(HashMap::new())),
             probes: Arc::new(Mutex::new(HashMap::new())),
+            api_token_usage: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -165,6 +167,7 @@ struct Session {
 struct AdminAccess {
     legacy_owner: Option<Arc<str>>,
     users: Vec<AdminAccessUser>,
+    api_tokens: Vec<AdminAccessToken>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,10 +178,29 @@ struct AdminAccessUser {
     token_sha256: Option<Arc<str>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdminAccessToken {
+    name: Arc<str>,
+    token_sha256: Arc<str>,
+    scopes: Arc<[ApiTokenScope]>,
+    expires_at_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 struct AuthContext {
     user: Arc<str>,
     role: AdminRole,
+    scopes: Option<Arc<[ApiTokenScope]>>,
+}
+
+impl AuthContext {
+    fn role_label(&self) -> &'static str {
+        if self.scopes.is_some() {
+            "api-token"
+        } else {
+            self.role.as_str()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +218,8 @@ enum Permission {
     ConfigBackup,
     ConfigReload,
     ConfigRestore,
+    ApiTokensRead,
+    ApiTokensWrite,
 }
 
 impl Permission {
@@ -214,8 +238,28 @@ impl Permission {
             Self::ConfigBackup => "config:backup",
             Self::ConfigReload => "config:reload",
             Self::ConfigRestore => "config:restore",
+            Self::ApiTokensRead => "api_tokens:read",
+            Self::ApiTokensWrite => "api_tokens:write",
         }
     }
+}
+
+fn scope_allows(scope: ApiTokenScope, permission: Permission) -> bool {
+    match scope {
+        ApiTokenScope::StatusRead => permission == Permission::StatusRead,
+        ApiTokenScope::ProxiesWrite => {
+            matches!(permission, Permission::ProxiesWrite | Permission::Probe)
+        }
+        ApiTokenScope::CertsRead => permission == Permission::CertificatesRead,
+        ApiTokenScope::AuditRead => permission == Permission::AuditRead,
+    }
+}
+
+fn context_allows(context: &AuthContext, permission: Permission) -> bool {
+    context.scopes.as_ref().map_or_else(
+        || role_allows(context.role, permission),
+        |scopes| scopes.iter().any(|scope| scope_allows(*scope, permission)),
+    )
 }
 
 fn role_allows(role: AdminRole, permission: Permission) -> bool {
@@ -253,6 +297,17 @@ impl AdminAccess {
                 .as_deref()
                 .filter(|token| !token.trim().is_empty())
                 .map(Arc::<str>::from),
+            api_tokens: config
+                .admin
+                .api_tokens
+                .iter()
+                .map(|token| AdminAccessToken {
+                    name: Arc::from(token.name.trim()),
+                    token_sha256: Arc::from(token.token_sha256.trim().to_ascii_lowercase()),
+                    scopes: Arc::from(token.scopes.clone()),
+                    expires_at_ms: token.expires_at_ms,
+                })
+                .collect(),
             users: config
                 .admin
                 .users
@@ -269,14 +324,14 @@ impl AdminAccess {
                         .token_sha256
                         .as_deref()
                         .filter(|hash| !hash.trim().is_empty())
-                        .map(Arc::<str>::from),
+                        .map(|hash| Arc::<str>::from(hash.trim().to_ascii_lowercase())),
                 })
                 .collect(),
         }
     }
 
     fn configured(&self) -> bool {
-        self.legacy_owner.is_some() || !self.users.is_empty()
+        self.legacy_owner.is_some() || !self.users.is_empty() || !self.api_tokens.is_empty()
     }
 
     fn authenticate(&self, candidate: &str) -> Option<(Arc<str>, AdminRole)> {
@@ -302,6 +357,16 @@ impl AdminAccess {
         })
     }
 
+    fn authenticate_api_token(&self, candidate: &str) -> Option<(Arc<str>, Arc<[ApiTokenScope]>)> {
+        let digest = hex::encode(meatus_core::token_key(candidate));
+        let now = now_millis();
+        self.api_tokens.iter().find_map(|token| {
+            let matches = constant_time_eq(digest.as_bytes(), token.token_sha256.as_bytes());
+            let active = token.expires_at_ms.is_none_or(|expires| expires > now);
+            (matches && active).then(|| (Arc::clone(&token.name), Arc::clone(&token.scopes)))
+        })
+    }
+
     fn role_for(&self, user: &str) -> Option<AdminRole> {
         if user == "admin" && self.legacy_owner.is_some() {
             return Some(AdminRole::Owner);
@@ -321,6 +386,11 @@ impl AdminAccess {
             self.users
                 .iter()
                 .map(|user| format!("{}={}", user.name, user.role.as_str())),
+        );
+        parts.extend(
+            self.api_tokens
+                .iter()
+                .map(|token| format!("token:{}={}", token.name, token.scopes.len())),
         );
         parts.join(", ")
     }
@@ -634,6 +704,13 @@ fn csrf_matches(head: &str, session: &Session) -> bool {
         .is_some_and(|value| constant_time_eq(value.as_bytes(), session.csrf.as_bytes()))
 }
 
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
+}
+
 fn is_api(path: &str) -> bool {
     path.starts_with("/api/")
 }
@@ -641,6 +718,12 @@ fn is_api(path: &str) -> bool {
 fn permission_for_request(request: &HttpRequest) -> Option<Permission> {
     let method = request.method.as_str();
     let path = request.path.as_str();
+    if let Some(name) = path.strip_prefix("/api/v1/api-tokens/")
+        && !name.is_empty()
+        && !name.contains('/')
+    {
+        return (method == "DELETE").then_some(Permission::ApiTokensWrite);
+    }
     if let Some(rest) = path.strip_prefix("/api/v1/clients/")
         && !rest.is_empty()
         && !rest.contains('/')
@@ -670,6 +753,8 @@ fn permission_for_request(request: &HttpRequest) -> Option<Permission> {
         ("GET", "/api/v1/logs") => Permission::LogsRead,
         ("GET", "/api/v1/certificates") => Permission::CertificatesRead,
         ("GET", "/api/v1/audit") => Permission::AuditRead,
+        ("GET", "/api/v1/api-tokens") => Permission::ApiTokensRead,
+        ("POST", "/api/v1/api-tokens") => Permission::ApiTokensWrite,
         ("GET", "/api/v1/config/backup") => Permission::ConfigBackup,
         ("POST", "/api/v1/config/reload") => Permission::ConfigReload,
         ("POST", "/api/v1/config/restore") => Permission::ConfigRestore,
@@ -703,7 +788,7 @@ async fn route_inner(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState)
         let Some(context) = auth_context(request, state) else {
             return HttpResponse::json(401, json!({"error": "unauthorized"}));
         };
-        if !role_allows(context.role, permission) {
+        if !context_allows(&context, permission) {
             if audit_spec(request).is_none() {
                 state.audit.record(
                     crate::audit::AuditEvent::new("rbac.denied", permission.label())
@@ -717,11 +802,27 @@ async fn route_inner(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState)
                 json!({
                     "error": "forbidden",
                     "permission": permission.label(),
-                    "role": context.role.as_str(),
+                    "role": context.role_label(),
                     "user": context.user.as_ref(),
                 }),
             );
         }
+    }
+    if let Some(name) = request.path.strip_prefix("/api/v1/api-tokens/")
+        && !name.is_empty()
+        && !name.contains('/')
+    {
+        return match request.method.as_str() {
+            "DELETE" => api_token_delete(request, name, state),
+            _ => HttpResponse::json(404, json!({"error": "not found"})),
+        };
+    }
+    if request.path == "/api/v1/api-tokens" {
+        return match request.method.as_str() {
+            "GET" => api_tokens_list(state),
+            "POST" => api_token_create(request, state),
+            _ => HttpResponse::json(405, json!({"error": "method not allowed"})),
+        };
     }
     if let Some(id) = request.path.strip_prefix("/api/v1/clients/") {
         return clients_item(request, state, id).await;
@@ -837,6 +938,13 @@ async fn route_inner(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState)
 
 fn audit_spec(request: &HttpRequest) -> Option<(&'static str, String, Option<String>)> {
     let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
+    if let Some(name) = request.path.strip_prefix("/api/v1/api-tokens/")
+        && !name.is_empty()
+        && !name.contains('/')
+    {
+        return (request.method == "DELETE").then(|| ("api_token.revoke", name.to_string(), None));
+    }
+
     let body_str = |key: &str| {
         body.get(key)
             .and_then(Value::as_str)
@@ -881,9 +989,195 @@ fn audit_spec(request: &HttpRequest) -> Option<(&'static str, String, Option<Str
         ("PUT", "/api/v1/settings") => ("settings.update", "settings".to_string(), None),
         ("POST", "/api/v1/config/reload") => ("config.reload", "config".to_string(), None),
         ("POST", "/api/v1/config/restore") => ("config.restore", "config".to_string(), None),
+        ("POST", "/api/v1/api-tokens") => {
+            let name = body_str("name").unwrap_or_else(|| "token".to_string());
+            ("api_token.create", name, None)
+        }
         _ => return None,
     };
     Some(action)
+}
+
+fn api_tokens_list(state: &AdminState) -> HttpResponse {
+    let config = state.current_config();
+    let usage = state
+        .api_token_usage
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tokens = config
+        .admin
+        .api_tokens
+        .iter()
+        .map(|token| {
+            json!({
+                "name": token.name,
+                "scopes": token.scopes.iter().map(|scope| scope.as_str()).collect::<Vec<_>>(),
+                "created_at_ms": token.created_at_ms,
+                "expires_at_ms": token.expires_at_ms,
+                "expired": token.expires_at_ms.is_some_and(|expires| expires <= now_millis()),
+                "fingerprint": fingerprint(&token.token_sha256),
+                "last_used_at_ms": usage.get(&token.name).copied(),
+            })
+        })
+        .collect::<Vec<_>>();
+    HttpResponse::json(200, json!({"tokens": tokens}))
+}
+
+fn api_token_create(request: &HttpRequest, state: &AdminState) -> HttpResponse {
+    if let Err(response) = write_allowed(request, state) {
+        return response;
+    }
+    let Some(path) = state.config_path.as_deref() else {
+        return HttpResponse::json(
+            409,
+            json!({"error": "server was started without a config path; api tokens are disabled"}),
+        );
+    };
+    let body = match serde_json::from_slice::<Value>(&request.body) {
+        Ok(body) => body,
+        Err(error) => {
+            return HttpResponse::json(400, json!({"error": format!("invalid json: {error}")}));
+        }
+    };
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !valid_api_token_name(name) {
+        return HttpResponse::json(
+            400,
+            json!({"error": "name must be 1-64 chars of ascii alphanumeric, '-', '_' or '.'"}),
+        );
+    }
+    let mut scopes = Vec::new();
+    if let Some(values) = body.get("scopes").and_then(Value::as_array) {
+        for value in values {
+            let Some(scope) = value.as_str().and_then(parse_api_scope) else {
+                return HttpResponse::json(
+                    400,
+                    json!({"error": "scopes must use status:read, proxies:write, certs:read or audit:read"}),
+                );
+            };
+            if !scopes.contains(&scope) {
+                scopes.push(scope);
+            }
+        }
+    }
+    if scopes.is_empty() {
+        return HttpResponse::json(400, json!({"error": "at least one scope is required"}));
+    }
+    let expires_at_ms = match body.get("expires_at_ms") {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_i64() {
+            Some(expires) if expires > now_millis() => Some(expires),
+            _ => {
+                return HttpResponse::json(
+                    400,
+                    json!({"error": "expires_at_ms must be a future epoch millisecond value"}),
+                );
+            }
+        },
+    };
+    let current = state.current_config();
+    if current
+        .admin
+        .api_tokens
+        .iter()
+        .any(|token| token.name == name)
+    {
+        return HttpResponse::json(409, json!({"error": "api token name already exists"}));
+    }
+    let mut bytes = [0u8; 32];
+    if let Err(error) = getrandom::fill(&mut bytes) {
+        return HttpResponse::json(
+            500,
+            json!({"error": format!("generate api token: {error}")}),
+        );
+    }
+    let plaintext = format!("mtk_{}", hex::encode(bytes));
+    let created_at_ms = now_millis();
+    let record = AdminApiToken {
+        name: name.to_string(),
+        token_sha256: hex::encode(meatus_core::token_key(&plaintext)),
+        scopes: scopes.clone(),
+        created_at_ms: Some(created_at_ms),
+        expires_at_ms,
+    };
+    let mut next = (*current).clone();
+    next.admin.api_tokens.push(record.clone());
+    if let Err(error) = meatus_core::set_admin_api_tokens(path, &next.admin.api_tokens) {
+        return HttpResponse::json(400, json!({"error": error}));
+    }
+    if let Err(response) = reload_config(state) {
+        return response;
+    }
+    HttpResponse::json(
+        200,
+        json!({
+            "ok": true,
+            "token": plaintext,
+            "name": record.name,
+            "token_sha256": record.token_sha256,
+            "fingerprint": fingerprint(&record.token_sha256),
+            "scopes": record.scopes.iter().map(|scope| scope.as_str()).collect::<Vec<_>>(),
+            "created_at_ms": record.created_at_ms,
+            "expires_at_ms": record.expires_at_ms,
+        }),
+    )
+}
+
+fn api_token_delete(request: &HttpRequest, name: &str, state: &AdminState) -> HttpResponse {
+    if let Err(response) = write_allowed(request, state) {
+        return response;
+    }
+    let Some(path) = state.config_path.as_deref() else {
+        return HttpResponse::json(
+            409,
+            json!({"error": "server was started without a config path; api tokens are disabled"}),
+        );
+    };
+    let current = state.current_config();
+    let Some(index) = current
+        .admin
+        .api_tokens
+        .iter()
+        .position(|token| token.name == name)
+    else {
+        return HttpResponse::json(404, json!({"error": "api token not found"}));
+    };
+    let mut next = (*current).clone();
+    next.admin.api_tokens.remove(index);
+    if let Err(error) = meatus_core::set_admin_api_tokens(path, &next.admin.api_tokens) {
+        return HttpResponse::json(400, json!({"error": error}));
+    }
+    if let Err(response) = reload_config(state) {
+        return response;
+    }
+    state
+        .api_token_usage
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(name);
+    HttpResponse::json(200, json!({"ok": true, "name": name}))
+}
+
+fn valid_api_token_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn parse_api_scope(value: &str) -> Option<ApiTokenScope> {
+    match value {
+        "status:read" => Some(ApiTokenScope::StatusRead),
+        "proxies:write" => Some(ApiTokenScope::ProxiesWrite),
+        "certs:read" => Some(ApiTokenScope::CertsRead),
+        "audit:read" => Some(ApiTokenScope::AuditRead),
+        _ => None,
+    }
 }
 
 fn config_backup(request: &HttpRequest, state: &AdminState) -> HttpResponse {
@@ -940,6 +1234,12 @@ fn config_restore(request: &HttpRequest, state: &AdminState) -> HttpResponse {
         admin_token: current.admin.admin_token.clone(),
         dns_api_token: current.acme.dns_api_token.clone(),
         client_token: None,
+        admin_user_tokens: current
+            .admin
+            .users
+            .iter()
+            .filter_map(|user| user.token.clone().map(|token| (user.name.clone(), token)))
+            .collect(),
     };
     let outcome = match meatus_core::backup::restore_backup(&backup, path, &secrets) {
         Ok(outcome) => outcome,
@@ -2389,17 +2689,37 @@ fn auth_context(request: &HttpRequest, state: &AdminState) -> Option<AuthContext
         return Some(AuthContext {
             user: Arc::from("loopback"),
             role: AdminRole::Owner,
+            scopes: None,
         });
     }
     if let Some(candidate) = bearer_value(&request.headers) {
-        return access
-            .authenticate(&candidate)
-            .map(|(user, role)| AuthContext { user, role });
+        if let Some((user, role)) = access.authenticate(&candidate) {
+            return Some(AuthContext {
+                user,
+                role,
+                scopes: None,
+            });
+        }
+        if let Some((name, scopes)) = access.authenticate_api_token(&candidate) {
+            drop(access);
+            state
+                .api_token_usage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string(), now_millis());
+            return Some(AuthContext {
+                user: name,
+                role: AdminRole::Owner,
+                scopes: Some(scopes),
+            });
+        }
+        return None;
     }
     let session = valid_session(request, state)?;
     access.role_for(&session.user).map(|role| AuthContext {
         user: session.user,
         role,
+        scopes: None,
     })
 }
 

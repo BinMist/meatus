@@ -496,6 +496,9 @@ pub struct AdminSection {
     /// 本地用户与角色；旧 `admin_token` 仍映射为 owner。
     #[serde(default)]
     pub users: Vec<AdminUser>,
+    /// 自动化 API Token；只存 SHA256，按 scope 授权。
+    #[serde(default)]
+    pub api_tokens: Vec<AdminApiToken>,
     #[serde(default)]
     pub tls: AdminTlsSection,
     /// 仅当管理面位于可信反向代理之后时开启；默认不信任转发头。
@@ -533,6 +536,43 @@ pub struct AdminUser {
     pub token: Option<String>,
     #[serde(default)]
     pub token_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+pub enum ApiTokenScope {
+    #[serde(rename = "status:read")]
+    StatusRead,
+    #[serde(rename = "proxies:write")]
+    ProxiesWrite,
+    #[serde(rename = "certs:read")]
+    CertsRead,
+    #[serde(rename = "audit:read")]
+    AuditRead,
+}
+
+impl ApiTokenScope {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StatusRead => "status:read",
+            Self::ProxiesWrite => "proxies:write",
+            Self::CertsRead => "certs:read",
+            Self::AuditRead => "audit:read",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminApiToken {
+    pub name: String,
+    pub token_sha256: String,
+    #[serde(default)]
+    pub scopes: Vec<ApiTokenScope>,
+    #[serde(default)]
+    pub created_at_ms: Option<i64>,
+    #[serde(default)]
+    pub expires_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -576,6 +616,7 @@ impl Default for AdminSection {
             panel: default_panel(),
             admin_token: None,
             users: Vec::new(),
+            api_tokens: Vec::new(),
             tls: AdminTlsSection::default(),
             trust_forwarded_proto: false,
         }
@@ -710,9 +751,10 @@ impl ServerConfig {
         if !is_loopback_bind(&self.admin.bind)
             && self.admin.admin_token.is_none()
             && self.admin.users.is_empty()
+            && self.admin.api_tokens.is_empty()
         {
             return Err(invalid(
-                "admin.bind is not loopback; admin_token or admin.users is required in that case",
+                "admin.bind is not loopback; admin_token, admin.users or admin.api_tokens is required in that case",
             ));
         }
         let mut names = std::collections::BTreeSet::new();
@@ -742,6 +784,45 @@ impl ServerConfig {
             {
                 return Err(invalid(format!(
                     "admin user {name} token_sha256 must be 64 hex characters"
+                )));
+            }
+        }
+        let mut api_names = std::collections::BTreeSet::new();
+        for token in &self.admin.api_tokens {
+            let name = token.name.trim();
+            if name.is_empty() {
+                return Err(invalid("admin.api_tokens name must not be empty"));
+            }
+            if !api_names.insert(name.to_string()) {
+                return Err(invalid(format!("duplicate admin api token name: {name}")));
+            }
+            if token.token_sha256.len() != 64
+                || !token
+                    .token_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(invalid(format!(
+                    "admin api token {name} token_sha256 must be 64 hex characters"
+                )));
+            }
+            if token.scopes.is_empty() {
+                return Err(invalid(format!(
+                    "admin api token {name} requires at least one scope"
+                )));
+            }
+            let mut scopes = std::collections::BTreeSet::new();
+            for scope in &token.scopes {
+                if !scopes.insert(*scope) {
+                    return Err(invalid(format!(
+                        "admin api token {name} has duplicate scope {}",
+                        scope.as_str()
+                    )));
+                }
+            }
+            if token.expires_at_ms.is_some_and(|value| value < 0) {
+                return Err(invalid(format!(
+                    "admin api token {name} expires_at_ms must not be negative"
                 )));
             }
         }

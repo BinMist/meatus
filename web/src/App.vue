@@ -70,6 +70,7 @@ const allNavGroups: NavGroup[] = [
       { id: '/clients', label: '客户端', icon: 'users' },
       { id: '/certificates', label: '证书状态', icon: 'shield-check' },
       { id: '/audit', label: '审计日志', icon: 'history' },
+      { id: '/api-tokens', label: 'API Token', icon: 'shield-check' },
       { id: '/logs', label: '实时日志', icon: 'terminal' },
       { id: '/settings', label: '系统设置', icon: 'settings' },
     ],

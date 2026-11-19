@@ -30,6 +30,7 @@
 | 审计日志 | 登录、配置 / 客户端 / proxy 变更、客户端上下线写入 JSONL；面板“审计日志”可按时间、操作者、client、动作、结果查询最近 90 天 |
 | 配置备份与恢复 | `meatus config backup/restore` 导出脱敏备份、校验版本与校验和；面板支持下载与上传恢复 |
 | 多用户 RBAC | `[admin].users[]` 配置 owner / operator / viewer / auditor 四角色；管理 API 按角色校验，越权 `403` 并写审计；旧 `admin_token` 继续映射 `admin/owner` |
+| API Token | `[[admin.api_tokens]]` 为 CI / 脚本签发带 Scope 的凭证；服务端只存 SHA-256，明文只在创建时返回一次，过期与吊销立即 `401` |
 
 ### V1.2 带来的变化
 
@@ -973,6 +974,34 @@ token_sha256 = "<64 hex>"            # 也可只存 SHA256
 * 角色变更需修改配置文件后执行 `POST /api/v1/config/reload`；服务端热更新权限并写入 `admin.roles` 审计，已登录会话按新角色立即生效。
 
 * 面板按角色隐藏导航：`operator` / `viewer` 不显示系统设置与审计，`auditor` 只显示审计日志；顶栏显示当前用户名与角色。
+
+V1.3 API Token：
+
+```toml
+[[admin.api_tokens]]
+name = "ci-deploy"
+token_sha256 = "<64 hex>"            # 只存 SHA-256，不存明文
+scopes = ["status:read", "proxies:write"]
+created_at_ms = 1760000000000
+expires_at_ms = 1790000000000       # 可选；省略表示长期有效
+```
+
+| Scope | 可访问 |
+| --- | --- |
+| `status:read` | `GET /api/v1/status` 与总览指标 |
+| `proxies:write` | proxy 创建 / 修改 / 删除与探测 |
+| `certs:read` | 证书状态 |
+| `audit:read` | 审计查询 |
+
+* 推荐用面板“API Token”页或 `POST /api/v1/api-tokens` 创建；明文以 `mtk_` 开头，**只在创建响应出现一次**，关闭后只能重新创建。
+
+* 管理 API：`GET /api/v1/api-tokens`、`POST /api/v1/api-tokens`、`DELETE /api/v1/api-tokens/{name}`；仅 `owner` 可调用，API Token 自身没有管理 Token 的 Scope。
+
+* 使用方式：`Authorization: Bearer mtk_...`。Token 过期或被吊销后立即返回 `401`；吊销与创建写入 `api_token.create` / `api_token.revoke` 审计，不记录明文。
+
+* 面板列表显示名称、Scope、SHA-256 指纹、创建 / 到期时间与最后使用时间；最后使用时间为内存统计，服务重启后清空。
+
+* 备份会保留 `token_sha256` 与 Scope，不保留明文，因此恢复后 Token 仍可继续使用。
 
 #### `[log]`
 
