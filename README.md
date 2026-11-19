@@ -15,23 +15,17 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，精确域名由 server 用 HTTP-01 自动签发、TLS 终止并缓存/续期，泛域名走 DNS-01（支持 Cloudflare / DNSPod）
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **状态**：当前版本 `1.2.0`，源码与 ACR 多架构镜像（`1.2.0` / `1.2` / `latest`）已发布；Gitee Release 见 <https://gitee.com/binsail/meatus/releases/tag/v1.2.0>。`1.1.1` 不单独发布，其 YAML 写回与面板修正并入 `1.2.0`。发布形态为 macOS aarch64、Linux x86_64 musl 静态包 + 阿里云 ACR 多架构镜像（ACR 当前为私有，需先 `docker login`）；GHCR 与 GitHub Release 暂缓。V1.1 已通过 88 passed / 1 ignored、fmt / clippy、fuzz 120s × 2、30min soak、20% 丢包 30min 回归；24h soak 待补最终记录。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **版本状态**：已发布 `1.2.1`（2026-11-19）。发布形态为 Linux x86_64 / arm64 musl、macOS aarch64 / x86_64 静态包 + 阿里云 ACR 多架构镜像（`1.2.1` / `1.2` / `latest`，ACR 为私有仓库，拉取前需 `docker login`）。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
-## V1.2 主要更新
+## 当前版本摘要
 
-- **客户端与令牌管理**：管理面板新增「客户端」页，可创建、轮换、删除 `auth.clients` token；明文 token 只在创建/轮换响应中出现一次，服务端只落 `token_sha256`，并直接给出 TOML / YAML 客户端配置片段。
-- **新接入引导**：首次创建时自动把 `auth.token_sha256` 简写迁移为 `auth.clients`；TOML 内联 `clients = [{...}]` 会规范化为 `[[auth.clients]]`。写回后备份、原子替换，约 1 秒后重启。
-- **SOCKS5 域名目标**：`ATYP=3` 域名不再直接拒绝；`options.allow_domains` 支持精确域名与 `*.example.com`。域名由 client 解析一次，经 `allow_cidrs` 过滤后固定第一个允许 IP，规避 DNS rebinding。
-- **可观测性**：客户端列表显示在线状态、proxy 数量、token 指纹、端口范围；SOCKS5 proxy 状态与 API 回显 `allow_domains`。
+`1.2.1`：
 
-## V1.1 主要更新
+- **代理连通性诊断**：面板可对单个 proxy 发起本地服务探测，覆盖 TCP / HTTP / HTTPS / UDP，返回可达性、延迟与错误码。
+- **ACME DNS-01 泛域名**：支持 Cloudflare 与腾讯云 DNSPod，可签发 `*.example.com`，到期前自动续期，失败保留旧证书。
+- **镜像健康检查**：Docker 镜像内置 `HEALTHCHECK`，默认探测 `/healthz`，无需部署时手工补 `--health-cmd`。
 
-- **管理面独立 TLS**：`[admin.tls]` 支持 `enabled` / `cert` / `key` / `hsts`，不复用隧道证书；非 loopback 仍强制 `admin_token`。
-- **YAML 配置**：支持 `.yaml` / `.yml`，`meatus server|client|check --format auto|toml|yaml`；`1.1.0` 为只读，`1.2.0` 起支持面板写回，采用规范化重写，注释和键顺序不保证保留。
-- **代理头信任收敛**：`admin.trust_forwarded_proto` 默认 `false`，只在可信反向代理后显式开启。
-- **CSP 收紧**：`style-src 'self'`，移除 `unsafe-inline`；面板样式全部走外部样式表与语义 token。
-- **发布物料补齐**：发布包内置 `SBOM.spdx.json`、第三方许可证声明与许可证原文；镜像 SBOM 单独输出。
-- **镜像发布**：linux/amd64 + linux/arm64 多架构，ACR 提供 `1.2.0` / `1.2` / `latest` 三个标签；GHCR 路径保留，当前未推送。
+完整版本历史、升级说明与已知限制见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 目录结构
 
@@ -65,7 +59,7 @@ docker compose exec meatus cat /data/admin.token
 # 不用 Compose 的纯 docker run 命令见 docs/INSTALL.md 4.6
 # 预构建镜像（ACR 当前为私有仓库，先登录）：
 # docker login registry.cn-hangzhou.aliyuncs.com
-# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2.0
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2.1
 # docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2
 ```
 
@@ -198,14 +192,14 @@ chmod 600 .env
 
 ## 许可证
 
-Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。发布包内 `SBOM.spdx.json` 为 SPDX 源码依赖清单；镜像 SBOM 单独输出为 `dist/sbom-meatus-<version>-image.spdx.json`。当前 `1.2.0` 仅实推阿里云 ACR；ACR 不接受 buildx 的 OCI 1.1 attestation manifest，改为推送后再用 syft 扫描生成镜像 SBOM。GHCR 发布路径保留在脚本中，待恢复 GitHub 发布时启用。
+Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。发布包内 `SBOM.spdx.json` 为 SPDX 源码依赖清单；镜像 SBOM 单独输出为 `dist/sbom-meatus-<version>-image.spdx.json`。当前 `1.2.1` 仅实推阿里云 ACR；ACR 不接受 buildx 的 OCI 1.1 attestation manifest，改为推送后再用 syft 扫描生成镜像 SBOM。GHCR 发布路径保留在脚本中，待恢复 GitHub 发布时启用。
 
 ## 文档
 
 - 完整使用教程：`docs/USAGE.md`（含 V1.2 更新、客户端令牌、SOCKS5 域名、管理面 TLS、YAML 与 Docker 示例）
 - 新手教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 - 安装部署：`docs/INSTALL.md`
-- 版本发布：<https://gitee.com/binsail/meatus/releases/tag/v1.2.0>
+- 版本发布：<https://gitee.com/binsail/meatus/releases/tag/v1.2.1>
 - 开发规划与验收记录：已归档到内部资料目录，不随开源仓库发布
 - ADR：`docs/adr/0001-transport-tcp-tls-yamux.md`、`docs/adr/0002-dual-mode-self-host-first.md`
 - 贡献指南：`CONTRIBUTING.md`
