@@ -1,8 +1,8 @@
-# Meatus 1.2 安装与长期运行
+# Meatus 1.3 安装与长期运行
 
 V1 交付**完全开源（Apache-2.0）自托管版**：一台公网 server + 若干内网 client，单二进制、零数据库、零 Redis。本文覆盖 Linux systemd、Docker Compose、纯 `docker run` 和手工安装四种方式。
 
-> 当前版本为 `1.2.1`，四个平台安装包与 ACR 多架构镜像已发布。Windows 暂不提供。下方示例可直接使用 `1.2.1`。
+> 当前开发版本为 `1.3.0`，发布准备中；线上正式版本为 `1.2.1`。`1.3.0` 的四平台安装包与 ACR 多架构镜像将在 24h soak 通过后上传。Windows 暂不提供。
 
 ## 1. 产物与平台
 
@@ -19,7 +19,7 @@ V1 交付**完全开源（Apache-2.0）自托管版**：一台公网 server + �
 ## 2. 从 release 包安装（推荐）
 
 ```bash
-VERSION=1.2.1
+VERSION=1.3.0
 TARGET=x86_64-unknown-linux-musl
 curl -LO "https://your-release-host/meatus-${VERSION}-${TARGET}.tar.gz"
 sha256sum -c "meatus-${VERSION}-${TARGET}.tar.gz.sha256"
@@ -166,7 +166,7 @@ docker login registry.cn-hangzhou.aliyuncs.com
 docker run -d --name meatus \
   -v "$PWD/server.yaml:/data/server.yaml" \
   -v meatus-data:/data \
-  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2.1 \
+  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0 \
   server --config /data/server.yaml
 ```
 
@@ -235,7 +235,7 @@ docker compose up -d --build
 多架构构建用 Buildx：
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t meatus:1.2.1 .
+docker buildx build --platform linux/amd64,linux/arm64 -t meatus:1.3.0 .
 ```
 
 构建后做一次部署冒烟（首启、面板、Bearer API、SIGTERM）：
@@ -377,8 +377,8 @@ docker start meatus
 docker login registry.cn-hangzhou.aliyuncs.com
 
 # 固定版本 / 次版本 / 最新
-docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2.1
-docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.1
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3
 docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:latest
 ```
 

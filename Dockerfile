@@ -17,7 +17,7 @@ ARG RUST_VERSION=1.96.0
 ARG NODE_VERSION=22
 # 可选 crates 镜像（如 https://rsproxy.cn/index/），用于 crates.io 不可达的环境
 ARG CARGO_REGISTRY=""
-ARG VERSION=1.2.1
+ARG VERSION=1.3.0
 
 FROM ${BASE_REGISTRY}node:${NODE_VERSION}-alpine AS web
 WORKDIR /src/web
@@ -43,7 +43,7 @@ RUN cargo build --release --locked --bin meatus \
     && strip target/release/meatus
 
 FROM ${BASE_REGISTRY}alpine:3.22
-ARG VERSION=1.2.1
+ARG VERSION=1.3.0
 RUN apk add --no-cache ca-certificates tzdata su-exec \
     && addgroup -S meatus \
     && adduser -S -G meatus -h /data meatus

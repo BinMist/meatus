@@ -4,7 +4,7 @@
 
 ## [1.3.0] - 2026-11-21
 
-> 状态：待发布；以 24h soak、20% 弱网与发布资产完成后为准。
+> 状态：待发布；代码、20% 弱网与 ZAP 已验证，以最终 24h soak 与发布资产完成后为准。
 
 V1.3：多客户端调度、配置热加载、客户端授权与配额、审计、备份恢复、RBAC 与 API Token。
 
@@ -27,11 +27,15 @@ V1.3：多客户端调度、配置热加载、客户端授权与配额、审计�
 - 面板新增“审计日志”与“API Token”页面；客户端页补充授权摘要与配额展示。
 - API Token 的 `last_used_at` 明确为当前 server 进程生命周期内最近一次成功认证，服务重启后清空；不作为跨重启审计字段。
 - `README.md` / `docs/USAGE.md` 面板页面数更新为 9 个；README 心跳口径更新为客户端 10s Ping / 30s 无 Pong、服务端 10s Ping / 25s 无消息。
+- 版本升至 `1.3.0`。
+
+### Fixed
+
+- 修复 `allow_domains=["*.example.com"]` 无法放行同形通配 `custom_domains` 的授权缺口：只有 `allow_domains` 存在同形通配时才放行，不会放大到 `*.other.example.com`。
 
 ### Known limitations
 
 - `last_used_at` 不跨重启；判断长期未使用或凭据泄露需依赖外部审计 / 网关，V1.3 不做持久化。
-- `allow_domains=["*.example.com"]` 仍不能放行通配 `custom_domains`；本次 24h soak 未覆盖该授权路径。
 - `sighup_hot_reload_add_and_remove_without_disconnect` 集成测试仍标记 `ignored`（libtest 屏蔽 `SIGHUP`），以真实容器 + CLI 手工验收替代。
 - SOCKS5 仍只支持一个全局路由，第二个 SOCKS5 proxy 会被拒绝。
 

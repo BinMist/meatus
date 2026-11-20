@@ -15,15 +15,18 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，精确域名由 server 用 HTTP-01 自动签发、TLS 终止并缓存/续期，泛域名走 DNS-01（支持 Cloudflare / DNSPod）
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **版本状态**：已发布 `1.2.1`（2026-11-19）。发布形态为 Linux x86_64 / arm64 musl、macOS aarch64 / x86_64 静态包 + 阿里云 ACR 多架构镜像（`1.2.1` / `1.2` / `latest`，ACR 为私有仓库，拉取前需 `docker login`）。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **版本状态**：`1.3.0` 代码已冻结、发布准备中；当前线上正式版本为 `1.2.1`（2026-11-19）。`1.3.0` 发布后提供 Linux x86_64 / arm64 musl、macOS aarch64 / x86_64 静态包 + 阿里云 ACR 多架构镜像（`1.3.0` / `1.3` / `latest`；当前线上仍为 `1.2.1` / `1.2`，ACR 为私有仓库，拉取前需 `docker login`）。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
 ## 当前版本摘要
 
-`1.2.1`：
+`1.3.0`：
 
-- **代理连通性诊断**：面板可对单个 proxy 发起本地服务探测，覆盖 TCP / HTTP / HTTPS / UDP，返回可达性、延迟与错误码。
-- **ACME DNS-01 泛域名**：支持 Cloudflare 与腾讯云 DNSPod，可签发 `*.example.com`，到期前自动续期，失败保留旧证书。
-- **镜像健康检查**：Docker 镜像内置 `HEALTHCHECK`，默认探测 `/healthz`，无需部署时手工补 `--health-cmd`。
+- **多客户端与热加载**：同一 tenant 下按 client 隔离 proxy 名称与 owner；server 接收 `SIGHUP` 或面板保存后重建鉴权 / 端口策略，已建立连接不中断。
+- **客户端授权与配额**：`auth.clients[]` 支持 `allow_types` / `allow_domains` / `max_proxies`，创建 proxy 时校验；支持速率、月流量、并发连接与新建连接速率配额。
+- **审计与备份恢复**：登录、配置 / 客户端 / proxy 变更、客户端上下线写入 JSONL；`meatus config backup/restore` 导出脱敏备份并校验版本与 checksum。
+- **RBAC 与 API Token**：`[admin].users[]` 提供 owner / operator / viewer / auditor 四角色；`[[admin.api_tokens]]` 提供带 Scope、仅存 SHA-256 的 CI 凭证。
+- **控制面握手防护**：按来源 IP 的 60s 滑动窗口最多 10 次握手；TLS、控制流、Hello 校验、认证失败或等待认证超时统一延迟 3s 断开。
+- **面板与文档**：新增审计日志、API Token 页面；客户端页展示授权摘要与配额；面板共 9 页。
 
 完整版本历史、升级说明与已知限制见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -59,8 +62,8 @@ docker compose exec meatus cat /data/admin.token
 # 不用 Compose 的纯 docker run 命令见 docs/INSTALL.md 4.6
 # 预构建镜像（ACR 当前为私有仓库，先登录）：
 # docker login registry.cn-hangzhou.aliyuncs.com
-# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2.1
-# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3
 ```
 
 ## 快速开始（TCP / UDP / HTTP / HTTPS 隧道）
@@ -196,14 +199,14 @@ chmod 600 .env
 
 ## 许可证
 
-Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。发布包内 `SBOM.spdx.json` 为 SPDX 源码依赖清单；镜像 SBOM 单独输出为 `dist/sbom-meatus-<version>-image.spdx.json`。当前 `1.2.1` 仅实推阿里云 ACR；ACR 不接受 buildx 的 OCI 1.1 attestation manifest，改为推送后再用 syft 扫描生成镜像 SBOM。GHCR 发布路径保留在脚本中，待恢复 GitHub 发布时启用。
+Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `THIRD_PARTY_NOTICES.md`，完整依赖许可证清单见 `docs/THIRD_PARTY_LICENSES.md`，上游许可证原文见 `docs/THIRD_PARTY_LICENSE_TEXTS.txt`。发布包内 `SBOM.spdx.json` 为 SPDX 源码依赖清单；镜像 SBOM 单独输出为 `dist/sbom-meatus-<version>-image.spdx.json`。当前镜像只实推阿里云 ACR；ACR 不接受 buildx 的 OCI 1.1 attestation manifest，改为推送后再用 syft 扫描生成镜像 SBOM。GHCR 发布路径保留在脚本中，待恢复 GitHub 发布时启用。
 
 ## 文档
 
-- 完整使用教程：`docs/USAGE.md`（含 V1.2 更新、客户端令牌、SOCKS5 域名、管理面 TLS、YAML 与 Docker 示例）
+- 完整使用教程：`docs/USAGE.md`（含 V1.3 更新、客户端令牌、SOCKS5 域名、管理面 TLS、YAML 与 Docker 示例）
 - 新手教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 - 安装部署：`docs/INSTALL.md`
-- 版本发布：<https://gitee.com/binsail/meatus/releases/tag/v1.2.1>
+- 版本发布：<https://gitee.com/binsail/meatus/releases/tag/v1.3.0>
 - 开发规划与验收记录：已归档到内部资料目录，不随开源仓库发布
 - ADR：`docs/adr/0001-transport-tcp-tls-yamux.md`、`docs/adr/0002-dual-mode-self-host-first.md`
 - 贡献指南：`CONTRIBUTING.md`
