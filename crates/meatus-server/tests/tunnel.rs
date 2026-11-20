@@ -326,6 +326,223 @@ remote_port = {proxy_port}
 }
 
 #[tokio::test]
+async fn quic_udp_tunnel_roundtrip() {
+    let _guard = TEST_MUTEX.lock().await;
+    let echo_port = free_udp_port();
+    let control_port = free_port();
+    let proxy_port = free_udp_port();
+    spawn_udp_echo(echo_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-quic-udp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+quic = true
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [{proxy_port}, {proxy_port}]
+
+[admin]
+bind = "127.0.0.1:0"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+
+    let client_config = format!(
+        r#"
+[client]
+server_addr = "127.0.0.1:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+transport = "quic"
+
+[[proxy]]
+name = "dns"
+type = "udp"
+local_addr = "127.0.0.1:{echo_port}"
+remote_port = {proxy_port}
+options.idle_timeout_s = 60
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let client_state = ClientState::new(parse_client_config(&client_config).expect("client cfg"))
+        .expect("client state");
+    let server_cancel = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind public udp");
+    let mut ok = false;
+    for _ in 0..50 {
+        sleep(Duration::from_millis(200)).await;
+        socket
+            .send_to(b"quic-udp-query", ("127.0.0.1", proxy_port))
+            .await
+            .expect("send to proxy");
+        let mut buffer = [0u8; 1500];
+        match timeout(Duration::from_millis(500), socket.recv(&mut buffer)).await {
+            Ok(Ok(len)) if &buffer[..len] == b"quic-udp-query" => {
+                ok = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    client_cancel.cancel();
+    server_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), server_task).await;
+    assert!(ok, "QUIC UDP roundtrip failed");
+}
+
+#[tokio::test]
+async fn quic_client_reconnects_after_server_restart() {
+    let _guard = TEST_MUTEX.lock().await;
+    let (echo_port, control_port, proxy_port) = distinct_ports();
+    spawn_echo(echo_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-quic-restart-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+quic = true
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [{proxy_port}, {proxy_port}]
+
+[admin]
+bind = "127.0.0.1:0"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+
+    let client_config = format!(
+        r#"
+[client]
+server_addr = "127.0.0.1:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+transport = "quic"
+
+[[proxy]]
+name = "echo"
+type = "tcp"
+local_addr = "127.0.0.1:{echo_port}"
+remote_port = {proxy_port}
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let server_state2 = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let client_state = ClientState::new(parse_client_config(&client_config).expect("client cfg"))
+        .expect("client state");
+
+    let server_cancel = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let mut server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let mut first = false;
+    for _ in 0..50 {
+        sleep(Duration::from_millis(200)).await;
+        if probe(proxy_port).await.is_ok() {
+            first = true;
+            break;
+        }
+    }
+    assert!(first, "initial QUIC tunnel did not come up");
+
+    server_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), &mut server_task).await;
+    sleep(Duration::from_millis(300)).await;
+
+    let server2_cancel = CancellationToken::new();
+    let mut server2_task = {
+        let cancel = server2_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state2, cancel).await })
+    };
+
+    let mut restarted = false;
+    for _ in 0..100 {
+        sleep(Duration::from_millis(200)).await;
+        if probe(proxy_port).await.is_ok() {
+            restarted = true;
+            break;
+        }
+    }
+
+    client_cancel.cancel();
+    server2_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), &mut server2_task).await;
+    assert!(restarted, "client did not reconnect after server restart");
+}
+
+#[tokio::test]
 async fn auto_falls_back_to_tcp_when_quic_is_off() {
     let _guard = TEST_MUTEX.lock().await;
     let (echo_port, control_port, proxy_port) = distinct_ports();
