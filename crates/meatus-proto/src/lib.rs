@@ -7,6 +7,9 @@ pub mod error_code;
 pub mod frame;
 pub mod negotiation;
 
+#[cfg(test)]
+mod wire_compat;
+
 pub mod v1 {
     include!(concat!(env!("OUT_DIR"), "/meatus.v1.rs"));
 }

@@ -97,6 +97,17 @@ pub async fn run_session(
     result
 }
 
+/// Welcome 的 protocol_version 是 v2 加法字段：0 表示旧服务端未回显，按 v1 处理。
+fn welcome_protocol_version(value: u32) -> anyhow::Result<u32> {
+    let version = if value == 0 { 1 } else { value };
+    if version > PROTOCOL_VERSION {
+        bail!(
+            "server negotiated unsupported protocol {version} (client supports up to {PROTOCOL_VERSION})"
+        );
+    }
+    Ok(version)
+}
+
 async fn handshake(
     config: &ClientConfig,
     reader: &mut Reader,
@@ -143,14 +154,26 @@ async fn handshake(
         Some(control_msg::Kind::Welcome(Welcome {
             run_id,
             heartbeat_secs,
+            protocol_version,
+            caps,
             ..
         })) => {
+            let server_protocol = welcome_protocol_version(protocol_version)?;
+            if server_protocol < PROTOCOL_VERSION {
+                warn!(
+                    server_protocol,
+                    client_protocol = PROTOCOL_VERSION,
+                    "server negotiated a lower protocol version"
+                );
+            }
             info!(
                 server = %config.client.server_addr,
                 tenant = %config.client.tenant,
                 client = %config.client.client_id,
                 %run_id,
                 heartbeat_secs,
+                server_protocol,
+                server_caps = ?caps,
                 "tunnel established"
             );
             Ok(())
@@ -997,6 +1020,22 @@ mod tests {
     #[test]
     fn spec_helper_is_available() {
         assert_eq!(spec("p0", 20000).name, "p0");
+    }
+
+    #[test]
+    fn welcome_protocol_defaults_to_v1_for_old_server() {
+        assert_eq!(welcome_protocol_version(0).expect("legacy welcome"), 1);
+    }
+
+    #[test]
+    fn welcome_protocol_accepts_v1_and_v2() {
+        assert_eq!(welcome_protocol_version(1).expect("v1"), 1);
+        assert_eq!(welcome_protocol_version(2).expect("v2"), 2);
+    }
+
+    #[test]
+    fn welcome_protocol_rejects_future_version() {
+        assert!(welcome_protocol_version(3).is_err());
     }
 
     #[tokio::test]

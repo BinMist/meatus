@@ -206,6 +206,7 @@ async fn run_session(
     info!(
         client_protocol = hello.protocol_version,
         protocol = negotiated.version,
+        client_id = %hello.client_id,
         caps = ?negotiated.caps,
         ignored_caps = ?negotiated.ignored_caps,
         "protocol negotiated"
@@ -281,6 +282,8 @@ async fn run_session(
                 run_id: run_id.clone(),
                 heartbeat_secs: SERVER_PING.as_secs() as u32,
                 server_time_ms: now_ms(),
+                protocol_version: negotiated.version,
+                caps: negotiated.caps.clone(),
             })),
         },
     )

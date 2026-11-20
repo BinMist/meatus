@@ -25,6 +25,10 @@ message Welcome {
   string run_id          = 1;
   uint32 heartbeat_secs  = 2;
   int64  server_time_ms  = 3;
+  // v2 加法字段：服务端最终选定的协议版本与实际接受的 caps。
+  // 旧客户端解码时忽略；旧服务端不回显时客户端按 v1、空 caps 处理。
+  uint32 protocol_version = 4;
+  repeated string caps    = 5;
 }
 
 enum ProxyType {
