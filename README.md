@@ -10,7 +10,7 @@
 
 Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**完全开源（Apache-2.0）、面向个人 / 小团队自托管**。核心代码、协议、面板和部署脚本都在本仓库中。
 
-- **传输**：TCP + TLS 1.3 + yamux（QUIC 留 v2）
+- **传输**：TCP + TLS 1.3 + yamux；V1.4 可选 QUIC（`server.quic = true` + `client.transport = "quic"` / `"auto"`）
 - **配置**：单二进制 + TOML（默认）/ YAML（V1.1 支持，管理面可写）；服务端只存 token 的 SHA-256
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，精确域名由 server 用 HTTP-01 自动签发、TLS 终止并缓存/续期，泛域名走 DNS-01（支持 Cloudflare / DNSPod）

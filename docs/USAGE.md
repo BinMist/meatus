@@ -720,6 +720,10 @@ ssh -p 20022 <用户>@203.0.113.10
 | `tls_key`      | 是  | —         | TLS 私钥 PEM；与 `tls_cert` 必须同时存在 |
 | `quic`         | 否  | `false`   | 是否在控制端口同时监听 UDP/QUIC；开启后 TCP 与 UDP 共用端口 |
 
+> QUIC 使用与 TCP 相同的证书、SNI 与 SPKI pin 规则，UDP 端口等于 `control_port`。
+> 客户端 `transport = "quic"` 强制 QUIC；`auto` 先试 QUIC，5 秒内失败回落 TCP。
+> 防火墙 / 安全组需同时放行 TCP 与 UDP；只放行 TCP 时请保持 `auto` 或 `tcp`。
+
 #### `[tenant]`
 
 
