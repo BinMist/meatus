@@ -275,7 +275,10 @@ impl ClientPolicy {
         let Ok(policy) = crate::net::DomainPolicy::from_allow_domains(&self.allow_domains) else {
             return false;
         };
-        !policy.is_empty() && domains.iter().all(|domain| policy.allows(domain))
+        !policy.is_empty()
+            && domains
+                .iter()
+                .all(|domain| policy.allows_claimed_domain(domain))
     }
 
     #[must_use]
@@ -1560,6 +1563,28 @@ clients = [
         assert_eq!(policy.monthly_bytes(), 104857600);
         assert_eq!(policy.quota_action(), QuotaAction::Throttle);
         assert_eq!(policy.conn_rate_per_s(), 5);
+    }
+
+    #[test]
+    fn client_policy_allows_equivalent_wildcard_custom_domains_only() {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+clients = [
+  { id = "nas", tenant = "default", token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", allow_domains = ["*.binsail.cloud"], allow_types = ["http"] },
+]
+"#;
+        let config = parse_server_config(toml).expect("valid");
+        let policy = config.auth.clients[0].policy();
+
+        assert!(policy.allows_domains(&["*.binsail.cloud".to_string()]));
+        assert!(policy.allows_domains(&["*.BINSAIL.CLOUD.".to_string()]));
+        assert!(policy.allows_domains(&["app.binsail.cloud".to_string()]));
+        assert!(!policy.allows_domains(&["*.other.binsail.cloud".to_string()]));
+        assert!(!policy.allows_domains(&["*.binsail.cloud.evil".to_string()]));
+        assert!(!policy.allows_domains(&["binsail.cloud".to_string()]));
     }
 
     #[test]

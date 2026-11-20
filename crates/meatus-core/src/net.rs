@@ -146,6 +146,20 @@ impl DomainPolicy {
         })
     }
 
+    /// 允许客户端声明一个域名或通配域名。
+    ///
+    /// 通配声明（`*.example.com`）只有在白名单中存在**完全相同**的通配项时才放行，
+    /// 不能借更宽或更窄的 `*.suffix` 扩大授权范围；精确域名仍按 [`Self::allows`] 匹配。
+    #[must_use]
+    pub fn allows_claimed_domain(&self, domain: &str) -> bool {
+        match parse_domain_pattern(domain) {
+            Ok(pattern) if pattern.wildcard => {
+                self.patterns.iter().any(|allowed| allowed == &pattern)
+            }
+            _ => self.allows(domain),
+        }
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.patterns.is_empty()
@@ -276,6 +290,30 @@ mod tests {
         assert!(!policy.allows("apps.example"));
         assert!(!policy.allows("notapps.example"));
         assert!(!policy.allows("db.internal.example.evil"));
+    }
+
+    #[test]
+    fn domain_policy_allows_only_equivalent_wildcard_claims() {
+        let policy = DomainPolicy::from_allow_domains(&[
+            "*.example.com".to_string(),
+            "db.internal.example".to_string(),
+        ])
+        .expect("valid");
+
+        assert!(policy.allows_claimed_domain("*.example.com"));
+        assert!(policy.allows_claimed_domain("*.EXAMPLE.COM."));
+        assert!(policy.allows_claimed_domain("a.example.com"));
+        assert!(policy.allows_claimed_domain("db.internal.example"));
+        assert!(!policy.allows_claimed_domain("*.other.example.com"));
+        assert!(!policy.allows_claimed_domain("*.db.internal.example"));
+        assert!(!policy.allows_claimed_domain("*.example.com.evil"));
+    }
+
+    #[test]
+    fn empty_domain_policy_rejects_wildcard_claims() {
+        let policy = DomainPolicy::from_allow_domains(&[]).expect("valid");
+        assert!(!policy.allows_claimed_domain("*.example.com"));
+        assert!(!policy.allows_claimed_domain("a.example.com"));
     }
 
     #[test]
