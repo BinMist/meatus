@@ -9,6 +9,8 @@ mod multiplex;
 pub mod net;
 pub mod pin;
 pub mod pool;
+#[cfg(test)]
+mod quic;
 pub mod rate;
 pub mod seams;
 pub mod tenant;

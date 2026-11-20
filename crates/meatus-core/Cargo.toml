@@ -13,6 +13,8 @@ futures-io.workspace = true
 hex.workspace = true
 hmac.workspace = true
 prost.workspace = true
+quinn.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -28,6 +30,7 @@ yamux.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+rcgen.workspace = true
 
 [lints]
 workspace = true
