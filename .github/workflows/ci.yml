@@ -24,6 +24,46 @@ jobs:
       - name: test
         run: cargo test --workspace --all-targets
 
+  compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: build release
+        run: cargo build --release -p meatus-cli
+      - name: fetch release fixtures
+        run: bash scripts/fetch-fixtures.sh
+      - name: compatibility matrix
+        run: bash scripts/compat-matrix.sh 2>&1 | tee compat-matrix.log
+      - name: upload compatibility log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-matrix
+          path: compat-matrix.log
+
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: build release
+        run: cargo build --release -p meatus-cli
+      - name: benchmark and gate
+        run: bash scripts/bench.sh
+      - name: upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results/
+
   audit:
     runs-on: ubuntu-latest
     permissions:
