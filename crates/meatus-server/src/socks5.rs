@@ -95,6 +95,7 @@ pub async fn serve(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
+            _ = state.drain.stopped_accepting() => break,
             accepted = listener.accept() => {
                 let (stream, peer) = match accepted {
                     Ok(pair) => pair,

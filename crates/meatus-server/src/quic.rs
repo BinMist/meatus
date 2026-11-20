@@ -50,6 +50,7 @@ pub async fn serve(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
+            _ = state.drain.stopped_accepting() => break,
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break };
                 let peer = incoming.remote_address();

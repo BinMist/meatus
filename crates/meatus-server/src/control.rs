@@ -1581,6 +1581,7 @@ async fn tcp_accept_loop(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
+            _ = ctx.state.drain.stopped_accepting() => break,
             accepted = listener.accept() => {
                 let (mut user, peer) = match accepted {
                     Ok(pair) => pair,

@@ -32,6 +32,7 @@ pub async fn serve_http(listener: TcpListener, state: Arc<ServerState>, cancel: 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
+            _ = state.drain.stopped_accepting() => break,
             accepted = listener.accept() => {
                 let (socket, peer) = match accepted {
                     Ok(pair) => pair,
@@ -64,6 +65,7 @@ pub async fn serve_https(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
+            _ = state.drain.stopped_accepting() => break,
             accepted = listener.accept() => {
                 let (socket, peer) = match accepted {
                     Ok(pair) => pair,
