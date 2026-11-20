@@ -28,9 +28,9 @@ TLS 复用边界：
 
 ### 2. 传输映射
 
-QUIC 的一条双向流对应 yamux 的一条流语义：控制流固定为客户端打开的第一条双向流，
-数据流按连接池需要在同一 QUIC 连接上继续 `open_bi`。业务层仍只看到
-`transport::Connection`，不直接依赖 quinn 类型。
+每条 QUIC 连接只承载一条 yamux 会话：客户端打开的第一条双向流交给
+`transport::attach`，yamux 在该流内部复用控制流与全部数据流。因此 QUIC 层不需要
+继续 `open_bi`，业务层仍只看到 `transport::Connection`，不直接依赖 quinn 类型。
 
 ### 3. UDP 端口策略
 
@@ -43,6 +43,20 @@ QUIC 默认与 TCP 控制面使用同一数值端口（例如 `server_addr = 0.0
 
 `transport` 默认 `tcp`；`quic` 需显式开启。`auto` 先试 QUIC，5 秒内失败回落 TCP，
 回落原因写日志与指标；不允许静默把 QUIC 失败当作成功。
+
+### 5. 资源上限
+
+服务端 QUIC 端点应用以下上限，防止握手与流资源被耗尽：
+
+| 项 | 取值 | 说明 |
+| --- | --- | --- |
+| 并发连接 | 256 | 超出直接拒绝并 warn，不进入握手 |
+| 握手超时 | 10s | 超时关闭连接，不占用后续配额 |
+| 双向流 | 1 条/连接 | 应用层由 yamux 复用，额外 `open_bi` 会被 QUIC 拒绝 |
+| 单向流 | 0 条/连接 | 不使用 QUIC 单向流 |
+| 空闲超时 | 30s | 无流量连接自动关闭 |
+| keep-alive | 15s | 保持 NAT 映射 |
+| QUIC 包大小 | quinn 默认（约 1472B） | yamux 数据分片交由 quinn 路径 MTU 管理；应用层 UDP 仍受 1500B 限制 |
 
 ## Spike 结果
 

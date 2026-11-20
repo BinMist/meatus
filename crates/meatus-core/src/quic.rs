@@ -14,7 +14,25 @@ pub fn server_endpoint(
 ) -> io::Result<Endpoint> {
     let config = ServerConfig::with_single_cert(cert, key)
         .map_err(|err| io::Error::other(format!("quic server config: {err}")))?;
+    let mut config = config;
+    config.transport_config(server_transport());
     Endpoint::server(config, bind)
+}
+
+/// QUIC 服务端资源上限：单连接只允许一条双向流（应用层再用 yamux 复用），
+/// 禁止单向流，30 秒握手 / 空闲超时，15 秒 keep-alive。
+#[must_use]
+pub fn server_transport() -> std::sync::Arc<quinn::TransportConfig> {
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_bidi_streams(1u32.into());
+    transport.max_concurrent_uni_streams(0u32.into());
+    transport.max_idle_timeout(Some(
+        std::time::Duration::from_secs(30)
+            .try_into()
+            .expect("valid idle timeout"),
+    ));
+    transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
+    std::sync::Arc::new(transport)
 }
 
 /// 建立客户端端点；绑定 `0.0.0.0:0`。

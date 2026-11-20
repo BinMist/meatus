@@ -2,15 +2,21 @@
 //! QUIC 控制面监听；D1-02 只建立传输连接，应用层握手在 D1-04 接入。
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use meatus_core::{ServerConfig, quic as core_quic};
 use tokio_util::compat::TokioAsyncReadCompatExt;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::ServerState;
+
+const QUIC_MAX_CONNECTIONS: usize = 256;
+const QUIC_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn endpoint(config: &ServerConfig) -> anyhow::Result<quinn::Endpoint> {
     let cert = config
@@ -40,17 +46,25 @@ pub async fn serve(
     state: Arc<ServerState>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
+    let active = Arc::new(AtomicUsize::new(0));
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break };
                 let peer = incoming.remote_address();
+                if active.fetch_add(1, Ordering::Relaxed) >= QUIC_MAX_CONNECTIONS {
+                    active.fetch_sub(1, Ordering::Relaxed);
+                    warn!(%peer, limit = QUIC_MAX_CONNECTIONS, "QUIC connection limit reached");
+                    continue;
+                }
+                let guard = ActiveConnection(Arc::clone(&active));
                 let state = Arc::clone(&state);
                 let session_cancel = cancel.child_token();
                 tokio::spawn(async move {
-                    match incoming.await {
-                        Ok(connection) => {
+                    let _guard = guard;
+                    match timeout(QUIC_HANDSHAKE_TIMEOUT, incoming).await {
+                        Ok(Ok(connection)) => {
                             info!(%peer, "QUIC connection established");
                             let (send, recv) = match connection.accept_bi().await {
                                 Ok(pair) => pair,
@@ -72,7 +86,8 @@ pub async fn serve(
                             }
                             let _ = connection.closed().await;
                         }
-                        Err(err) => warn!(%peer, error = %err, "QUIC handshake failed"),
+                        Ok(Err(err)) => warn!(%peer, error = %err, "QUIC handshake failed"),
+                        Err(_) => warn!(%peer, "QUIC handshake timed out"),
                     }
                 });
             }
@@ -80,4 +95,12 @@ pub async fn serve(
     }
     endpoint.close(0u32.into(), b"server shutdown");
     Err(anyhow!("QUIC listener stopped"))
+}
+
+struct ActiveConnection(Arc<AtomicUsize>);
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
