@@ -86,11 +86,15 @@ fn is_unsupported_version(err: &anyhow::Error) -> bool {
 
 pub async fn run_session(
     config: &ClientConfig,
+    server_addr: &str,
     cancel: &CancellationToken,
     reload_rx: &mut mpsc::Receiver<Vec<ProxySpec>>,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let (negotiated_version, session, run_id) = establish_with_fallback(config).await?;
+    let server_addr = server_addr.to_string();
+    info!(server = %server_addr, "client session dialing selected entry");
+    let (negotiated_version, session, run_id) =
+        establish_with_fallback(config, &server_addr).await?;
     info!(
         client_protocol = negotiated_version,
         "client session transport selected"
@@ -114,8 +118,10 @@ pub async fn run_session(
             let proxies = Arc::clone(&proxies);
             let stats = Arc::clone(&stats);
             let cancel = cancel.clone();
+            let server_addr = server_addr.clone();
             pool_tasks.push(tokio::spawn(async move {
-                run_pool_data_connection(config, run_id, proxies, stats, cancel, idle).await;
+                run_pool_data_connection(config, server_addr, run_id, proxies, stats, cancel, idle)
+                    .await;
             }));
         }
         info!(
@@ -167,8 +173,9 @@ pub async fn run_session(
 /// 先按最高版本握手；旧服务端返回 `1002` 时，重连一次并降到 v1。
 async fn establish_with_fallback(
     config: &ClientConfig,
+    server_addr: &str,
 ) -> anyhow::Result<(u32, EstablishedSession, String)> {
-    match establish(config, PROTOCOL_VERSION).await {
+    match establish(config, server_addr, PROTOCOL_VERSION).await {
         Ok((session, run_id)) => Ok((PROTOCOL_VERSION, session, run_id)),
         Err(err) if is_unsupported_version(&err) => {
             let rejected = err
@@ -184,7 +191,7 @@ async fn establish_with_fallback(
                 reason = %rejected.message,
                 "server rejected protocol version; retrying with protocol 1"
             );
-            let (session, run_id) = establish(config, 1)
+            let (session, run_id) = establish(config, server_addr, 1)
                 .await
                 .context("fallback to protocol 1 after UnsupportedVersion")?;
             Ok((1, session, run_id))
@@ -195,9 +202,10 @@ async fn establish_with_fallback(
 
 async fn establish(
     config: &ClientConfig,
+    server_addr: &str,
     protocol_version: u32,
 ) -> anyhow::Result<(EstablishedSession, String)> {
-    let (connection, quic) = connect_control(config).await?;
+    let (connection, quic) = connect_control(config, server_addr).await?;
 
     let control = timeout(HANDSHAKE_TIMEOUT, connection.open())
         .await
@@ -227,25 +235,26 @@ async fn establish(
 
 async fn connect_control(
     config: &ClientConfig,
+    server_addr: &str,
 ) -> anyhow::Result<(Connection, Option<crate::quic::QuicClient>)> {
     match config.client.transport {
         TransportMode::Tcp => {
-            let tls_stream = crate::tls::connect(config).await?;
+            let tls_stream = crate::tls::connect(config, server_addr).await?;
             Ok((
                 transport::attach(tls_stream.compat(), transport::Role::Client),
                 None,
             ))
         }
         TransportMode::Quic => {
-            let quic = crate::quic::connect(config).await?;
+            let quic = crate::quic::connect(config, server_addr).await?;
             let stream = quic.open_bi().await?;
-            info!(transport = "quic", "client control transport connected");
+            info!(transport = "quic", server = %server_addr, "client control transport connected");
             Ok((
                 transport::attach(stream.compat(), transport::Role::Client),
                 Some(quic),
             ))
         }
-        TransportMode::Auto => match crate::quic::connect(config).await {
+        TransportMode::Auto => match crate::quic::connect(config, server_addr).await {
             Ok(quic) => {
                 let stream = quic.open_bi().await?;
                 info!(transport = "quic", "client control transport connected");
@@ -261,7 +270,7 @@ async fn connect_control(
                     error = %err,
                     "QUIC control connect failed; falling back to TCP"
                 );
-                let tls_stream = crate::tls::connect(config).await?;
+                let tls_stream = crate::tls::connect(config, server_addr).await?;
                 Ok((
                     transport::attach(tls_stream.compat(), transport::Role::Client),
                     None,
@@ -856,6 +865,7 @@ where
 
 async fn run_pool_data_connection(
     config: ClientConfig,
+    server_addr: String,
     run_id: String,
     proxies: Arc<RwLock<HashMap<String, ProxySpec>>>,
     stats: Arc<ClientStats>,
@@ -867,7 +877,7 @@ async fn run_pool_data_connection(
         if cancel.is_cancelled() {
             return;
         }
-        match establish_data(&config, &run_id).await {
+        match establish_data(&config, &server_addr, &run_id).await {
             Ok(EstablishedData {
                 mut connection,
                 quic: _quic,
@@ -908,24 +918,28 @@ async fn run_pool_data_connection(
     }
 }
 
-async fn establish_data(config: &ClientConfig, run_id: &str) -> anyhow::Result<EstablishedData> {
+async fn establish_data(
+    config: &ClientConfig,
+    server_addr: &str,
+    run_id: &str,
+) -> anyhow::Result<EstablishedData> {
     let (connection, quic) = match config.client.transport {
         TransportMode::Tcp => {
-            let tls_stream = crate::tls::connect(config).await?;
+            let tls_stream = crate::tls::connect(config, server_addr).await?;
             (
                 transport::attach(tls_stream.compat(), transport::Role::Client),
                 None,
             )
         }
         TransportMode::Quic => {
-            let quic = crate::quic::connect(config).await?;
+            let quic = crate::quic::connect(config, server_addr).await?;
             let stream = quic.open_bi().await?;
             (
                 transport::attach(stream.compat(), transport::Role::Client),
                 Some(quic),
             )
         }
-        TransportMode::Auto => match crate::quic::connect(config).await {
+        TransportMode::Auto => match crate::quic::connect(config, server_addr).await {
             Ok(quic) => {
                 let stream = quic.open_bi().await?;
                 (
@@ -934,8 +948,8 @@ async fn establish_data(config: &ClientConfig, run_id: &str) -> anyhow::Result<E
                 )
             }
             Err(err) => {
-                warn!(error = %err, "QUIC data connect failed; falling back to TCP");
-                let tls_stream = crate::tls::connect(config).await?;
+                warn!(error = %err, server = %server_addr, "QUIC data connect failed; falling back to TCP");
+                let tls_stream = crate::tls::connect(config, server_addr).await?;
                 (
                     transport::attach(tls_stream.compat(), transport::Role::Client),
                     None,

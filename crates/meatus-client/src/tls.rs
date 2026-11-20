@@ -23,16 +23,16 @@ use tokio_rustls::client::TlsStream;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub async fn connect(config: &ClientConfig) -> anyhow::Result<TlsStream<TcpStream>> {
+pub async fn connect(
+    config: &ClientConfig,
+    server_addr: &str,
+) -> anyhow::Result<TlsStream<TcpStream>> {
     let (tls, server_name) = client_config(config)?;
 
-    let tcp = timeout(
-        CONNECT_TIMEOUT,
-        TcpStream::connect(&config.client.server_addr),
-    )
-    .await
-    .with_context(|| format!("connect {} timed out", config.client.server_addr))?
-    .with_context(|| format!("connect {}", config.client.server_addr))?;
+    let tcp = timeout(CONNECT_TIMEOUT, TcpStream::connect(server_addr))
+        .await
+        .with_context(|| format!("connect {server_addr} timed out"))?
+        .with_context(|| format!("connect {server_addr}"))?;
     tcp.set_nodelay(true).context("set TCP_NODELAY")?;
 
     TlsConnector::from(tls)

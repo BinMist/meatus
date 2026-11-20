@@ -36,7 +36,7 @@ impl QuicClient {
 }
 
 /// 拨号 `server_addr` 的 UDP 端口，SNI 与证书规则与 TCP 一致。
-pub async fn connect(config: &ClientConfig) -> anyhow::Result<QuicClient> {
+pub async fn connect(config: &ClientConfig, server_addr: &str) -> anyhow::Result<QuicClient> {
     let (tls, server_name) = super::tls::client_config(config)?;
     let tls = QuicClientConfig::try_from((*tls).clone())
         .map_err(|err| anyhow!("build quic client config: {err}"))?;
@@ -44,17 +44,17 @@ pub async fn connect(config: &ClientConfig) -> anyhow::Result<QuicClient> {
     client.transport_config(std::sync::Arc::new(quinn::TransportConfig::default()));
     let endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .context("bind quic client endpoint")?;
-    let addr = tokio::net::lookup_host(&config.client.server_addr)
+    let addr = tokio::net::lookup_host(server_addr)
         .await
-        .with_context(|| format!("resolve quic target {}", config.client.server_addr))?
+        .with_context(|| format!("resolve quic target {server_addr}"))?
         .next()
-        .ok_or_else(|| anyhow!("no address for quic target {}", config.client.server_addr))?;
+        .ok_or_else(|| anyhow!("no address for quic target {server_addr}"))?;
     let connecting = endpoint
         .connect_with(client, addr, &server_name.to_str())
-        .with_context(|| format!("parse quic target {}", config.client.server_addr))?;
+        .with_context(|| format!("parse quic target {server_addr}"))?;
     let connection = timeout(QUIC_CONNECT_TIMEOUT, connecting)
         .await
-        .with_context(|| format!("quic connect {} timed out", config.client.server_addr))?
+        .with_context(|| format!("quic connect {server_addr} timed out"))?
         .context("quic handshake")?;
     Ok(QuicClient {
         _endpoint: endpoint,

@@ -109,14 +109,16 @@ pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow:
         ))
     });
 
+    let mut dial_addrs = config.dial_addrs();
     info!(
-        server = %config.client.server_addr,
+        server = %dial_addrs.join(","),
         proxies = config.proxies.len(),
         config = ?config_path,
         "client starting"
     );
 
     let mut backoff_secs = 1u64;
+    let mut dial_index = 0usize;
     loop {
         if cancel.is_cancelled() {
             if let Some(task) = &reload_task {
@@ -133,14 +135,25 @@ pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow:
                 }
                 return Ok(());
             }
-            result = session::run_session(&config, &cancel, &mut reload_rx, config_path.as_deref()) => result,
+            result = session::run_session(
+                &config,
+                &dial_addrs[dial_index % dial_addrs.len()],
+                &cancel,
+                &mut reload_rx,
+                config_path.as_deref(),
+            ) => result,
         };
         let stable = started.elapsed() >= Duration::from_secs(30);
 
+        let attempted = dial_addrs[dial_index % dial_addrs.len()].clone();
         match result {
-            Ok(()) => info!("control session closed, reconnecting"),
-            Err(err) => warn!(error = %err, "control session failed, reconnecting"),
+            Ok(()) => info!(server = %attempted, "control session closed, reconnecting"),
+            Err(err) => {
+                warn!(server = %attempted, error = %err, "control session failed, reconnecting")
+            }
         }
+        // 入口轮转：当前入口结束或失败后，下次一定尝试下一个，避免死守失效入口。
+        dial_index = (dial_index + 1) % dial_addrs.len();
 
         let delay = jittered(backoff_secs);
         info!(seconds = delay.as_secs_f32(), "reconnect backoff");
@@ -166,6 +179,9 @@ pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow:
                 Ok(new_config) => {
                     info!(path = %path.display(), "client config reloaded for reconnect");
                     config = Arc::new(new_config);
+                    dial_addrs = config.dial_addrs();
+                    dial_index %= dial_addrs.len();
+                    info!(entries = dial_addrs.len(), "client dial entries reloaded");
                 }
                 Err(err) => warn!(path = %path.display(), error = %err, "keep previous config"),
             }
