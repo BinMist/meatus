@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package meatus.v1;
 
-// MEATUS/1 线协议。版本由 Hello.protocol_version 协商，未知字段一律忽略以便向前兼容。
+// MEATUS 线协议（v1/v2）。版本由 Hello.protocol_version 协商，未知字段一律忽略以便向前兼容。
 
 message Hello {
   uint32 protocol_version = 1;

@@ -13,7 +13,7 @@ use meatus_core::{
     TargetPolicy, UsageRecord, WireError, copy_bidirectional_limited, read_frame, write_frame,
 };
 use meatus_proto::{
-    ErrorCode, PROTOCOL_VERSION,
+    CAP_PROBE, ErrorCode, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION, negotiate,
     v1::{
         AdminAddProxy, AdminRemoveProxy, Challenge, ControlMsg, Hello, NewProxy, Ping, Pong, Probe,
         ProbeResult, ProxyOk, ProxyType, StreamHeader, StreamKind, UdpPacket, Welcome, control_msg,
@@ -189,16 +189,27 @@ async fn run_session(
             return Err(err);
         }
     };
-    if hello.protocol_version != PROTOCOL_VERSION {
-        ctx.state.metrics.handshake_failed("protocol");
-        let _ = write_frame(
-            &mut writer,
-            &ErrorCode::UnsupportedVersion
-                .to_wire(format!("server speaks protocol {PROTOCOL_VERSION}")),
-        )
-        .await;
-        bail!("unsupported protocol version {}", hello.protocol_version);
-    }
+    let negotiated = match negotiate(hello.protocol_version, &hello.caps) {
+        Ok(negotiated) => negotiated,
+        Err(err) => {
+            ctx.state.metrics.handshake_failed("protocol");
+            let _ = write_frame(
+                &mut writer,
+                &ErrorCode::UnsupportedVersion.to_wire(format!(
+                    "server supports protocol {MIN_PROTOCOL_VERSION}-{PROTOCOL_VERSION}: {err}"
+                )),
+            )
+            .await;
+            bail!("unsupported protocol version {}", hello.protocol_version);
+        }
+    };
+    info!(
+        client_protocol = hello.protocol_version,
+        protocol = negotiated.version,
+        caps = ?negotiated.caps,
+        ignored_caps = ?negotiated.ignored_caps,
+        "protocol negotiated"
+    );
     if hello.client_id.trim().is_empty() || hello.tenant_id.trim().is_empty() {
         ctx.state.metrics.handshake_failed("identity");
         let _ = write_frame(
@@ -275,9 +286,12 @@ async fn run_session(
     )
     .await?;
     handshake_complete.store(true, Ordering::Relaxed);
-    ctx.state
-        .status
-        .client_connected(&hello.tenant_id, &hello.client_id, &run_id, &hello.caps);
+    ctx.state.status.client_connected(
+        &hello.tenant_id,
+        &hello.client_id,
+        &run_id,
+        &negotiated.caps,
+    );
     ctx.state.audit.record(
         crate::audit::AuditEvent::new("client.online", &hello.client_id)
             .actor(format!("client:{}", hello.client_id))
@@ -366,7 +380,7 @@ async fn run_session(
                     &hello.tenant_id,
                     &hello.client_id,
                     &run_id,
-                    &hello.caps,
+                    &negotiated.caps,
                     &client_policy,
                     next_trace.clone(),
                     &mut next_admin_id,
@@ -566,7 +580,7 @@ async fn probe_via_client(
     caps: &[String],
     request_id: u64,
 ) -> Result<ProbeResult, String> {
-    if !caps.iter().any(|cap| cap == "probe") {
+    if !caps.iter().any(|cap| cap == CAP_PROBE) {
         return Err("当前客户端不支持诊断，请升级客户端到 1.2.1 或更高版本".to_string());
     }
     if !proxies.contains_key(proxy_name) {

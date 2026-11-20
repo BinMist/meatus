@@ -13,7 +13,7 @@ use meatus_core::{
     WireError, multiplex, read_frame, write_frame,
 };
 use meatus_proto::{
-    PROTOCOL_VERSION,
+    PROTOCOL_VERSION, default_client_caps,
     v1::{
         AdminProxyAck, Auth, Challenge, ControlMsg, Hello, NewProxy, Ping, Pong, ProxyOk,
         ProxyOptions, ProxyType as WireProxyType, StreamHeader, StreamKind, UdpPacket, Welcome,
@@ -109,14 +109,7 @@ async fn handshake(
                 protocol_version: PROTOCOL_VERSION,
                 client_version: env!("CARGO_PKG_VERSION").to_string(),
                 client_id: config.client.client_id.clone(),
-                caps: vec![
-                    "tcp".to_string(),
-                    "udp".to_string(),
-                    "http".to_string(),
-                    "https".to_string(),
-                    "socks5".to_string(),
-                    "probe".to_string(),
-                ],
+                caps: default_client_caps(),
                 tenant_id: config.client.tenant.clone(),
                 token_id: String::new(),
             })),

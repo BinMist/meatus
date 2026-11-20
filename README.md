@@ -39,7 +39,7 @@ crates/
   meatus-server/   # relay：TLS 终结、控制面会话、端口映射
   meatus-client/   # 客户端：拨号、握手、重连、数据面转发
   meatus-cli/      # `meatus` 二进制入口
-proto/meatus.proto # MEATUS/1 线协议
+proto/meatus.proto # MEATUS 线协议（v1/v2）
 config/            # server / client 示例配置
 docs/              # 使用教程、安装、ADR、示例
 scripts/           # 本地开发自检
