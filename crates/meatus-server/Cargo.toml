@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+quinn.workspace = true
 meatus-core.workspace = true
 meatus-proto.workspace = true
 anyhow.workspace = true

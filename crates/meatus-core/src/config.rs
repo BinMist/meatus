@@ -119,6 +119,9 @@ pub struct ServerSection {
     pub control_port: u16,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    /// 是否在控制端口同时监听 UDP/QUIC；默认关闭，不改变 1.3 行为。
+    #[serde(default)]
+    pub quic: bool,
 }
 
 fn default_bind_addr() -> String {
@@ -136,6 +139,7 @@ impl Default for ServerSection {
             control_port: default_control_port(),
             tls_cert: None,
             tls_key: None,
+            quic: false,
         }
     }
 }
@@ -1017,6 +1021,9 @@ pub struct ClientConfig {
 #[serde(deny_unknown_fields)]
 pub struct ClientSection {
     pub server_addr: String,
+    /// 控制面传输：`tcp`（默认）、`quic`、`auto`。
+    #[serde(default)]
+    pub transport: TransportMode,
     pub server_name: Option<String>,
     #[serde(default = "default_client_id")]
     pub client_id: String,
@@ -1030,6 +1037,25 @@ pub struct ClientSection {
     /// 数据连接池；`[client.pool]`，默认关闭。
     #[serde(default)]
     pub pool: PoolSection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransportMode {
+    #[default]
+    Tcp,
+    Quic,
+    Auto,
+}
+
+impl std::fmt::Display for TransportMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Tcp => "tcp",
+            Self::Quic => "quic",
+            Self::Auto => "auto",
+        })
+    }
 }
 
 /// 客户端数据连接池。[client.pool]，默认关闭。
@@ -1929,6 +1955,31 @@ token = "secret-token"
         )
         .expect("valid");
         assert_eq!(ipv6.server_host(), "::1");
+    }
+
+    #[test]
+    fn transport_defaults_to_tcp_and_parses_quic() {
+        let config = parse_client_config(
+            r#"
+[client]
+server_addr = "tunnel.example.com:7000"
+token = "secret-token"
+"#,
+        )
+        .expect("valid");
+        assert_eq!(config.client.transport, TransportMode::Tcp);
+
+        let config = parse_client_config(
+            r#"
+[client]
+server_addr = "tunnel.example.com:7000"
+token = "secret-token"
+transport = "quic"
+"#,
+        )
+        .expect("valid");
+        assert_eq!(config.client.transport, TransportMode::Quic);
+        assert_eq!(TransportMode::Auto.to_string(), "auto");
     }
 
     #[test]

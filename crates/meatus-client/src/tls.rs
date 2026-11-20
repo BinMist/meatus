@@ -24,6 +24,27 @@ use tokio_rustls::client::TlsStream;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn connect(config: &ClientConfig) -> anyhow::Result<TlsStream<TcpStream>> {
+    let (tls, server_name) = client_config(config)?;
+
+    let tcp = timeout(
+        CONNECT_TIMEOUT,
+        TcpStream::connect(&config.client.server_addr),
+    )
+    .await
+    .with_context(|| format!("connect {} timed out", config.client.server_addr))?
+    .with_context(|| format!("connect {}", config.client.server_addr))?;
+    tcp.set_nodelay(true).context("set TCP_NODELAY")?;
+
+    TlsConnector::from(tls)
+        .connect(server_name, tcp)
+        .await
+        .context("TLS handshake")
+}
+
+/// 构造与 TCP 完全一致的 rustls 客户端配置与 SNI，供 QUIC 复用。
+pub(crate) fn client_config(
+    config: &ClientConfig,
+) -> anyhow::Result<(Arc<RustlsClientConfig>, ServerName<'static>)> {
     let mut roots = RootCertStore::empty();
     if let Some(ca) = &config.client.server_ca_cert {
         let file =
@@ -67,19 +88,7 @@ pub async fn connect(config: &ClientConfig) -> anyhow::Result<TlsStream<TcpStrea
         builder.with_root_certificates(roots).with_no_client_auth()
     };
 
-    let tcp = timeout(
-        CONNECT_TIMEOUT,
-        TcpStream::connect(&config.client.server_addr),
-    )
-    .await
-    .with_context(|| format!("connect {} timed out", config.client.server_addr))?
-    .with_context(|| format!("connect {}", config.client.server_addr))?;
-    tcp.set_nodelay(true).context("set TCP_NODELAY")?;
-
-    TlsConnector::from(Arc::new(tls))
-        .connect(server_name, tcp)
-        .await
-        .context("TLS handshake")
+    Ok((Arc::new(tls), server_name))
 }
 
 /// 先走正常链校验，再固定叶子证书 SPKI 的 SHA-256。

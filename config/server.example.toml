@@ -12,6 +12,8 @@ control_port = 7000
 #     -addext "subjectAltName=DNS:tunnel.example.com,IP:127.0.0.1"
 tls_cert = "certs/server.crt"
 tls_key = "certs/server.key"
+# 同时监听 UDP/QUIC；默认 false，开启后 TCP 与 QUIC 共用 control_port
+quic = false
 
 [tenant]
 default = "default"

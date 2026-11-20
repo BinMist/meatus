@@ -9,6 +9,7 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 use meatus_core::ServerConfig;
 use rustls::ServerConfig as RustlsServerConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_pemfile::{certs, private_key};
 
 pub fn load(config: &ServerConfig) -> anyhow::Result<Arc<RustlsServerConfig>> {
@@ -39,6 +40,27 @@ pub fn load_admin(config: &ServerConfig) -> anyhow::Result<Arc<RustlsServerConfi
         .as_ref()
         .context("admin.tls.key is required when admin.tls.enabled = true")?;
     load_pair(cert_path, key_path)
+}
+
+/// 读取同一份 PEM 证书链与私钥，供 QUIC 使用。
+pub fn load_der(
+    cert_path: &Path,
+    key_path: &Path,
+) -> anyhow::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    let cert_file =
+        File::open(cert_path).with_context(|| format!("open tls cert {}", cert_path.display()))?;
+    let certs = certs(&mut BufReader::new(cert_file))
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("parse tls cert {}", cert_path.display()))?;
+    if certs.is_empty() {
+        bail!("no certificate found in {}", cert_path.display());
+    }
+    let key_file =
+        File::open(key_path).with_context(|| format!("open tls key {}", key_path.display()))?;
+    let key = private_key(&mut BufReader::new(key_file))
+        .with_context(|| format!("parse tls key {}", key_path.display()))?
+        .context("no private key found in tls_key")?;
+    Ok((certs, key))
 }
 
 fn load_pair(cert_path: &Path, key_path: &Path) -> anyhow::Result<Arc<RustlsServerConfig>> {

@@ -1,4 +1,26 @@
-//! D1-01 spike：验证 quinn 0.11 可直接复用 rustls 0.23 的证书与配置。
+//! QUIC 端点构造：复用 rustls 0.23 的证书与配置。
+
+use std::io;
+use std::net::SocketAddr;
+
+use quinn::{Endpoint, ServerConfig};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+/// 用现有证书链与私钥建立 QUIC 服务端端点。
+pub fn server_endpoint(
+    bind: SocketAddr,
+    cert: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> io::Result<Endpoint> {
+    let config = ServerConfig::with_single_cert(cert, key)
+        .map_err(|err| io::Error::other(format!("quic server config: {err}")))?;
+    Endpoint::server(config, bind)
+}
+
+/// 建立客户端端点；绑定 `0.0.0.0:0`。
+pub fn client_endpoint() -> io::Result<Endpoint> {
+    Endpoint::client(SocketAddr::from(([0, 0, 0, 0], 0)))
+}
 
 #[cfg(test)]
 mod tests {
@@ -30,7 +52,7 @@ mod tests {
         ClientConfig::new(Arc::new(tls))
     }
 
-    async fn bind_server(config: ServerConfig) -> (Endpoint, SocketAddr) {
+    async fn bind_server(config: ServerConfig) -> (quinn::Endpoint, SocketAddr) {
         let endpoint =
             Endpoint::server(config, SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("bind");
         let addr = endpoint.local_addr().expect("local addr");

@@ -49,6 +49,83 @@ async fn spawn_echo(port: u16) {
 }
 
 #[tokio::test]
+async fn quic_dial_reaches_server() {
+    let _guard = TEST_MUTEX.lock().await;
+    let (echo_port, control_port, proxy_port) = distinct_ports();
+    let _ = echo_port;
+    let dir = std::env::temp_dir().join(format!("meatus-quic-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+quic = true
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [{proxy_port}, {proxy_port}]
+
+[admin]
+bind = "127.0.0.1:0"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+    let client_config = format!(
+        r#"
+[client]
+server_addr = "127.0.0.1:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+transport = "quic"
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let server_cancel = CancellationToken::new();
+    let server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    sleep(Duration::from_millis(500)).await;
+
+    let client =
+        meatus_client::quic::connect(&parse_client_config(&client_config).expect("client cfg"))
+            .await
+            .expect("quic connect");
+    let (mut send, recv) = client
+        .connection()
+        .open_bi()
+        .await
+        .expect("open quic stream");
+    send.write_all(b"hello").await.expect("write");
+    send.finish().expect("finish");
+    drop(recv);
+    client.connection().close(0u32.into(), b"test done");
+
+    let _ = timeout(Duration::from_secs(5), server_task).await;
+}
+
+#[tokio::test]
 async fn tcp_tunnel_roundtrip() {
     let _guard = TEST_MUTEX.lock().await;
     let (echo_port, control_port, proxy_port) = distinct_ports();

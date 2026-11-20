@@ -2,6 +2,7 @@
 //! 客户端侧运行时：TLS 拨号、控制面、公网端口到本地服务的隧道。
 
 mod probe;
+pub mod quic;
 mod session;
 mod stats;
 mod tls;

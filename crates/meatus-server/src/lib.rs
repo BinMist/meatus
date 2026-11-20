@@ -11,6 +11,7 @@ mod http;
 pub mod logbuf;
 mod metrics;
 mod pool;
+mod quic;
 pub mod quota;
 mod routes;
 mod runtime;
@@ -148,6 +149,12 @@ impl ServerState {
             "control tcp://{}:{}",
             self.config.server.bind_addr, self.config.server.control_port
         )];
+        if self.config.server.quic {
+            listeners.push(format!(
+                "control udp://{}:{}",
+                self.config.server.bind_addr, self.config.server.control_port
+            ));
+        }
 
         if self.config.http.enabled {
             listeners.push(format!("http   tcp://{}", self.config.http.bind));
@@ -228,6 +235,11 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
         .with_context(|| format!("bind control listener {bind}"))?;
     let local = listener.local_addr().context("control local_addr")?;
     info!(%local, "control listener ready: TLS + yamux");
+    let quic_endpoint = if state.config.server.quic {
+        Some(quic::endpoint(&state.config)?)
+    } else {
+        None
+    };
 
     let admin_listener = TcpListener::bind(&state.config.admin.bind)
         .await
@@ -261,6 +273,15 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
     ));
 
     let mut data_tasks = Vec::new();
+    if let Some(endpoint) = quic_endpoint {
+        let quic_state = Arc::clone(&state);
+        let quic_cancel = cancel.child_token();
+        data_tasks.push(tokio::spawn(async move {
+            if let Err(err) = quic::serve(endpoint, quic_state, quic_cancel).await {
+                warn!(error = %err, "QUIC listener stopped");
+            }
+        }));
+    }
     #[cfg(unix)]
     if let Some(reloader) = state.reloader.clone() {
         let reload_cancel = cancel.child_token();

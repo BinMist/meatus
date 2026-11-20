@@ -8,6 +8,7 @@ server:
   # TLS 1.3 证书（必需；缺失或只有一项都会拒绝启动）
   tls_cert: "certs/server.crt"
   tls_key: "certs/server.key"
+  quic: false
 
 tenant:
   default: "default"

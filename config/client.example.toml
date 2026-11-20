@@ -3,6 +3,8 @@
 
 [client]
 server_addr = "tunnel.example.com:7000"
+# 控制面传输：tcp（默认）/ quic / auto（D1-03 接入）
+transport = "tcp"
 server_name = "tunnel.example.com"
 client_id = "home-nas"          # 必须与服务端 clients[].id 一致
 tenant = "default"

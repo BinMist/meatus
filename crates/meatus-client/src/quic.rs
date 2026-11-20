@@ -1,0 +1,53 @@
+#![forbid(unsafe_code)]
+//! QUIC 控制面拨号；TLS 校验复用 `tls::client_config`。
+
+use std::net::{Ipv4Addr, SocketAddr};
+use std::time::Duration;
+
+use anyhow::{Context, anyhow};
+use meatus_core::ClientConfig;
+use quinn::crypto::rustls::QuicClientConfig;
+use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint};
+use tokio::time::timeout;
+
+const QUIC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 保持端点与连接存活；丢弃后连接关闭。
+pub struct QuicClient {
+    _endpoint: Endpoint,
+    connection: Connection,
+}
+
+impl QuicClient {
+    #[must_use]
+    pub fn connection(&self) -> &Connection {
+        &self.connection
+    }
+}
+
+/// 拨号 `server_addr` 的 UDP 端口，SNI 与证书规则与 TCP 一致。
+pub async fn connect(config: &ClientConfig) -> anyhow::Result<QuicClient> {
+    let (tls, server_name) = super::tls::client_config(config)?;
+    let tls = QuicClientConfig::try_from((*tls).clone())
+        .map_err(|err| anyhow!("build quic client config: {err}"))?;
+    let mut client = QuinnClientConfig::new(std::sync::Arc::new(tls));
+    client.transport_config(std::sync::Arc::new(quinn::TransportConfig::default()));
+    let endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+        .context("bind quic client endpoint")?;
+    let addr = tokio::net::lookup_host(&config.client.server_addr)
+        .await
+        .with_context(|| format!("resolve quic target {}", config.client.server_addr))?
+        .next()
+        .ok_or_else(|| anyhow!("no address for quic target {}", config.client.server_addr))?;
+    let connecting = endpoint
+        .connect_with(client, addr, &server_name.to_str())
+        .with_context(|| format!("parse quic target {}", config.client.server_addr))?;
+    let connection = timeout(QUIC_CONNECT_TIMEOUT, connecting)
+        .await
+        .with_context(|| format!("quic connect {} timed out", config.client.server_addr))?
+        .context("quic handshake")?;
+    Ok(QuicClient {
+        _endpoint: endpoint,
+        connection,
+    })
+}

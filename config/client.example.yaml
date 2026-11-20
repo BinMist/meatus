@@ -4,6 +4,7 @@
 
 client:
   server_addr: "tunnel.example.com:7000"
+  transport: "tcp"
   server_name: "tunnel.example.com"
   client_id: "home-nas"
   tenant: "default"

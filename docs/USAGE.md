@@ -718,6 +718,7 @@ ssh -p 20022 <用户>@203.0.113.10
 | `control_port` | 否  | `7000`    | 控制面端口，必须 ≥ 1024                |
 | `tls_cert`     | 是  | —         | TLS 证书 PEM；缺失会拒绝启动             |
 | `tls_key`      | 是  | —         | TLS 私钥 PEM；与 `tls_cert` 必须同时存在 |
+| `quic`         | 否  | `false`   | 是否在控制端口同时监听 UDP/QUIC；开启后 TCP 与 UDP 共用端口 |
 
 #### `[tenant]`
 
@@ -1144,6 +1145,7 @@ YAML 写回前会先解析并校验；校验失败不会覆盖原文件。成功
 | ----------------------- | -- | --------------------------------------- |
 | `server_addr`           | 是  | `host:port`，如 `tunnel.example.com:7000` |
 | `server_name`           | 否  | TLS SNI / 证书校验名；自签时写证书 SAN              |
+| `transport`             | 否  | `tcp`     | 控制面传输：`tcp` / `quic`；`auto` 在 D1-03 接入        |
 | `client_id`             | 否  | 默认 `default`；必须匹配 server `clients[].id` |
 | `tenant`                | 否  | 默认 `default`                            |
 | `token`                 | 是  | 明文 token                                |
