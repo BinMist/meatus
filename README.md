@@ -15,7 +15,7 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，精确域名由 server 用 HTTP-01 自动签发、TLS 终止并缓存/续期，泛域名走 DNS-01（支持 Cloudflare / DNSPod）
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **版本状态**：`1.3.0` 代码已冻结、发布准备中；当前线上正式版本为 `1.2.1`（2026-11-19）。`1.3.0` 发布后提供 Linux x86_64 / arm64 musl、macOS aarch64 / x86_64 静态包 + 阿里云 ACR 多架构镜像（`1.3.0` / `1.3` / `latest`；当前线上仍为 `1.2.1` / `1.2`，ACR 为私有仓库，拉取前需 `docker login`）。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **版本状态**：`1.3.0` 代码已冻结、发布准备中；当前线上正式版本为 `1.2.1`（2026-11-19）。`1.3.0` 发布后提供 Linux x86_64 / arm64 musl、macOS aarch64 / x86_64 静态包 + 阿里云 ACR 多架构镜像（`1.3.0` / `1.3` / `latest`；当前线上仍为 `1.2.1` / `1.2`，ACR 为私有仓库，拉取前需 `docker login`）。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。`1.3.0` 以全量测试、20% 弱网与 ZAP baseline 为发布门禁，24h soak 经决策延至下一版本，不阻塞本次发布。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
 ## 当前版本摘要
 

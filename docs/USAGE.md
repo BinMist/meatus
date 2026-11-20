@@ -1,7 +1,7 @@
 # Meatus 完整使用教程（V1.3）
 
 > 适用版本：Meatus `1.3.0`（完全开源、Apache-2.0、自托管；发布准备中）
-> 发布状态：当前开发版本 `1.3.0`，线上正式版本 `1.2.1`。`1.3.0` 的四平台安装包与 ACR 多架构镜像将在 24h soak 通过后发布；当前可用的 Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.2.1>。Windows 暂不提供；GHCR / GitHub Release 暂缓。
+> 发布状态：当前开发版本 `1.3.0`，线上正式版本 `1.2.1`。`1.3.0` 以全量测试、20% 弱网与 ZAP baseline 为发布门禁，24h soak 经决策延至下一版本，不阻塞本次发布；四平台安装包与 ACR 多架构镜像将在发布流程中上传。当前可用的 Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.2.1>。Windows 暂不提供；GHCR / GitHub Release 暂缓。
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
 > 依赖：单二进制 + TOML（默认）/ YAML（管理面可写，规范化重写）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 > 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
@@ -12,7 +12,7 @@
 
 ### V1.3.0 发布
 
-V1.3.0 以多客户端、授权与配额、审计备份、RBAC、API Token 与控制面握手防护为主。代码门禁已完成：`cargo test` 159 passed / 1 ignored，20% 弱网 20/20，ZAP 0 High / 0 Medium；最终 24h soak 通过后发布。
+V1.3.0 以多客户端、授权与配额、审计备份、RBAC、API Token 与控制面握手防护为主。代码门禁已完成：`cargo test` 159 passed / 1 ignored，20% 弱网 20/20，ZAP 0 High / 0 Medium；24h soak 经决策延至下一版本，不阻塞本次发布。
 
 | 能力 | 说明 |
 | --- | --- |
