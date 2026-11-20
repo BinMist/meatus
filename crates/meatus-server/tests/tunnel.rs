@@ -734,6 +734,137 @@ remote_port = {proxy_port}
 }
 
 #[tokio::test]
+async fn client_switches_when_active_entry_stops() {
+    let _guard = TEST_MUTEX.lock().await;
+    let echo_port = free_port();
+    let control_a = free_port();
+    let control_b = free_port();
+    let proxy_a = free_port();
+    let proxy_b = free_port();
+    let (low, high) = if proxy_a < proxy_b {
+        (proxy_a, proxy_b)
+    } else {
+        (proxy_b, proxy_a)
+    };
+    spawn_echo(echo_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-switch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = |control_port: u16| {
+        format!(
+            r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [{low}, {high}]
+
+[admin]
+bind = "127.0.0.1:0"
+"#,
+            cert = cert_path.display(),
+            key = key_path.display(),
+        )
+    };
+
+    let client_config = format!(
+        r#"
+[client]
+server_addrs = ["127.0.0.1:{control_a}", "127.0.0.1:{control_b}"]
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+
+[[proxy]]
+name = "echo-a"
+type = "tcp"
+local_addr = "127.0.0.1:{echo_port}"
+remote_port = {proxy_a}
+
+[[proxy]]
+name = "echo-b"
+type = "tcp"
+local_addr = "127.0.0.1:{echo_port}"
+remote_port = {proxy_b}
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_a =
+        ServerState::new(parse_server_config(&server_config(control_a)).expect("server a cfg"))
+            .expect("server a");
+    let server_b =
+        ServerState::new(parse_server_config(&server_config(control_b)).expect("server b cfg"))
+            .expect("server b");
+    let client_state =
+        ClientState::new(parse_client_config(&client_config).expect("client cfg")).expect("client");
+
+    let a_cancel = CancellationToken::new();
+    let b_cancel = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let a_task = {
+        let cancel = a_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_a, cancel).await })
+    };
+    let b_task = {
+        let cancel = b_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_b, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let mut both = false;
+    for _ in 0..60 {
+        sleep(Duration::from_millis(200)).await;
+        if probe(proxy_a).await.is_ok() && probe(proxy_b).await.is_ok() {
+            both = true;
+            break;
+        }
+    }
+    assert!(both, "initial tunnels on entry A did not come up");
+
+    a_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), a_task).await;
+
+    let mut recovered = false;
+    for _ in 0..100 {
+        sleep(Duration::from_millis(200)).await;
+        if probe(proxy_a).await.is_ok() && probe(proxy_b).await.is_ok() {
+            recovered = true;
+            break;
+        }
+    }
+
+    client_cancel.cancel();
+    b_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), b_task).await;
+    assert!(
+        recovered,
+        "client did not re-register both proxies on entry B"
+    );
+}
+
+#[tokio::test]
 async fn duplicate_proxy_name_is_rejected_and_client_offline_is_removed() {
     let _guard = TEST_MUTEX.lock().await;
     let (echo_a, echo_b, control_port, proxy_port, admin_port) = loop {
