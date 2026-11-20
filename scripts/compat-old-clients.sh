@@ -10,10 +10,12 @@
 #   MEATUS_BINARY      当前服务端二进制，默认 target/debug/meatus
 #   MEATUS_OLD_121     1.2.1 客户端二进制
 #   MEATUS_OLD_130     1.3.0 客户端二进制
+#   MEATUS_SERVER_BIN  被测服务端二进制，默认同 MEATUS_BINARY
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BIN="${MEATUS_BINARY:-target/debug/meatus}"
+SERVER="${MEATUS_SERVER_BIN:-$BIN}"
 [[ -x "$BIN" ]] || { echo "missing $BIN（先 cargo build）" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "缺少 python3" >&2; exit 1; }
 command -v curl >/dev/null || { echo "缺少 curl" >&2; exit 1; }
@@ -165,7 +167,7 @@ write_client "$TMP/client121.toml" "old-121" "$TOK121" "$REMOTE121" "$ECHO"
 write_client "$TMP/client130.toml" "old-130" "$TOK130" "$REMOTE130" "$ECHO"
 
 python3 -m http.server "$ECHO" --bind 127.0.0.1 --directory "$TMP/www" >"$TMP/http.log" 2>&1 & HTTP_PID=$!
-"$BIN" server --config "$TMP/server.toml" >"$TMP/server.log" 2>&1 & SERVER_PID=$!
+"$SERVER" server --config "$TMP/server.toml" >"$TMP/server.log" 2>&1 & SERVER_PID=$!
 
 for _ in $(seq 1 40); do
     if curl -fsS --max-time 2 "http://127.0.0.1:$ADMIN/healthz" >/dev/null 2>&1; then
@@ -217,18 +219,24 @@ sys.stdout.write(re.sub(r"\x1b\[[0-9;]*m", "", text))
 PY
 
 # v1 协商必须显式留痕，且两个 client 都走 protocol=1；日志写入允许短暂延迟。
+SERVER_VERSION="$("$SERVER" --version | awk '{print $2}')"
 PROTOCOL_ONE_COUNT=0
 for _ in $(seq 1 20); do
     PROTOCOL_ONE_COUNT="$(grep -c 'protocol=1' "$SERVER_PLAIN" || true)"
     [[ "${PROTOCOL_ONE_COUNT:-0}" -ge 2 ]] && break
     sleep 0.1
 done
-if [[ "${PROTOCOL_ONE_COUNT:-0}" -lt 2 ]]; then
+if [[ "$SERVER_VERSION" != "1.3.0" && "${PROTOCOL_ONE_COUNT:-0}" -lt 2 ]]; then
     echo "FAIL  server log missing two protocol=1 negotiations" >&2
     cat "$SERVER_PLAIN" >&2
     exit 1
 fi
-if ! grep -q 'client_id=old-121' "$SERVER_PLAIN" || ! grep -q 'client_id=old-130' "$SERVER_PLAIN"; then
+if [[ "$SERVER_VERSION" == "1.3.0" ]]; then
+    CLIENT_FIELD='client='
+else
+    CLIENT_FIELD='client_id='
+fi
+if ! grep -q "${CLIENT_FIELD}old-121" "$SERVER_PLAIN" || ! grep -q "${CLIENT_FIELD}old-130" "$SERVER_PLAIN"; then
     echo "FAIL  server log missing old client ids" >&2
     cat "$SERVER_PLAIN" >&2
     exit 1
