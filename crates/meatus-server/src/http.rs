@@ -19,7 +19,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::ServerState;
 use crate::routes::{DomainRoute, RouteKind};
@@ -265,7 +265,12 @@ where
         created_ms: now_ms(),
         trace_id: format!("{:016x}", route.next_trace.fetch_add(1, Ordering::Relaxed)),
         udp_session_id: 0,
+        connection_id: meatus_core::ids::new_id(),
     };
+    info!(trace_id = %header.trace_id, connection_id = %header.connection_id, proxy = %route.proxy_name, "http tunnel opened");
+    route
+        .metrics
+        .record_stream(&header.trace_id, &header.connection_id);
     write_frame(&mut tunnel, &header).await?;
     tunnel.write_all(&prefix).await?;
     copy_bidirectional_limited(client, &mut tunnel, route.limiter.as_ref())

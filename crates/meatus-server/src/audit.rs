@@ -28,6 +28,8 @@ pub struct AuditEvent {
     pub client_id: Option<String>,
     pub result: String,
     pub trace_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub connection_id: String,
 }
 
 impl AuditEvent {
@@ -42,6 +44,7 @@ impl AuditEvent {
             client_id: None,
             result: "ok".to_string(),
             trace_id: String::new(),
+            connection_id: String::new(),
         }
     }
 
@@ -74,6 +77,12 @@ impl AuditEvent {
         self.trace_id = trace_id.into();
         self
     }
+
+    #[must_use]
+    pub fn connection_id(mut self, connection_id: impl Into<String>) -> Self {
+        self.connection_id = connection_id.into();
+        self
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -84,6 +93,7 @@ pub struct AuditFilter {
     pub action: Option<String>,
     pub client_id: Option<String>,
     pub result: Option<String>,
+    pub trace_id: Option<String>,
 }
 
 impl AuditFilter {
@@ -177,6 +187,8 @@ impl AuditLog {
         event.actor = sanitize(&event.actor);
         event.target = sanitize(&event.target);
         event.source_ip = sanitize(&event.source_ip);
+        event.trace_id = sanitize(&event.trace_id);
+        event.connection_id = sanitize(&event.connection_id);
         if event.trace_id.is_empty() {
             let seq = self.trace_seq.fetch_add(1, Ordering::Relaxed);
             event.trace_id = format!("{:016x}", (event.ts_ms as u64) ^ seq.rotate_left(17));

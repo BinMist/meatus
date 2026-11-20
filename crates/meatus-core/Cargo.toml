@@ -10,6 +10,7 @@ meatus-proto.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 futures-io.workspace = true
+getrandom.workspace = true
 hex.workspace = true
 hmac.workspace = true
 prost.workspace = true

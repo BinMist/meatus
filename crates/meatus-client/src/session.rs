@@ -300,6 +300,7 @@ async fn handshake(
     data_connection: bool,
 ) -> anyhow::Result<String> {
     let pool = &config.client.pool;
+    let trace_id = meatus_core::ids::new_id();
     write_frame(
         writer,
         &ControlMsg {
@@ -314,6 +315,7 @@ async fn handshake(
                 data_connection,
                 pool_size: pool.size,
                 max_streams_per_conn: pool.max_streams_per_conn,
+                trace_id: trace_id.clone(),
             })),
         },
     )
@@ -347,8 +349,14 @@ async fn handshake(
             heartbeat_secs,
             protocol_version,
             caps,
+            trace_id: echoed_trace,
             ..
         })) => {
+            let trace_id = if echoed_trace.is_empty() {
+                trace_id.clone()
+            } else {
+                echoed_trace
+            };
             let server_protocol = welcome_protocol_version(protocol_version)?;
             if server_protocol < PROTOCOL_VERSION {
                 warn!(
@@ -358,6 +366,7 @@ async fn handshake(
                 );
             }
             info!(
+                %trace_id,
                 server = %config.client.server_addr,
                 tenant = %config.client.tenant,
                 client = %config.client.client_id,
@@ -984,6 +993,13 @@ async fn handle_data(
     let header: StreamHeader = timeout(DATA_HEADER_TIMEOUT, read_frame(&mut stream))
         .await
         .context("timed out waiting for StreamHeader")??;
+    info!(
+        trace_id = %meatus_core::ids::ensure_id(&header.trace_id),
+        connection_id = %meatus_core::ids::ensure_id(&header.connection_id),
+        proxy = %header.proxy_name,
+        kind = header.kind,
+        "client data stream accepted"
+    );
 
     let proxy = proxies
         .read()

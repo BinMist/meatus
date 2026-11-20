@@ -197,11 +197,13 @@ async fn serve_data_connection(
                 server_time_ms: now_ms(),
                 protocol_version: negotiated.version,
                 caps: negotiated.caps.clone(),
+                trace_id: hello.trace_id.clone(),
             })),
         },
     )
     .await?;
     info!(
+        trace_id = %hello.trace_id,
         client_id = %hello.client_id,
         session_id = %hello.session_id,
         pool_size = pool.len(),
@@ -309,6 +311,7 @@ async fn run_session(
     {
         Ok(identity) => {
             info!(
+                trace_id = %hello.trace_id,
                 tenant = %identity.tenant_id,
                 client = %identity.client_id,
                 "client authenticated"
@@ -341,6 +344,7 @@ async fn run_session(
                 server_time_ms: now_ms(),
                 protocol_version: negotiated.version,
                 caps: negotiated.caps.clone(),
+                trace_id: hello.trace_id.clone(),
             })),
         },
     )
@@ -367,7 +371,8 @@ async fn run_session(
         crate::audit::AuditEvent::new("client.online", &hello.client_id)
             .actor(format!("client:{}", hello.client_id))
             .client(&hello.client_id)
-            .source_ip(ctx.peer),
+            .source_ip(ctx.peer)
+            .trace_id(hello.trace_id.clone()),
     );
     struct ClientStatusGuard {
         state: Arc<ServerState>,
@@ -1384,7 +1389,11 @@ async fn start_proxy_inner(
                             proxy_ctx.next_trace.fetch_add(1, Ordering::Relaxed)
                         ),
                         udp_session_id: 0,
+                        connection_id: meatus_core::ids::new_id(),
                     };
+                    proxy_ctx
+                        .metrics
+                        .record_stream(&header.trace_id, &header.connection_id);
                     write_frame(&mut tunnel, &header)
                         .await
                         .map_err(|err| (ErrorCode::Internal, format!("write udp header: {err}")))?;
@@ -1649,7 +1658,11 @@ async fn pipe_inner(
         created_ms: now_ms(),
         trace_id: format!("{:016x}", ctx.next_trace.fetch_add(1, Ordering::Relaxed)),
         udp_session_id: 0,
+        connection_id: meatus_core::ids::new_id(),
     };
+    info!(trace_id = %header.trace_id, connection_id = %header.connection_id, proxy = %ctx.proxy_name, "data tunnel opened");
+    ctx.metrics
+        .record_stream(&header.trace_id, &header.connection_id);
     write_frame(&mut tunnel, &header).await?;
 
     copy_bidirectional_limited(user, &mut tunnel, ctx.limiter.as_ref())

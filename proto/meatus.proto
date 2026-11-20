@@ -17,6 +17,9 @@ message Hello {
   // 仅控制连接需要；数据连接忽略。
   uint32 pool_size        = 9;
   uint32 max_streams_per_conn = 10;
+  // V1.4 可观测性：控制会话 trace_id，由客户端生成，服务端在 Welcome 回显。
+  // 旧客户端不填、旧服务端不回显时双方都按空值处理。
+  string trace_id          = 11;
 }
 
 message Challenge {
@@ -35,6 +38,8 @@ message Welcome {
   // 旧客户端解码时忽略；旧服务端不回显时客户端按 v1、空 caps 处理。
   uint32 protocol_version = 4;
   repeated string caps    = 5;
+  // 回显 Hello.trace_id；空表示对端未提供。
+  string trace_id = 6;
 }
 
 enum ProxyType {
@@ -175,6 +180,8 @@ message StreamHeader {
   int64  created_ms    = 5;
   string trace_id      = 6;
   uint32 udp_session_id = 7;
+  // V1.4：单条数据流唯一 ID，服务端生成，客户端用于日志关联。
+  string connection_id = 8;
 }
 
 // UDP 专用单流承载的报文帧。

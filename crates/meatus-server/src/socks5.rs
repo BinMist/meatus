@@ -198,7 +198,12 @@ async fn handle(
         created_ms: now_ms(),
         trace_id: format!("{:016x}", route.next_trace.fetch_add(1, Ordering::Relaxed)),
         udp_session_id: 0,
+        connection_id: meatus_core::ids::new_id(),
     };
+    info!(trace_id = %header.trace_id, connection_id = %header.connection_id, proxy = %route.proxy_name, "socks5 tunnel opened");
+    route
+        .metrics
+        .record_stream(&header.trace_id, &header.connection_id);
     write_frame(&mut tunnel, &header)
         .await
         .context("write socks5 stream header")?;

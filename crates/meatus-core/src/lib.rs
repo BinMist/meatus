@@ -5,6 +5,7 @@ pub mod auth;
 pub mod backup;
 pub mod config;
 pub mod config_edit;
+pub mod ids;
 mod multiplex;
 pub mod net;
 pub mod pin;

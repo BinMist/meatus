@@ -1281,6 +1281,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures-io",
+ "getrandom 0.4.3",
  "hex",
  "hmac",
  "meatus-proto",

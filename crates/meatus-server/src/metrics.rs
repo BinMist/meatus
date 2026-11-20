@@ -19,6 +19,7 @@ pub struct ProxyMetrics {
     udp_packets: AtomicU64,
     quota_denied: AtomicU64,
     quota_throttled: AtomicU64,
+    last_stream: Mutex<Option<(String, String)>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -45,6 +46,15 @@ impl ProxyMetrics {
     pub fn add_bytes(&self, inbound: u64, outbound: u64) {
         self.bytes_in.fetch_add(inbound, Ordering::Relaxed);
         self.bytes_out.fetch_add(outbound, Ordering::Relaxed);
+    }
+
+    /// 记录最近一条数据流的 ID，供审计/指标关联。
+    pub fn record_stream(&self, trace_id: &str, connection_id: &str) {
+        let mut last = self
+            .last_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *last = Some((trace_id.to_string(), connection_id.to_string()));
     }
 
     pub fn add_packet(&self, inbound: u64, outbound: u64) {
@@ -310,6 +320,28 @@ impl Metrics {
             );
         }
 
+        let _ = writeln!(
+            out,
+            "# HELP meatus_proxy_last_stream IDs of the latest accepted data stream."
+        );
+        let _ = writeln!(out, "# TYPE meatus_proxy_last_stream gauge");
+        for (name, metrics) in &proxies {
+            if let Some((trace_id, connection_id)) = metrics
+                .last_stream
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+            {
+                let _ = writeln!(
+                    out,
+                    "meatus_proxy_last_stream{{proxy=\"{}\",trace_id=\"{}\",connection_id=\"{}\"}} 1",
+                    escape(name),
+                    escape(&trace_id),
+                    escape(&connection_id)
+                );
+            }
+        }
+
         let _ = writeln!(out, "# HELP meatus_bytes_total Tunneled bytes.");
         let _ = writeln!(out, "# TYPE meatus_bytes_total counter");
         for (name, metrics) in &proxies {
@@ -434,6 +466,12 @@ mod tests {
         assert!(text.contains("meatus_transport_connections_total{transport=\"quic\"} 0"));
         assert!(text.contains("meatus_pool_connections 0"));
         assert!(text.contains("meatus_pool_waits_total 0"));
+
+        proxy.record_stream("trace-1", "conn-1");
+        let text = metrics.render();
+        assert!(text.contains(
+            "meatus_proxy_last_stream{proxy=\"echo\",trace_id=\"trace-1\",connection_id=\"conn-1\"} 1"
+        ));
     }
 
     #[tokio::test]

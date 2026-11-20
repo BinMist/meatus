@@ -24,6 +24,7 @@ fn v2_welcome() -> Welcome {
         server_time_ms: 1_760_000_000_000,
         protocol_version: 2,
         caps: vec!["tcp".to_string(), "probe".to_string()],
+        trace_id: "trace-v2".to_string(),
     }
 }
 
@@ -53,6 +54,10 @@ fn v2_decoder_accepts_v1_welcome_and_defaults_new_fields() {
     assert_eq!(decoded.server_time_ms, 42);
     assert_eq!(decoded.protocol_version, 0, "absent v2 field defaults to 0");
     assert!(decoded.caps.is_empty());
+    assert!(
+        decoded.trace_id.is_empty(),
+        "absent trace_id defaults to empty"
+    );
 }
 
 #[test]
@@ -62,4 +67,34 @@ fn welcome_frame_roundtrip_keeps_v2_fields() {
     let decoded: Welcome = decode_msg(&frame).expect("decode Welcome frame");
 
     assert_eq!(decoded, welcome);
+}
+
+#[test]
+fn stream_header_optional_ids_roundtrip() {
+    use crate::v1::{StreamHeader, StreamKind};
+
+    let missing = StreamHeader {
+        proxy_name: "echo".to_string(),
+        kind: StreamKind::UserConn as i32,
+        src_addr: "127.0.0.1:1".to_string(),
+        dst_hint: String::new(),
+        created_ms: 1,
+        trace_id: String::new(),
+        udp_session_id: 0,
+        connection_id: String::new(),
+    };
+    let decoded: StreamHeader =
+        decode_msg(&encode_msg(&missing).expect("encode header")).expect("decode header");
+    assert!(decoded.trace_id.is_empty());
+    assert!(decoded.connection_id.is_empty());
+
+    let long = StreamHeader {
+        trace_id: "a".repeat(64 + 1),
+        connection_id: "b".repeat(64 + 1),
+        ..missing
+    };
+    let decoded: StreamHeader =
+        decode_msg(&encode_msg(&long).expect("encode header")).expect("decode header");
+    assert_eq!(decoded.trace_id.len(), 64 + 1);
+    assert!(decoded.trace_id.len() > 64);
 }

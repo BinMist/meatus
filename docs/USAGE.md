@@ -2863,3 +2863,10 @@ A：自签只适合内网 / 测试。公网终端用户访问请用公网 CA 或
 - 防火墙需同时放行 TCP 控制端口与（启用 QUIC 时的）同端口 UDP；IPv6 规则不要只写 v4。
 - 回归：`scripts/ipv6-smoke.sh` 覆盖 IPv6-only 控制面 + proxy 回环、`::` 双栈 v4/v6 回环、Host/SNI 解析。
 
+### 流元数据：trace_id 与 connection_id
+
+- 控制面：客户端在 `Hello.trace_id` 写入本次会话 ID；服务端在 `Welcome.trace_id` 回显，并在 `client authenticated` / `client.online` 日志与审计中沿用。
+- 数据面：服务端为每条数据流生成 `connection_id` 写入 `StreamHeader.connection_id`；`trace_id` 保留 proxy 级序号。客户端在 `client data stream accepted` 日志中输出两者。
+- 指标：`/metrics` 的 `meatus_proxy_last_stream{proxy,trace_id,connection_id}` 暴露每个 proxy 最近一条数据流 ID。
+- 审计：审计 JSONL 增加可选 `connection_id`；`GET /api/v1/audit?trace=<前缀>` 可按 trace_id 或 connection_id 前缀检索。
+- 兼容：两个字段都是 v2 加法字段；缺失时为空，v1 客户端/服务端忽略，不影响旧链路。

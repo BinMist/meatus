@@ -890,6 +890,7 @@ async fn route_inner(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState)
                 action: query_value(&request.query, "action"),
                 client_id: query_value(&request.query, "client"),
                 result: query_value(&request.query, "result"),
+                trace_id: query_value(&request.query, "trace"),
             };
             let events = state.audit.query(&filter);
             HttpResponse::json(
