@@ -665,6 +665,7 @@ log:
 要点：
 
 - `server_addr` 只写在**客户端**，格式为 `公网IP:控制端口`，不能带 `http://`。
+- 多入口用 `server_addrs = ["a.example.com:7000", "b.example.com:7000"]`；当前入口断开后客户端切下一个，全部不可用时按 1s→30s 指数退避。日志含 `entry_index`、`entry_total`、`failures`、`next_retry` 字段。
 - `server_name` 必须与服务端证书的域名 / IP SAN 一致。证书签给域名时写域名，不能写 IP。
 - `server_ca_cert` 是服务端证书副本；使用公网 CA 证书时这一行可以删除。
 - `local_addr` 是客户端本机被暴露的服务地址，不是公网地址。
@@ -1147,7 +1148,8 @@ YAML 写回前会先解析并校验；校验失败不会覆盖原文件。成功
 
 | 字段                      | 必填 | 说明                                      |
 | ----------------------- | -- | --------------------------------------- |
-| `server_addr`           | 是  | `host:port`，如 `tunnel.example.com:7000` |
+| `server_addr`           | 否  | `host:port`，如 `tunnel.example.com:7000`；与 `server_addrs` 至少填一个 |
+| `server_addrs`          | 否  | 多入口列表；非空时优先于 `server_addr`，按顺序轮转，重复或非法地址启动报错 |
 | `server_name`           | 否  | TLS SNI / 证书校验名；自签时写证书 SAN              |
 | `transport`             | 否  | `tcp`     | 控制面传输：`tcp` / `quic`；`auto` 先试 QUIC，5 秒内失败回落 TCP        |
 | `client_id`             | 否  | 默认 `default`；必须匹配 server `clients[].id` |

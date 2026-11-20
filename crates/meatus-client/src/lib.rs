@@ -8,7 +8,8 @@ mod stats;
 mod tls;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use meatus_core::{ClientConfig, ConfigError, ProxySpec, load_client_config};
@@ -21,6 +22,83 @@ pub struct ClientState {
     pub config: ClientConfig,
     /// 配置文件路径；存在时监听 SIGHUP 做代理差量热重载。
     pub config_path: Option<PathBuf>,
+    dial: Arc<DialStatus>,
+}
+
+/// 客户端入口切换状态；只保留脱敏后的地址，不含 token。
+#[derive(Debug, Default)]
+pub struct DialStatus {
+    entry: Mutex<String>,
+    entry_index: AtomicUsize,
+    entry_total: AtomicUsize,
+    failures: AtomicU64,
+    next_retry_ms: AtomicU64,
+}
+
+/// 某一时刻的入口状态快照，供日志 / 外部状态展示使用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialSnapshot {
+    pub current_entry: String,
+    pub entry_index: usize,
+    pub entry_total: usize,
+    pub failures: u64,
+    pub next_retry_unix_ms: u64,
+}
+
+impl DialStatus {
+    #[must_use]
+    fn redacted_status(&self) -> String {
+        self.entry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set_entry(&self, addr: &str, index: usize, total: usize) {
+        let mut entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *entry = redact_addr(addr);
+        self.entry_index.store(index, Ordering::Relaxed);
+        self.entry_total.store(total, Ordering::Relaxed);
+    }
+
+    fn schedule_next_retry(&self, next_retry: Duration) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        self.next_retry_ms.store(
+            now.as_millis() as u64 + next_retry.as_millis() as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn record_failure(&self, next_retry: Duration) {
+        self.failures.fetch_add(1, Ordering::Relaxed);
+        self.schedule_next_retry(next_retry);
+    }
+
+    fn record_success(&self) {
+        self.failures.store(0, Ordering::Relaxed);
+        self.next_retry_ms.store(0, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> DialSnapshot {
+        DialSnapshot {
+            current_entry: self.redacted_status(),
+            entry_index: self.entry_index.load(Ordering::Relaxed),
+            entry_total: self.entry_total.load(Ordering::Relaxed),
+            failures: self.failures.load(Ordering::Relaxed),
+            next_retry_unix_ms: self.next_retry_ms.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// 入口地址脱敏：去掉可能存在的 userinfo，只保留 host:port。
+fn redact_addr(addr: &str) -> String {
+    addr.rsplit('@').next().unwrap_or(addr).to_string()
 }
 
 impl ClientState {
@@ -29,7 +107,14 @@ impl ClientState {
         Ok(Self {
             config,
             config_path: None,
+            dial: Arc::new(DialStatus::default()),
         })
+    }
+
+    /// 入口切换状态，可在运行期间读取；不含 token 等敏感信息。
+    #[must_use]
+    pub fn dial_snapshot(&self) -> DialSnapshot {
+        self.dial.snapshot()
     }
 
     #[must_use]
@@ -98,6 +183,7 @@ async fn shutdown_signal() {
 /// 带指数退避重连的客户端入口，测试可用 `CancellationToken` 停止。
 pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow::Result<()> {
     let config_path = state.config_path.clone();
+    let dial = Arc::clone(&state.dial);
     let mut config = Arc::new(state.config);
     let (reload_tx, mut reload_rx) = mpsc::channel::<Vec<ProxySpec>>(4);
     let reload_task = config_path.as_ref().map(|path| {
@@ -127,6 +213,12 @@ pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow:
             return Ok(());
         }
 
+        let selected_index = dial_index % dial_addrs.len();
+        dial.set_entry(
+            &dial_addrs[selected_index],
+            selected_index,
+            dial_addrs.len(),
+        );
         let started = Instant::now();
         let result = tokio::select! {
             _ = cancel.cancelled() => {
@@ -144,19 +236,41 @@ pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow:
             ) => result,
         };
         let stable = started.elapsed() >= Duration::from_secs(30);
+        let session_failed = result.is_err();
 
-        let attempted = dial_addrs[dial_index % dial_addrs.len()].clone();
+        let attempted = dial_addrs[selected_index].clone();
         match result {
-            Ok(()) => info!(server = %attempted, "control session closed, reconnecting"),
-            Err(err) => {
-                warn!(server = %attempted, error = %err, "control session failed, reconnecting")
-            }
+            Ok(()) => info!(
+                server = %attempted,
+                entry_index = selected_index,
+                entry_total = dial_addrs.len(),
+                "control session closed, reconnecting"
+            ),
+            Err(err) => warn!(
+                server = %attempted,
+                entry_index = selected_index,
+                entry_total = dial_addrs.len(),
+                failures = dial.snapshot().failures.saturating_add(1),
+                error = %err,
+                "control session failed, reconnecting"
+            ),
         }
         // 入口轮转：当前入口结束或失败后，下次一定尝试下一个，避免死守失效入口。
         dial_index = (dial_index + 1) % dial_addrs.len();
 
         let delay = jittered(backoff_secs);
-        info!(seconds = delay.as_secs_f32(), "reconnect backoff");
+        if session_failed {
+            dial.record_failure(delay);
+        } else {
+            dial.schedule_next_retry(delay);
+        }
+        info!(
+            seconds = delay.as_secs_f32(),
+            entry_index = selected_index,
+            entry_total = dial_addrs.len(),
+            failures = dial.snapshot().failures,
+            "reconnect backoff"
+        );
         tokio::select! {
             _ = cancel.cancelled() => {
                 if let Some(task) = &reload_task {
@@ -167,11 +281,12 @@ pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow:
             _ = sleep(delay) => {}
         }
 
-        backoff_secs = if stable {
-            1
+        if stable {
+            backoff_secs = 1;
+            dial.record_success();
         } else {
-            (backoff_secs * 2).min(30)
-        };
+            backoff_secs = (backoff_secs * 2).min(30);
+        }
 
         // 文件可能已被修改但 SIGHUP 丢失；重连时重新读取最新配置。
         if let Some(path) = &config_path {
@@ -282,6 +397,23 @@ local_addr = "127.0.0.1:23"
 
         let state = ClientState::new(config).expect("state");
         assert_eq!(state.proxy_names(), vec!["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn dial_status_redacts_userinfo_and_tracks_failures() {
+        let status = DialStatus::default();
+        status.set_entry("user:pass@entry.example.com:7000", 1, 3);
+        let snapshot = status.snapshot();
+        assert_eq!(snapshot.current_entry, "entry.example.com:7000");
+        assert_eq!(snapshot.entry_index, 1);
+        assert_eq!(snapshot.entry_total, 3);
+        assert_eq!(snapshot.failures, 0);
+        status.record_failure(Duration::from_secs(2));
+        assert_eq!(status.snapshot().failures, 1);
+        assert!(status.snapshot().next_retry_unix_ms > 0);
+        status.record_success();
+        assert_eq!(status.snapshot().failures, 0);
+        assert_eq!(status.snapshot().next_retry_unix_ms, 0);
     }
 
     #[test]

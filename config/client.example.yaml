@@ -4,6 +4,10 @@
 
 client:
   server_addr: "tunnel.example.com:7000"
+  # 多入口（V1.4）：非空时优先于 server_addr，按顺序轮转
+  # server_addrs:
+  #   - "tunnel-a.example.com:7000"
+  #   - "tunnel-b.example.com:7000"
   transport: "tcp"
   server_name: "tunnel.example.com"
   client_id: "home-nas"
