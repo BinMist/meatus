@@ -5,12 +5,13 @@ pub mod auth;
 pub mod backup;
 pub mod config;
 pub mod config_edit;
-pub mod multiplex;
+mod multiplex;
 pub mod net;
 pub mod pin;
 pub mod rate;
 pub mod seams;
 pub mod tenant;
+pub mod transport;
 pub mod wire;
 
 pub use auth::{proof, token_key, verify_proof_with_key};
@@ -38,4 +39,5 @@ pub use seams::{
     NullUsageSink, QuotaError, QuotaPolicy, QuotaRequest, StaticQuota, UsageRecord, UsageSink,
 };
 pub use tenant::{DEFAULT_TENANT, scoped_key};
+pub use transport::{Connection, PoolKey, PoolKeyError, Role};
 pub use wire::{WireError, read_frame, write_frame};

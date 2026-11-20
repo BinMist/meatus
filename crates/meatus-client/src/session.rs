@@ -8,10 +8,9 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
-use meatus_core::multiplex::Inbound;
 use meatus_core::{
-    ClientConfig, MultiplexedStream, ProxySpec, ProxyType as ConfigProxyType, TargetPolicy,
-    WireError, multiplex, read_frame, write_frame,
+    ClientConfig, Connection, MultiplexedStream, ProxySpec, ProxyType as ConfigProxyType,
+    TargetPolicy, WireError, read_frame, transport, write_frame,
 };
 use meatus_proto::{
     ErrorCode, PROTOCOL_VERSION, default_client_caps,
@@ -52,7 +51,7 @@ type Writer = WriteHalf<MultiplexedStream>;
 struct EstablishedSession {
     reader: Reader,
     writer: Writer,
-    inbound: Inbound,
+    connection: Connection,
 }
 
 /// 服务端明确拒绝当前协议版本；只有 `1002` 才允许回落一次。
@@ -93,7 +92,7 @@ pub async fn run_session(
     let EstablishedSession {
         mut reader,
         mut writer,
-        mut inbound,
+        connection,
     } = session;
     let stats = Arc::new(ClientStats::new(&config.proxies));
     register_proxies(config, &stats, &mut reader, &mut writer).await?;
@@ -103,7 +102,8 @@ pub async fn run_session(
         let proxies = Arc::clone(&proxies);
         let stats = Arc::clone(&stats);
         tokio::spawn(async move {
-            while let Some(stream) = inbound.recv().await {
+            let mut connection = connection;
+            while let Some(stream) = connection.accept().await {
                 let proxies = Arc::clone(&proxies);
                 let stats = Arc::clone(&stats);
                 tokio::spawn(async move {
@@ -163,9 +163,9 @@ async fn establish(
     protocol_version: u32,
 ) -> anyhow::Result<EstablishedSession> {
     let tls_stream = crate::tls::connect(config).await?;
-    let (open, inbound) = multiplex::spawn(tls_stream.compat(), yamux::Mode::Client);
+    let connection = transport::attach(tls_stream.compat(), transport::Role::Client);
 
-    let control = timeout(HANDSHAKE_TIMEOUT, open.open())
+    let control = timeout(HANDSHAKE_TIMEOUT, connection.open())
         .await
         .context("timed out opening control stream")?
         .context("open control stream")?;
@@ -175,7 +175,7 @@ async fn establish(
     Ok(EstablishedSession {
         reader,
         writer,
-        inbound,
+        connection,
     })
 }
 

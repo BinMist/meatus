@@ -28,7 +28,7 @@ use handshake::{HANDSHAKE_FAIL_DELAY, HandshakeLimiter};
 use logbuf::LogBuffer;
 use meatus_core::{
     AllowAllQuota, AuthProvider, ConfigError, LocalPortAllocator, LocalTokenAuth, NameAllocator,
-    NullUsageSink, QuotaPolicy, ServerConfig, UsageSink, multiplex,
+    NullUsageSink, QuotaPolicy, ServerConfig, UsageSink, transport,
 };
 use metrics::Metrics;
 use routes::DomainRouter;
@@ -385,9 +385,9 @@ async fn serve_connection(
         }
     };
 
-    let (open, mut inbound) = multiplex::spawn(tls_stream.compat(), yamux::Mode::Server);
+    let mut connection = transport::attach(tls_stream.compat(), transport::Role::Server);
 
-    let control = match timeout(CONTROL_STREAM_TIMEOUT, inbound.recv()).await {
+    let control = match timeout(CONTROL_STREAM_TIMEOUT, connection.accept()).await {
         Ok(Some(control)) => control,
         Ok(None) => {
             state.metrics.handshake_failed("control_stream");
@@ -412,7 +412,8 @@ async fn serve_connection(
     }
     let _connected = ConnectedGuard(Arc::clone(&state));
 
-    let drain = tokio::spawn(async move { while inbound.recv().await.is_some() {} });
+    let open = connection.open_handle();
+    let drain = tokio::spawn(async move { while connection.accept().await.is_some() {} });
     let ctx = control::SessionContext {
         state,
         open,
