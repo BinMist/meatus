@@ -2,6 +2,7 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -19,8 +20,9 @@ pub fn server_endpoint(
     Endpoint::server(config, bind)
 }
 
-/// QUIC 服务端资源上限：单连接只允许一条双向流（应用层再用 yamux 复用），
+/// QUIC 资源上限：单连接只允许一条双向流（应用层再用 yamux 复用），
 /// 禁止单向流，30 秒握手 / 空闲超时，15 秒 keep-alive。
+/// 服务端与客户端共用，窗口与 BBR 调整同时作用于两侧，避免单向瓶颈。
 #[must_use]
 pub fn server_transport() -> std::sync::Arc<quinn::TransportConfig> {
     let mut transport = quinn::TransportConfig::default();
@@ -32,6 +34,11 @@ pub fn server_transport() -> std::sync::Arc<quinn::TransportConfig> {
             .expect("valid idle timeout"),
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
+    // 本地与跨机房大窗口：避免默认 1.25 MiB 流窗口成为吞吐瓶颈。
+    transport.stream_receive_window((8u32 * 1024 * 1024).into());
+    transport.receive_window((16u32 * 1024 * 1024).into());
+    transport.send_window(16 * 1024 * 1024);
+    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     std::sync::Arc::new(transport)
 }
 

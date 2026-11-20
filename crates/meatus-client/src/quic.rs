@@ -41,7 +41,7 @@ pub async fn connect(config: &ClientConfig, server_addr: &str) -> anyhow::Result
     let tls = QuicClientConfig::try_from((*tls).clone())
         .map_err(|err| anyhow!("build quic client config: {err}"))?;
     let mut client = QuinnClientConfig::new(std::sync::Arc::new(tls));
-    client.transport_config(std::sync::Arc::new(quinn::TransportConfig::default()));
+    client.transport_config(meatus_core::quic::server_transport());
     let endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .context("bind quic client endpoint")?;
     let addr = tokio::net::lookup_host(server_addr)
