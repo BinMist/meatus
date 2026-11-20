@@ -1020,7 +1020,12 @@ pub struct ClientConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientSection {
+    /// 单入口地址；`server_addrs` 非空时被忽略。
+    #[serde(default)]
     pub server_addr: String,
+    /// 多入口地址列表；非空时优先于 `server_addr`。
+    #[serde(default)]
+    pub server_addrs: Vec<String>,
     /// 控制面传输：`tcp`（默认）、`quic`、`auto`。
     #[serde(default)]
     pub transport: TransportMode,
@@ -1151,10 +1156,25 @@ impl ClientConfig {
             .collect()
     }
 
-    /// 从 `server_addr` 提取主机名，用于 TLS SNI / 证书校验。
+    /// 实际拨号列表：`server_addrs` 非空时优先，否则退回 `server_addr`。
+    #[must_use]
+    pub fn dial_addrs(&self) -> Vec<String> {
+        if self.client.server_addrs.is_empty() {
+            vec![self.client.server_addr.clone()]
+        } else {
+            self.client.server_addrs.clone()
+        }
+    }
+
+    /// 从首个拨号地址提取主机名，用于 TLS SNI / 证书校验。
     #[must_use]
     pub fn server_host(&self) -> &str {
-        let addr = self.client.server_addr.as_str();
+        let addr = self
+            .client
+            .server_addrs
+            .first()
+            .map(String::as_str)
+            .unwrap_or(self.client.server_addr.as_str());
         if let Some(rest) = addr.strip_prefix('[') {
             return rest.split(']').next().unwrap_or(rest);
         }
@@ -1162,17 +1182,29 @@ impl ClientConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if !self.client.server_addr.contains(':') {
-            return Err(invalid("client.server_addr must be host:port"));
+        let targets = self.dial_addrs();
+        if targets.iter().all(|target| target.trim().is_empty()) {
+            return Err(invalid(
+                "client.server_addr or client.server_addrs must be set",
+            ));
         }
-        let port = self
-            .client
-            .server_addr
-            .rsplit_once(':')
-            .map(|(_, port)| port)
-            .unwrap_or("");
-        if port.parse::<u16>().is_err() {
-            return Err(invalid("client.server_addr must end with a valid port"));
+        let mut seen = HashSet::new();
+        for target in &targets {
+            let target = target.trim();
+            if !seen.insert(target.to_string()) {
+                return Err(invalid(format!("duplicate client address: {target}")));
+            }
+            if !target.contains(':') {
+                return Err(invalid(format!(
+                    "client address must be host:port, got {target:?}"
+                )));
+            }
+            let port = target.rsplit_once(':').map(|(_, port)| port).unwrap_or("");
+            if port.parse::<u16>().is_err() {
+                return Err(invalid(format!(
+                    "client address must end with a valid port, got {target:?}"
+                )));
+            }
         }
         if self.client.client_id.trim().is_empty() {
             return Err(invalid("client.client_id must not be empty"));
@@ -1955,6 +1987,47 @@ token = "secret-token"
         )
         .expect("valid");
         assert_eq!(ipv6.server_host(), "::1");
+    }
+
+    #[test]
+    fn client_server_addrs_take_priority_and_validate() {
+        let config = parse_client_config(
+            r#"
+[client]
+server_addr = "old.example.com:7000"
+server_addrs = ["one.example.com:7000", "two.example.com:7001"]
+token = "secret-token"
+"#,
+        )
+        .expect("valid");
+        assert_eq!(
+            config.dial_addrs(),
+            vec![
+                "one.example.com:7000".to_string(),
+                "two.example.com:7001".to_string()
+            ]
+        );
+        assert_eq!(config.server_host(), "one.example.com");
+
+        let err = parse_client_config(
+            r#"
+[client]
+server_addrs = ["one.example.com:7000", "one.example.com:7000"]
+token = "secret-token"
+"#,
+        )
+        .expect_err("duplicate should fail");
+        assert!(err.to_string().contains("duplicate"), "{err}");
+
+        let err = parse_client_config(
+            r#"
+[client]
+server_addrs = ["not-a-host-port"]
+token = "secret-token"
+"#,
+        )
+        .expect_err("invalid should fail");
+        assert!(err.to_string().contains("host:port"), "{err}");
     }
 
     #[test]
