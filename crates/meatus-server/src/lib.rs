@@ -88,6 +88,8 @@ impl ServerState {
         };
 
         let runtime = RuntimeConfig::new(config.clone(), Arc::clone(&auth), "startup");
+        let metrics = Arc::new(Metrics::new());
+        let pools = Arc::new(SessionPools::with_stats(metrics.pool_stats()));
 
         Ok(Self {
             config,
@@ -96,12 +98,12 @@ impl ServerState {
             quota: Arc::new(AllowAllQuota),
             quotas: Arc::new(quota::MonthlyQuota::default()),
             usage: Arc::new(NullUsageSink),
-            metrics: Arc::new(Metrics::new()),
+            metrics,
             handshake_limiter: Arc::new(HandshakeLimiter::default()),
             domains: Arc::new(DomainRouter::new()),
             status: Arc::new(StatusRegistry::default()),
             socks5: Arc::new(Socks5Registry::default()),
-            pools: Arc::new(SessionPools::default()),
+            pools,
             acme,
             logs: Arc::new(LogBuffer::default()),
             audit: Arc::new(audit::AuditLog::default()),

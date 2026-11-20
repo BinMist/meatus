@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 //! 数据连接池：按连接统计在途流，限制单连接并发与总连接数。
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+use tokio::sync::Notify;
 
 use crate::transport::{MultiplexedStream, OpenHandle};
 
@@ -21,10 +23,43 @@ pub enum PoolError {
     Closed,
 }
 
+/// 跨会话共享的池指标；由服务端 `Metrics` 读取。
+#[derive(Debug, Default)]
+pub struct PoolStats {
+    connections: AtomicI64,
+    opens: AtomicU64,
+    reuses: AtomicU64,
+    waits: AtomicU64,
+    timeouts: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PoolSnapshot {
+    pub connections: u64,
+    pub opens: u64,
+    pub reuses: u64,
+    pub waits: u64,
+    pub timeouts: u64,
+}
+
+impl PoolStats {
+    #[must_use]
+    pub fn snapshot(&self) -> PoolSnapshot {
+        PoolSnapshot {
+            connections: u64::try_from(self.connections.load(Ordering::Relaxed)).unwrap_or(0),
+            opens: self.opens.load(Ordering::Relaxed),
+            reuses: self.reuses.load(Ordering::Relaxed),
+            waits: self.waits.load(Ordering::Relaxed),
+            timeouts: self.timeouts.load(Ordering::Relaxed),
+        }
+    }
+}
+
 struct PooledConn {
     id: PoolConnId,
     handle: OpenHandle,
     inflight: AtomicUsize,
+    uses: AtomicU64,
     last_used: Mutex<Instant>,
 }
 
@@ -77,16 +112,35 @@ pub struct ConnectionPool {
     max_streams_per_conn: usize,
     conns: Mutex<Vec<Arc<PooledConn>>>,
     next_id: AtomicU64,
+    stats: Arc<PoolStats>,
+    notify: Arc<Notify>,
+    wait_timeout: Duration,
 }
 
 impl ConnectionPool {
     #[must_use]
     pub fn new(max_conns: usize, max_streams_per_conn: usize) -> Self {
+        Self::with_stats(
+            max_conns,
+            max_streams_per_conn,
+            Arc::new(PoolStats::default()),
+        )
+    }
+
+    #[must_use]
+    pub fn with_stats(
+        max_conns: usize,
+        max_streams_per_conn: usize,
+        stats: Arc<PoolStats>,
+    ) -> Self {
         Self {
             max_conns: max_conns.max(1),
             max_streams_per_conn: max_streams_per_conn.max(1),
             conns: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(1),
+            stats,
+            notify: Arc::new(Notify::new()),
+            wait_timeout: Duration::from_secs(5),
         }
     }
 
@@ -101,19 +155,34 @@ impl ConnectionPool {
             id,
             handle,
             inflight: AtomicUsize::new(0),
+            uses: AtomicU64::new(0),
             last_used: Mutex::new(Instant::now()),
         }));
+        self.stats.connections.fetch_add(1, Ordering::Relaxed);
         Ok(id)
     }
 
     /// 按编号移除连接；连接已被移除时幂等返回。
     pub fn remove(&self, id: PoolConnId) {
-        lock(&self.conns).retain(|conn| conn.id != id);
+        let mut removed = false;
+        lock(&self.conns).retain(|conn| {
+            if conn.id == id {
+                removed = true;
+                false
+            } else {
+                true
+            }
+        });
+        if removed {
+            self.stats.connections.fetch_sub(1, Ordering::Relaxed);
+            self.notify.notify_waiters();
+        }
     }
 
     /// 打开一条流，优先选择在途流最少的连接。
     ///
-    /// 打开失败会移除坏连接并尝试下一条；全部饱和或全部失败时返回错误。
+    /// 全部饱和时最多等待 5 秒；等待超时计入 `timeouts`。
+    /// 打开失败会移除坏连接并尝试下一条。
     pub async fn open(&self) -> Result<(MultiplexedStream, PoolGuard), PoolError> {
         loop {
             let candidates = {
@@ -138,18 +207,31 @@ impl ConnectionPool {
                 }
             }
             let Some(conn) = chosen else {
-                return Err(PoolError::StreamLimit);
+                self.stats.waits.fetch_add(1, Ordering::Relaxed);
+                if tokio::time::timeout(self.wait_timeout, self.notify.notified())
+                    .await
+                    .is_err()
+                {
+                    self.stats.timeouts.fetch_add(1, Ordering::Relaxed);
+                    return Err(PoolError::StreamLimit);
+                }
+                continue;
             };
             if !conn.try_acquire(self.max_streams_per_conn, Instant::now()) {
                 continue;
             }
+            let reused = conn.uses.fetch_add(1, Ordering::Relaxed) > 0;
             match conn.handle.open().await {
                 Ok(stream) => {
+                    self.stats.opens.fetch_add(1, Ordering::Relaxed);
+                    if reused {
+                        self.stats.reuses.fetch_add(1, Ordering::Relaxed);
+                    }
                     return Ok((
                         stream,
                         PoolGuard {
                             conn: Arc::clone(&conn),
-                            released: false,
+                            notify: Arc::clone(&self.notify),
                         },
                     ));
                 }
@@ -167,7 +249,14 @@ impl ConnectionPool {
         let mut conns = lock(&self.conns);
         let before = conns.len();
         conns.retain(|conn| conn.idle_for(now).is_none_or(|elapsed| elapsed < idle));
-        before - conns.len()
+        let removed = before - conns.len();
+        if removed > 0 {
+            self.stats
+                .connections
+                .fetch_sub(i64::try_from(removed).unwrap_or(0), Ordering::Relaxed);
+            self.notify.notify_waiters();
+        }
+        removed
     }
 
     #[must_use]
@@ -197,20 +286,23 @@ impl ConnectionPool {
     pub fn max_streams_per_conn(&self) -> usize {
         self.max_streams_per_conn
     }
+
+    #[must_use]
+    pub fn stats(&self) -> Arc<PoolStats> {
+        Arc::clone(&self.stats)
+    }
 }
 
-/// 在途流计数守卫；流关闭时自动归还额度。
+/// 在途流计数守卫；流关闭时自动归还额度并唤醒等待者。
 pub struct PoolGuard {
     conn: Arc<PooledConn>,
-    released: bool,
+    notify: Arc<Notify>,
 }
 
 impl Drop for PoolGuard {
     fn drop(&mut self) {
-        if !self.released {
-            self.conn.release();
-            self.released = true;
-        }
+        self.conn.release();
+        self.notify.notify_one();
     }
 }
 
@@ -245,6 +337,7 @@ mod tests {
         assert_eq!(pool.add(h2.open), Ok(PoolConnId(2)));
         assert_eq!(pool.add(h1.open.clone()), Err(PoolError::Full));
         assert_eq!(pool.len(), 2);
+        assert_eq!(pool.stats().snapshot().connections, 2);
     }
 
     #[tokio::test]
@@ -258,17 +351,25 @@ mod tests {
         pool.remove(id);
         assert_eq!(pool.add(h2.open), Ok(PoolConnId(2)));
         assert_eq!(pool.len(), 1);
+        assert_eq!(pool.stats().snapshot().connections, 1);
     }
 
     #[tokio::test]
-    async fn stream_limit_is_enforced_and_guard_releases() {
-        let pool = ConnectionPool::new(1, 1);
+    async fn waiting_open_is_released_by_guard() {
+        let pool = Arc::new(ConnectionPool::new(1, 1));
         let h = make_handle();
         pool.add(h.open).expect("add");
         let (_stream, guard) = pool.open().await.expect("first open");
-        assert_eq!(pool.inflight(), 1);
-        assert_eq!(pool.open().await.err(), Some(PoolError::StreamLimit));
+        let waiter = tokio::spawn({
+            let pool = Arc::clone(&pool);
+            async move { pool.open().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(pool.stats().snapshot().waits, 1);
         drop(guard);
+        let (_stream2, guard2) = waiter.await.expect("join").expect("second open");
+        assert_eq!(pool.inflight(), 1);
+        drop(guard2);
         assert_eq!(pool.inflight(), 0);
     }
 
@@ -281,9 +382,37 @@ mod tests {
         pool.add(h2.open).expect("add 2");
         let (_s1, g1) = pool.open().await.expect("first");
         let (_s2, g2) = pool.open().await.expect("second");
-        assert_eq!(pool.inflight(), 2);
-        drop((g1, g2));
+        let (_s3, g3) = pool.open().await.expect("third");
+        assert_eq!(pool.inflight(), 3);
+        let snapshot = pool.stats().snapshot();
+        assert_eq!(snapshot.opens, 3);
+        assert_eq!(snapshot.reuses, 1);
+        drop((g1, g2, g3));
         assert_eq!(pool.inflight(), 0);
+    }
+
+    #[tokio::test]
+    async fn broken_connection_is_removed_and_pool_recovers() {
+        let pool = ConnectionPool::new(2, 1);
+        let first = make_handle();
+        let Handle {
+            open,
+            _inbound,
+            _peer,
+        } = first;
+        pool.add(open).expect("add first");
+        // 模拟底层连接被断开：驱动任务结束，OpenHandle::open 返回 Closed。
+        drop(_inbound);
+        drop(_peer);
+        assert_eq!(pool.open().await.err(), Some(PoolError::Closed));
+        assert!(pool.is_empty(), "broken connection must be evicted");
+
+        let second = make_handle();
+        pool.add(second.open).expect("add second");
+        assert!(pool.open().await.is_ok(), "pool must recover");
+        assert_eq!(pool.len(), 1);
+        let snapshot = pool.stats().snapshot();
+        assert_eq!(snapshot.connections, 1);
     }
 
     #[tokio::test]
@@ -296,5 +425,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(pool.reap_idle(Duration::from_millis(10)), 1);
         assert!(pool.is_empty());
+        assert_eq!(pool.stats().snapshot().connections, 0);
     }
 }

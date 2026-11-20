@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use meatus_core::{ConnectionPool, OpenHandle, PoolConnId, PoolError};
+use meatus_core::{ConnectionPool, OpenHandle, PoolConnId, PoolError, PoolStats};
 use tokio_util::sync::CancellationToken;
 
 struct SessionPool {
@@ -15,9 +15,15 @@ struct SessionPool {
 }
 
 /// 按主会话 `run_id` 管理数据连接池；主会话结束时统一取消。
-#[derive(Default)]
 pub struct SessionPools {
     inner: Mutex<HashMap<String, Arc<SessionPool>>>,
+    stats: Arc<PoolStats>,
+}
+
+impl Default for SessionPools {
+    fn default() -> Self {
+        Self::with_stats(Arc::new(PoolStats::default()))
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -27,6 +33,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl SessionPools {
+    #[must_use]
+    pub fn with_stats(stats: Arc<PoolStats>) -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            stats,
+        }
+    }
+
     /// 主控制连接收到 Welcome 后创建池；同一 `run_id` 重复创建视为错误。
     pub fn create(
         &self,
@@ -39,7 +53,11 @@ impl SessionPools {
     ) -> Result<Arc<ConnectionPool>, PoolError> {
         let size = usize::try_from(pool_size.clamp(1, 16)).unwrap_or(1);
         let max_streams = usize::try_from(max_streams_per_conn.clamp(1, 1024)).unwrap_or(1);
-        let pool = Arc::new(ConnectionPool::new(size, max_streams));
+        let pool = Arc::new(ConnectionPool::with_stats(
+            size,
+            max_streams,
+            Arc::clone(&self.stats),
+        ));
         pool.add(handle)?;
         let mut inner = lock(&self.inner);
         inner.insert(

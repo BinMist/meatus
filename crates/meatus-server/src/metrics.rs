@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use meatus_core::PoolStats;
+
 #[derive(Debug, Default)]
 pub struct ProxyMetrics {
     active: AtomicU64,
@@ -112,6 +114,7 @@ impl ProxyMetrics {
 pub struct Metrics {
     started: Instant,
     connected: AtomicU64,
+    pool_stats: Arc<PoolStats>,
     probe_ok: AtomicU64,
     probe_fail: AtomicU64,
     proxies: Mutex<HashMap<String, Arc<ProxyMetrics>>>,
@@ -123,6 +126,7 @@ impl Default for Metrics {
         Self {
             started: Instant::now(),
             connected: AtomicU64::new(0),
+            pool_stats: Arc::new(PoolStats::default()),
             probe_ok: AtomicU64::new(0),
             probe_fail: AtomicU64::new(0),
             proxies: Mutex::new(HashMap::new()),
@@ -135,6 +139,19 @@ impl Metrics {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn with_pool_stats(pool_stats: Arc<PoolStats>) -> Self {
+        Self {
+            pool_stats,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn pool_stats(&self) -> Arc<PoolStats> {
+        Arc::clone(&self.pool_stats)
     }
 
     #[must_use]
@@ -191,6 +208,38 @@ impl Metrics {
             "meatus_client_connected {}",
             self.connected.load(Ordering::Relaxed)
         );
+
+        let pool = self.pool_stats.snapshot();
+        let _ = writeln!(
+            out,
+            "# HELP meatus_pool_connections Pooled data connections."
+        );
+        let _ = writeln!(out, "# TYPE meatus_pool_connections gauge");
+        let _ = writeln!(out, "meatus_pool_connections {}", pool.connections);
+        let _ = writeln!(
+            out,
+            "# HELP meatus_pool_opens_total Streams opened through pools."
+        );
+        let _ = writeln!(out, "# TYPE meatus_pool_opens_total counter");
+        let _ = writeln!(out, "meatus_pool_opens_total {}", pool.opens);
+        let _ = writeln!(
+            out,
+            "# HELP meatus_pool_reuses_total Opens on already-used connections."
+        );
+        let _ = writeln!(out, "# TYPE meatus_pool_reuses_total counter");
+        let _ = writeln!(out, "meatus_pool_reuses_total {}", pool.reuses);
+        let _ = writeln!(
+            out,
+            "# HELP meatus_pool_waits_total Opens that had to wait for capacity."
+        );
+        let _ = writeln!(out, "# TYPE meatus_pool_waits_total counter");
+        let _ = writeln!(out, "meatus_pool_waits_total {}", pool.waits);
+        let _ = writeln!(
+            out,
+            "# HELP meatus_pool_timeouts_total Capacity waits that timed out."
+        );
+        let _ = writeln!(out, "# TYPE meatus_pool_timeouts_total counter");
+        let _ = writeln!(out, "meatus_pool_timeouts_total {}", pool.timeouts);
 
         let _ = writeln!(out, "# HELP meatus_probe_total Admin proxy probes.");
         let _ = writeln!(out, "# TYPE meatus_probe_total counter");
@@ -351,5 +400,25 @@ mod tests {
         assert!(text.contains("meatus_proxy_active{proxy=\"echo\"} 1"));
         assert!(text.contains("meatus_bytes_total{proxy=\"echo\",direction=\"in\"} 10"));
         assert!(text.contains("meatus_handshake_fail_total{reason=\"auth\"} 1"));
+        assert!(text.contains("meatus_pool_connections 0"));
+        assert!(text.contains("meatus_pool_waits_total 0"));
+    }
+
+    #[tokio::test]
+    async fn pool_metrics_reflect_connection_and_opens() {
+        let metrics = Metrics::new();
+        let pool = meatus_core::ConnectionPool::with_stats(1, 1, metrics.pool_stats());
+        let (a, b) = tokio::io::duplex(1024);
+        let connection = meatus_core::transport::attach(
+            tokio_util::compat::TokioAsyncReadCompatExt::compat(a),
+            meatus_core::Role::Client,
+        );
+        let _peer = b;
+        pool.add(connection.open_handle()).expect("add");
+        let (_stream, guard) = pool.open().await.expect("open");
+        let text = metrics.render();
+        assert!(text.contains("meatus_pool_connections 1"), "{text}");
+        assert!(text.contains("meatus_pool_opens_total 1"), "{text}");
+        drop(guard);
     }
 }

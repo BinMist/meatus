@@ -132,7 +132,7 @@ kill -HUP <client_pid>
 - 心跳：客户端 10s Ping、30s 无 Pong 重连；服务端 10s Ping、25s 无消息关闭。
 - 重连：`1→2→4→8→16→30s`，±20% 抖动；重连后全量重注册 proxy。`kill -9 client` 需要 systemd / Docker 等 supervisor 拉起。
 - 证书：默认系统根；自签 / 私有 CA 用 `client.server_ca_cert`。`server_public_key_pin` 支持 `sha256:<64hex>` 或裸 64 hex：先校验证书链，再比对叶子 SPKI SHA-256。
-- 限速 / 统计：每 proxy 一个令牌桶（`rate_limit_bps`，默认不限），超限只延迟不丢包；client 每 10s 上报 `Stats`，server 输出 Prometheus 文本到 `/metrics`（含 `meatus_probe_total{result}`），`/healthz` 返回 uptime。
+- 限速 / 统计：每 proxy 一个令牌桶（`rate_limit_bps`，默认不限），超限只延迟不丢包；client 每 10s 上报 `Stats`，server 输出 Prometheus 文本到 `/metrics`（含 `meatus_probe_total{result}` 与 `meatus_pool_*` 连接池指标），`/healthz` 返回 uptime。
 - 代理诊断：面板 Proxy 行的“测试”按钮经控制帧 `Probe` / `ProbeResult` 由客户端探测 `local_addr`；TCP / HTTP / HTTPS 返回可达性与延迟，UDP 只做 socket bind/connect，SOCKS5 提示“需实际请求验证”。单 proxy 限速 1 次 / 秒、超时 3 秒，不影响正常转发。
 - 热重载：client 收到 `SIGHUP` 后重新解析配置并做 proxy 差量（新增 / 删除 / 修改先删后加），失败保留旧配置；`server_addr` / `token` 等连接级字段变更需重启。
 - 管理面：`/metrics`、`/healthz`、`/api/v1/status`、`/api/v1/settings`、`/api/v1/certificates`、`/api/v1/logs`；配置 `admin_token` 后除 `/healthz` 外均要求 Cookie 会话或 `Authorization: Bearer`。`meatus status` 直接请求 `/api/v1/status` 并输出 clients/proxies 表格。
