@@ -1027,6 +1027,46 @@ pub struct ClientSection {
     pub token: String,
     /// SPKI SHA-256 pin；配置后仍会正常校验证书链，再额外固定公钥。
     pub server_public_key_pin: Option<String>,
+    /// 数据连接池；`[client.pool]`，默认关闭。
+    #[serde(default)]
+    pub pool: PoolSection,
+}
+
+/// 客户端数据连接池。[client.pool]，默认关闭。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_pool_size")]
+    pub size: u32,
+    #[serde(default = "default_pool_max_streams")]
+    pub max_streams_per_conn: u32,
+    #[serde(default = "default_pool_idle_timeout_s")]
+    pub idle_timeout_s: u32,
+}
+
+impl Default for PoolSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: default_pool_size(),
+            max_streams_per_conn: default_pool_max_streams(),
+            idle_timeout_s: default_pool_idle_timeout_s(),
+        }
+    }
+}
+
+const fn default_pool_size() -> u32 {
+    4
+}
+
+const fn default_pool_max_streams() -> u32 {
+    64
+}
+
+const fn default_pool_idle_timeout_s() -> u32 {
+    300
 }
 
 fn default_client_id() -> String {
@@ -1116,6 +1156,25 @@ impl ClientConfig {
         }
         if self.client.token.trim().is_empty() {
             return Err(invalid("client.token must not be empty"));
+        }
+        let pool = &self.client.pool;
+        if !(1..=16).contains(&pool.size) {
+            return Err(invalid(format!(
+                "client.pool.size must be between 1 and 16, got {}",
+                pool.size
+            )));
+        }
+        if !(1..=1024).contains(&pool.max_streams_per_conn) {
+            return Err(invalid(format!(
+                "client.pool.max_streams_per_conn must be between 1 and 1024, got {}",
+                pool.max_streams_per_conn
+            )));
+        }
+        if !(1..=3600).contains(&pool.idle_timeout_s) {
+            return Err(invalid(format!(
+                "client.pool.idle_timeout_s must be between 1 and 3600, got {}",
+                pool.idle_timeout_s
+            )));
         }
         if let Some(pin) = &self.client.server_public_key_pin {
             crate::pin::parse_spki_pin(pin)
@@ -1870,6 +1929,106 @@ token = "secret-token"
         )
         .expect("valid");
         assert_eq!(ipv6.server_host(), "::1");
+    }
+
+    #[test]
+    fn client_pool_defaults_to_disabled() {
+        let config = parse_client_config(
+            r#"
+[client]
+server_addr = "tunnel.example.com:7000"
+token = "secret-token"
+"#,
+        )
+        .expect("valid");
+        assert!(!config.client.pool.enabled);
+        assert_eq!(config.client.pool.size, 4);
+        assert_eq!(config.client.pool.max_streams_per_conn, 64);
+        assert_eq!(config.client.pool.idle_timeout_s, 300);
+    }
+
+    #[test]
+    fn client_pool_reads_nested_toml_table() {
+        let config = parse_client_config(
+            r#"
+[client]
+server_addr = "tunnel.example.com:7000"
+token = "secret-token"
+
+[client.pool]
+enabled = true
+size = 8
+max_streams_per_conn = 128
+idle_timeout_s = 600
+"#,
+        )
+        .expect("valid");
+        assert!(config.client.pool.enabled);
+        assert_eq!(config.client.pool.size, 8);
+        assert_eq!(config.client.pool.max_streams_per_conn, 128);
+        assert_eq!(config.client.pool.idle_timeout_s, 600);
+    }
+
+    #[test]
+    fn client_pool_yaml_matches_toml() {
+        let yaml = r#"
+client:
+  server_addr: "tunnel.example.com:7000"
+  token: "secret-token"
+  pool:
+    enabled: true
+    size: 2
+    max_streams_per_conn: 16
+    idle_timeout_s: 60
+"#;
+        let config = parse_client_config_with_format(yaml, ConfigFormat::Yaml).expect("valid yaml");
+        assert!(config.client.pool.enabled);
+        assert_eq!(config.client.pool.size, 2);
+        assert_eq!(config.client.pool.max_streams_per_conn, 16);
+        assert_eq!(config.client.pool.idle_timeout_s, 60);
+    }
+
+    #[test]
+    fn client_pool_rejects_out_of_range_values() {
+        for (field, value, expected) in [
+            ("size", "0", "client.pool.size"),
+            (
+                "max_streams_per_conn",
+                "0",
+                "client.pool.max_streams_per_conn",
+            ),
+            ("idle_timeout_s", "0", "client.pool.idle_timeout_s"),
+        ] {
+            let toml = format!(
+                r#"
+[client]
+server_addr = "tunnel.example.com:7000"
+token = "secret-token"
+
+[client.pool]
+{field} = {value}
+"#
+            );
+            let err = parse_client_config(&toml).expect_err("out of range");
+            assert!(err.to_string().contains(expected), "{err}");
+        }
+    }
+
+    #[test]
+    fn client_pool_rejects_unknown_field() {
+        let err = parse_client_config(
+            r#"
+[client]
+server_addr = "tunnel.example.com:7000"
+token = "secret-token"
+
+[client.pool]
+enabled = true
+max_conns = 10
+"#,
+        )
+        .expect_err("unknown field");
+        assert!(err.to_string().contains("max_conns"), "{err}");
     }
 
     #[test]

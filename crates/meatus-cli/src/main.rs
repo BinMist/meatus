@@ -668,6 +668,16 @@ fn client_summary(config: &ClientConfig) -> String {
         )
     );
     let _ = writeln!(out, "token    <redacted>");
+    let pool = &config.client.pool;
+    if pool.enabled {
+        let _ = writeln!(
+            out,
+            "pool     enabled size={} max_streams_per_conn={} idle_timeout_s={}",
+            pool.size, pool.max_streams_per_conn, pool.idle_timeout_s
+        );
+    } else {
+        let _ = writeln!(out, "pool     disabled");
+    }
     let _ = writeln!(out, "proxies  {}", config.proxies.len());
     for proxy in &config.proxies {
         let remote_port = proxy

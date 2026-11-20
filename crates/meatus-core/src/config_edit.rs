@@ -1182,6 +1182,11 @@ client:
   tenant: "default"
   token: "${MEATUS_CLIENT_TOKEN}"
   server_ca_cert: "certs/server.crt"
+  pool:
+    enabled: true
+    size: 2
+    max_streams_per_conn: 16
+    idle_timeout_s: 60
 
 proxy:
   - name: "old"
@@ -1213,6 +1218,8 @@ proxy:
         assert!(raw.contains("${MEATUS_CLIENT_TOKEN}"), "{raw}");
         let parsed: ClientConfig = serde_yaml::from_str(&raw).expect("parse written yaml");
         assert_eq!(parsed.proxies.len(), 2);
+        assert!(parsed.client.pool.enabled);
+        assert_eq!(parsed.client.pool.size, 2);
         let new = parsed
             .proxies
             .iter()

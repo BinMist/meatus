@@ -668,6 +668,18 @@ log:
 - `server_name` 必须与服务端证书的域名 / IP SAN 一致。证书签给域名时写域名，不能写 IP。
 - `server_ca_cert` 是服务端证书副本；使用公网 CA 证书时这一行可以删除。
 - `local_addr` 是客户端本机被暴露的服务地址，不是公网地址。
+
+V1.4 起客户端支持 `[client.pool]` 数据连接池，**默认关闭**；关闭时与 1.3 的单流行为完全一致：
+
+```toml
+[client.pool]
+enabled = false
+size = 4                    # 1..=16，每个 proxy/host 的连接上限
+max_streams_per_conn = 64   # 1..=1024，单连接并发流上限
+idle_timeout_s = 300        # 1..=3600，空闲连接回收时间
+```
+
+YAML 写法为 `client:` 下的嵌套 `pool:`。三个数值即使 `enabled = false` 也会校验，越界会在启动时直接报 `client.pool.*` 字段错误。
 - `remote_port` 必须在服务端的 `ports.range` 内，并在安全组放行。
 
 启动并验证：
