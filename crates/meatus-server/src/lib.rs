@@ -398,6 +398,7 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
     }
 
     if state.drain.is_draining() {
+        drop(listener);
         cancel.cancelled().await;
     }
     admin_task.abort();
