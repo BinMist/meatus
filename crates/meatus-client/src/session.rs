@@ -84,7 +84,7 @@ pub async fn run_session(
     reload_rx: &mut mpsc::Receiver<Vec<ProxySpec>>,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let (negotiated_version, session) = establish_with_fallback(config).await?;
+    let (negotiated_version, session, run_id) = establish_with_fallback(config).await?;
     info!(
         client_protocol = negotiated_version,
         "client session transport selected"
@@ -98,6 +98,31 @@ pub async fn run_session(
     register_proxies(config, &stats, &mut reader, &mut writer).await?;
 
     let proxies = Arc::new(RwLock::new(config.proxy_map()));
+    let mut pool_tasks = Vec::new();
+    if config.client.pool.enabled && negotiated_version >= 2 {
+        let idle = Duration::from_secs(u64::from(config.client.pool.idle_timeout_s));
+        for _ in 1..config.client.pool.size {
+            let config = config.clone();
+            let run_id = run_id.clone();
+            let proxies = Arc::clone(&proxies);
+            let stats = Arc::clone(&stats);
+            let cancel = cancel.clone();
+            pool_tasks.push(tokio::spawn(async move {
+                run_pool_data_connection(config, run_id, proxies, stats, cancel, idle).await;
+            }));
+        }
+        info!(
+            pool_size = config.client.pool.size,
+            max_streams_per_conn = config.client.pool.max_streams_per_conn,
+            idle_timeout_s = config.client.pool.idle_timeout_s,
+            "client data pool enabled"
+        );
+    } else if config.client.pool.enabled {
+        warn!(
+            protocol = negotiated_version,
+            "client data pool requires protocol 2; keeping single connection"
+        );
+    }
     let dispatcher = {
         let proxies = Arc::clone(&proxies);
         let stats = Arc::clone(&stats);
@@ -126,15 +151,18 @@ pub async fn run_session(
     )
     .await;
     dispatcher.abort();
+    for task in pool_tasks {
+        task.abort();
+    }
     result
 }
 
 /// 先按最高版本握手；旧服务端返回 `1002` 时，重连一次并降到 v1。
 async fn establish_with_fallback(
     config: &ClientConfig,
-) -> anyhow::Result<(u32, EstablishedSession)> {
+) -> anyhow::Result<(u32, EstablishedSession, String)> {
     match establish(config, PROTOCOL_VERSION).await {
-        Ok(session) => Ok((PROTOCOL_VERSION, session)),
+        Ok((session, run_id)) => Ok((PROTOCOL_VERSION, session, run_id)),
         Err(err) if is_unsupported_version(&err) => {
             let rejected = err
                 .downcast_ref::<UnsupportedProtocol>()
@@ -149,10 +177,10 @@ async fn establish_with_fallback(
                 reason = %rejected.message,
                 "server rejected protocol version; retrying with protocol 1"
             );
-            let session = establish(config, 1)
+            let (session, run_id) = establish(config, 1)
                 .await
                 .context("fallback to protocol 1 after UnsupportedVersion")?;
-            Ok((1, session))
+            Ok((1, session, run_id))
         }
         Err(err) => Err(err),
     }
@@ -161,7 +189,7 @@ async fn establish_with_fallback(
 async fn establish(
     config: &ClientConfig,
     protocol_version: u32,
-) -> anyhow::Result<EstablishedSession> {
+) -> anyhow::Result<(EstablishedSession, String)> {
     let tls_stream = crate::tls::connect(config).await?;
     let connection = transport::attach(tls_stream.compat(), transport::Role::Client);
 
@@ -171,12 +199,23 @@ async fn establish(
         .context("open control stream")?;
     let (mut reader, mut writer) = tokio::io::split(control);
 
-    handshake(config, &mut reader, &mut writer, protocol_version).await?;
-    Ok(EstablishedSession {
-        reader,
-        writer,
-        connection,
-    })
+    let run_id = handshake(
+        config,
+        &mut reader,
+        &mut writer,
+        protocol_version,
+        "",
+        false,
+    )
+    .await?;
+    Ok((
+        EstablishedSession {
+            reader,
+            writer,
+            connection,
+        },
+        run_id,
+    ))
 }
 
 /// Welcome 的 protocol_version 是 v2 加法字段：0 表示旧服务端未回显，按 v1 处理。
@@ -195,7 +234,10 @@ async fn handshake(
     reader: &mut Reader,
     writer: &mut Writer,
     protocol_version: u32,
-) -> anyhow::Result<()> {
+    session_id: &str,
+    data_connection: bool,
+) -> anyhow::Result<String> {
+    let pool = &config.client.pool;
     write_frame(
         writer,
         &ControlMsg {
@@ -206,6 +248,10 @@ async fn handshake(
                 caps: default_client_caps(),
                 tenant_id: config.client.tenant.clone(),
                 token_id: String::new(),
+                session_id: session_id.to_string(),
+                data_connection,
+                pool_size: pool.size,
+                max_streams_per_conn: pool.max_streams_per_conn,
             })),
         },
     )
@@ -259,7 +305,7 @@ async fn handshake(
                 server_caps = ?caps,
                 "tunnel established"
             );
-            Ok(())
+            Ok(run_id)
         }
         Some(control_msg::Kind::Error(err)) => Err(handshake_error(protocol_version, err)),
         _ => bail!("expected Welcome"),
@@ -753,6 +799,79 @@ where
         pending.insert(spec.name.clone(), spec);
     }
     Ok(())
+}
+
+async fn run_pool_data_connection(
+    config: ClientConfig,
+    run_id: String,
+    proxies: Arc<RwLock<HashMap<String, ProxySpec>>>,
+    stats: Arc<ClientStats>,
+    cancel: CancellationToken,
+    idle_timeout: Duration,
+) {
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        if cancel.is_cancelled() {
+            return;
+        }
+        match establish_data(&config, &run_id).await {
+            Ok(mut connection) => {
+                info!(session_id = %run_id, "pooled data connection established");
+                backoff = Duration::from_secs(1);
+                let mut idle = interval_at(TokioInstant::now() + idle_timeout, idle_timeout);
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = idle.tick() => {
+                            debug!(session_id = %run_id, "pooled data connection idle timeout");
+                            break;
+                        }
+                        stream = connection.accept() => {
+                            let Some(stream) = stream else { break };
+                            idle.reset();
+                            let proxies = Arc::clone(&proxies);
+                            let stats = Arc::clone(&stats);
+                            tokio::spawn(async move {
+                                if let Err(err) = handle_data(stream, proxies, stats).await {
+                                    debug!(error = %err, "pooled data stream ended");
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(session_id = %run_id, error = %err, "pooled data connection failed");
+            }
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep(backoff) => {}
+        }
+        backoff = (backoff * 2).min(Duration::from_secs(30));
+    }
+}
+
+async fn establish_data(config: &ClientConfig, run_id: &str) -> anyhow::Result<Connection> {
+    let tls_stream = crate::tls::connect(config).await?;
+    let connection = transport::attach(tls_stream.compat(), transport::Role::Client);
+    let control = timeout(HANDSHAKE_TIMEOUT, connection.open())
+        .await
+        .context("timed out opening data control stream")?
+        .context("open data control stream")?;
+    let (mut reader, mut writer) = tokio::io::split(control);
+    handshake(
+        config,
+        &mut reader,
+        &mut writer,
+        PROTOCOL_VERSION,
+        run_id,
+        true,
+    )
+    .await?;
+    drop(reader);
+    drop(writer);
+    Ok(connection)
 }
 
 async fn handle_data(

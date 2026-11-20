@@ -15,8 +15,8 @@ pub mod v1 {
 }
 
 pub use negotiation::{
-    CAP_PROBE, CAPABILITIES, DEFAULT_CLIENT_CAPS, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION,
-    UnsupportedProtocolVersion, default_client_caps, negotiate, negotiate_with,
+    CAP_PROBE, CAPABILITIES, DEFAULT_CLIENT_CAPS, MIN_PROTOCOL_VERSION, Negotiated,
+    PROTOCOL_VERSION, UnsupportedProtocolVersion, default_client_caps, negotiate, negotiate_with,
 };
 
 /// 控制帧上限，超限直接判错（防止内存被打爆）。

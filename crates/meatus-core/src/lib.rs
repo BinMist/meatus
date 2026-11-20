@@ -8,6 +8,7 @@ pub mod config_edit;
 mod multiplex;
 pub mod net;
 pub mod pin;
+pub mod pool;
 pub mod rate;
 pub mod seams;
 pub mod tenant;
@@ -32,6 +33,7 @@ pub use config_edit::{
 pub use multiplex::{Inbound, MultiplexError, MultiplexedStream, OpenHandle};
 pub use net::{DomainPolicy, TargetPolicy, normalize_domain};
 pub use pin::parse_spki_pin;
+pub use pool::{ConnectionPool, PoolConnId, PoolError, PoolGuard};
 pub use rate::{RateLimiter, copy_bidirectional_limited};
 pub use seams::{
     AllocError, AllowAllQuota, AuthError, AuthProvider, ClientIdentity, ConfigSnapshot,

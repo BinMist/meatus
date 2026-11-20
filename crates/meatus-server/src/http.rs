@@ -252,7 +252,7 @@ async fn pipe_route_inner<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut tunnel = timeout(OPEN_TIMEOUT, route.open.open())
+    let (mut tunnel, _guard) = timeout(OPEN_TIMEOUT, route.pool.open())
         .await
         .context("timed out opening http data stream")?
         .context("open http data stream")?;

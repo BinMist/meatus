@@ -680,6 +680,8 @@ idle_timeout_s = 300        # 1..=3600，空闲连接回收时间
 ```
 
 YAML 写法为 `client:` 下的嵌套 `pool:`。三个数值即使 `enabled = false` 也会校验，越界会在启动时直接报 `client.pool.*` 字段错误。
+
+启用后，`size` 是**总量**（含主控制连接）：客户端额外建立 `size - 1` 条 TLS + yamux 数据连接，服务端按“在途流最少”选择连接。单连接并发流达到 `max_streams_per_conn` 时新请求返回 `3002 StreamLimit`；客户端数据连接空闲超过 `idle_timeout_s` 会主动关闭，再按 1s 起指数退避重建。池依赖协议 v2，回落到 v1 时自动退回单连接。
 - `remote_port` 必须在服务端的 `ports.range` 内，并在安全组放行。
 
 启动并验证：

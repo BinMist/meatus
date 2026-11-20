@@ -10,6 +10,7 @@ mod handshake;
 mod http;
 pub mod logbuf;
 mod metrics;
+mod pool;
 pub mod quota;
 mod routes;
 mod runtime;
@@ -31,6 +32,7 @@ use meatus_core::{
     NullUsageSink, QuotaPolicy, ServerConfig, UsageSink, transport,
 };
 use metrics::Metrics;
+use pool::SessionPools;
 use routes::DomainRouter;
 use socks5::Socks5Registry;
 use status::StatusRegistry;
@@ -57,6 +59,7 @@ pub struct ServerState {
     pub domains: Arc<DomainRouter>,
     pub(crate) status: Arc<StatusRegistry>,
     pub(crate) socks5: Arc<Socks5Registry>,
+    pub(crate) pools: Arc<SessionPools>,
     pub acme: Option<Arc<acme::AcmeManager>>,
     pub logs: Arc<LogBuffer>,
     pub audit: Arc<audit::AuditLog>,
@@ -98,6 +101,7 @@ impl ServerState {
             domains: Arc::new(DomainRouter::new()),
             status: Arc::new(StatusRegistry::default()),
             socks5: Arc::new(Socks5Registry::default()),
+            pools: Arc::new(SessionPools::default()),
             acme,
             logs: Arc::new(LogBuffer::default()),
             audit: Arc::new(audit::AuditLog::default()),
@@ -413,11 +417,17 @@ async fn serve_connection(
     let _connected = ConnectedGuard(Arc::clone(&state));
 
     let open = connection.open_handle();
-    let drain = tokio::spawn(async move { while connection.accept().await.is_some() {} });
+    let closed = CancellationToken::new();
+    let drain_closed = closed.clone();
+    let drain = tokio::spawn(async move {
+        while connection.accept().await.is_some() {}
+        drain_closed.cancel();
+    });
     let ctx = control::SessionContext {
         state,
         open,
         cancel,
+        closed,
         peer: peer.ip(),
     };
     let result = control::serve(control, ctx).await;

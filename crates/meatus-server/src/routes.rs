@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use meatus_core::{OpenHandle, RateLimiter};
+use meatus_core::{ConnectionPool, RateLimiter};
 use tokio::sync::Semaphore;
 
 use crate::metrics::ProxyMetrics;
@@ -38,7 +38,7 @@ pub struct DomainRoute {
     pub proxy_name: String,
     pub tenant_id: String,
     pub client_id: String,
-    pub open: OpenHandle,
+    pub pool: Arc<ConnectionPool>,
     pub limiter: Arc<RateLimiter>,
     pub conn_limiter: Arc<RateLimiter>,
     pub quota: Arc<ProxyQuota>,

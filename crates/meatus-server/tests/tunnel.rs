@@ -1751,3 +1751,130 @@ local_addr = "127.0.0.1:0"
     let _ = timeout(Duration::from_secs(5), client_task).await;
     let _ = timeout(Duration::from_secs(5), server_task).await;
 }
+
+#[tokio::test]
+async fn pool_size_and_stream_limit_allow_two_simultaneous_tunnels() {
+    let _guard = TEST_MUTEX.lock().await;
+    let (echo_port, control_port, proxy_port) = distinct_ports();
+    spawn_echo(echo_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-pool-it-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [{proxy_port}, {proxy_port}]
+
+[admin]
+bind = "127.0.0.1:0"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+
+    let client_config = format!(
+        r#"
+[client]
+server_addr = "127.0.0.1:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+
+[client.pool]
+enabled = true
+size = 2
+max_streams_per_conn = 1
+idle_timeout_s = 300
+
+[[proxy]]
+name = "echo"
+type = "tcp"
+local_addr = "127.0.0.1:{echo_port}"
+remote_port = {proxy_port}
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let client_state = ClientState::new(parse_client_config(&client_config).expect("client cfg"))
+        .expect("client state");
+    let server_cancel = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let mut tunneled = false;
+    for _ in 0..80 {
+        sleep(Duration::from_millis(200)).await;
+        if probe(proxy_port).await.is_ok() {
+            tunneled = true;
+            break;
+        }
+    }
+    assert!(tunneled, "tunnel did not come up");
+
+    // 等数据连接注册完成；单连接 max_streams=1 时第二条并发连接会被拒绝。
+    sleep(Duration::from_secs(1)).await;
+    let mut first = timeout(
+        Duration::from_secs(5),
+        TcpStream::connect(("127.0.0.1", proxy_port)),
+    )
+    .await
+    .expect("first connect timeout")
+    .expect("first connect");
+    first.write_all(b"one").await.expect("write one");
+    let mut buf = [0u8; 3];
+    timeout(Duration::from_secs(5), first.read_exact(&mut buf))
+        .await
+        .expect("read one timeout")
+        .expect("read one");
+    assert_eq!(&buf, b"one");
+
+    let mut second = timeout(
+        Duration::from_secs(5),
+        TcpStream::connect(("127.0.0.1", proxy_port)),
+    )
+    .await
+    .expect("second connect timeout")
+    .expect("second connect");
+    second.write_all(b"two").await.expect("write two");
+    let mut buf = [0u8; 3];
+    timeout(Duration::from_secs(5), second.read_exact(&mut buf))
+        .await
+        .expect("read two timeout")
+        .expect("read two");
+    assert_eq!(&buf, b"two");
+
+    client_cancel.cancel();
+    server_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), server_task).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
 use meatus_core::{
-    ClientPolicy, MultiplexedStream, OpenHandle, PortReleasePolicy, QuotaAction, RateLimiter,
+    ClientPolicy, ConnectionPool, MultiplexedStream, PortReleasePolicy, QuotaAction, RateLimiter,
     TargetPolicy, UsageRecord, WireError, copy_bidirectional_limited, read_frame, write_frame,
 };
 use meatus_proto::{
@@ -52,8 +52,9 @@ type Writer = WriteHalf<MultiplexedStream>;
 
 pub struct SessionContext {
     pub state: Arc<ServerState>,
-    pub open: OpenHandle,
+    pub open: meatus_core::OpenHandle,
     pub cancel: CancellationToken,
+    pub closed: CancellationToken,
     pub peer: std::net::IpAddr,
 }
 
@@ -142,7 +143,7 @@ impl Drop for ProxyRuntime {
 #[derive(Clone)]
 struct ProxyContext {
     state: Arc<ServerState>,
-    open: OpenHandle,
+    pool: Arc<ConnectionPool>,
     tenant_id: String,
     client_id: String,
     proxy_name: String,
@@ -161,6 +162,58 @@ impl ProxyContext {
     fn record_usage(&self, bytes_in: u64, bytes_out: u64) {
         self.quota.record(bytes_in, bytes_out);
     }
+}
+
+async fn serve_data_connection(
+    hello: &Hello,
+    writer: &mut Writer,
+    ctx: &SessionContext,
+    negotiated: &meatus_proto::Negotiated,
+) -> anyhow::Result<()> {
+    if hello.session_id.trim().is_empty() {
+        let _ = write_frame(
+            writer,
+            &ErrorCode::AuthFailed.to_wire("data connection requires session_id"),
+        )
+        .await;
+        bail!("data connection missing session_id");
+    }
+    let (pool, id, session_cancel) = ctx
+        .state
+        .pools
+        .add_data(
+            &hello.session_id,
+            &hello.tenant_id,
+            &hello.client_id,
+            ctx.open.clone(),
+        )
+        .map_err(|err| anyhow!("register data connection: {err}"))?;
+    write_frame(
+        writer,
+        &ControlMsg {
+            kind: Some(control_msg::Kind::Welcome(Welcome {
+                run_id: hello.session_id.clone(),
+                heartbeat_secs: SERVER_PING.as_secs() as u32,
+                server_time_ms: now_ms(),
+                protocol_version: negotiated.version,
+                caps: negotiated.caps.clone(),
+            })),
+        },
+    )
+    .await?;
+    info!(
+        client_id = %hello.client_id,
+        session_id = %hello.session_id,
+        pool_size = pool.len(),
+        "data connection registered"
+    );
+    tokio::select! {
+        _ = ctx.closed.cancelled() => {}
+        _ = session_cancel.cancelled() => {}
+        _ = ctx.cancel.cancelled() => {}
+    }
+    pool.remove(id);
+    Ok(())
 }
 
 pub async fn serve(control: MultiplexedStream, ctx: SessionContext) -> anyhow::Result<()> {
@@ -272,6 +325,10 @@ async fn run_session(
         }
     }
 
+    if hello.data_connection {
+        return serve_data_connection(&hello, &mut writer, ctx, &negotiated).await;
+    }
+
     let client_policy = auth_provider.client_policy(&hello.tenant_id, &hello.client_id);
 
     let run_id = hex::encode(random_bytes(16)?);
@@ -289,6 +346,17 @@ async fn run_session(
     )
     .await?;
     handshake_complete.store(true, Ordering::Relaxed);
+    ctx.state
+        .pools
+        .create(
+            &run_id,
+            &hello.tenant_id,
+            &hello.client_id,
+            ctx.open.clone(),
+            hello.pool_size,
+            hello.max_streams_per_conn,
+        )
+        .map_err(|err| anyhow!("create session pool: {err}"))?;
     ctx.state.status.client_connected(
         &hello.tenant_id,
         &hello.client_id,
@@ -312,6 +380,7 @@ async fn run_session(
             self.state
                 .status
                 .client_disconnected(&self.tenant_id, &self.client_id, &self.run_id);
+            self.state.pools.remove(&self.run_id);
             self.state.audit.record(
                 crate::audit::AuditEvent::new("client.offline", &self.client_id)
                     .actor(format!("client:{}", self.client_id))
@@ -1090,6 +1159,11 @@ async fn start_proxy_inner(
         other => return Err((ErrorCode::Internal, format!("unknown quota_action={other}"))),
     };
     let idle_timeout_s = options.idle_timeout_s;
+    let pool = ctx
+        .state
+        .pools
+        .get(run_id)
+        .ok_or((ErrorCode::Internal, "data pool missing".to_string()))?;
     let limiter = Arc::new(RateLimiter::new(rate_limit_bps));
     let conn_limiter = Arc::new(RateLimiter::new(u64::from(conn_rate_per_s)));
     let metrics = ctx.state.metrics.proxy(&request.name);
@@ -1106,7 +1180,7 @@ async fn start_proxy_inner(
     ));
     let proxy_ctx = ProxyContext {
         state: Arc::clone(&ctx.state),
-        open: ctx.open.clone(),
+        pool: Arc::clone(&pool),
         tenant_id: tenant_id.to_string(),
         client_id: client_id.to_string(),
         proxy_name: request.name.clone(),
@@ -1154,7 +1228,7 @@ async fn start_proxy_inner(
                 proxy_name: proxy_ctx.proxy_name.clone(),
                 tenant_id: tenant_id.to_string(),
                 client_id: client_id.to_string(),
-                open: proxy_ctx.open.clone(),
+                pool: Arc::clone(&proxy_ctx.pool),
                 limiter: Arc::clone(&proxy_ctx.limiter),
                 conn_limiter: Arc::clone(&proxy_ctx.conn_limiter),
                 quota: Arc::clone(&proxy_ctx.quota),
@@ -1290,7 +1364,7 @@ async fn start_proxy_inner(
                         }
                     };
                     info!(proxy = %request.name, client = %client_id, %bind, "public udp listener bound");
-                    let mut tunnel = timeout(HANDSHAKE_TIMEOUT, proxy_ctx.open.open())
+                    let (mut tunnel, _guard) = timeout(HANDSHAKE_TIMEOUT, proxy_ctx.pool.open())
                         .await
                         .map_err(|_| {
                             (
@@ -1399,7 +1473,7 @@ async fn start_proxy_inner(
                 tenant_id: tenant_id.to_string(),
                 client_id: client_id.to_string(),
                 run_id: run_id.to_string(),
-                open: proxy_ctx.open.clone(),
+                pool: Arc::clone(&proxy_ctx.pool),
                 limiter: Arc::clone(&proxy_ctx.limiter),
                 conn_limiter: Arc::clone(&proxy_ctx.conn_limiter),
                 quota: Arc::clone(&proxy_ctx.quota),
@@ -1562,7 +1636,7 @@ async fn pipe_inner(
     peer: SocketAddr,
     ctx: &ProxyContext,
 ) -> anyhow::Result<(u64, u64)> {
-    let mut tunnel = timeout(HANDSHAKE_TIMEOUT, ctx.open.open())
+    let (mut tunnel, _guard) = timeout(HANDSHAKE_TIMEOUT, ctx.pool.open())
         .await
         .context("timed out opening data stream")?
         .context("open data stream")?;

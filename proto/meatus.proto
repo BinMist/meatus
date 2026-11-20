@@ -11,6 +11,12 @@ message Hello {
   repeated string caps    = 4;
   string tenant_id        = 5;
   string token_id         = 6;
+  // V1.4 连接池：数据连接复用主会话的 run_id；控制连接为空。
+  string session_id       = 7;
+  bool data_connection    = 8;
+  // 仅控制连接需要；数据连接忽略。
+  uint32 pool_size        = 9;
+  uint32 max_streams_per_conn = 10;
 }
 
 message Challenge {

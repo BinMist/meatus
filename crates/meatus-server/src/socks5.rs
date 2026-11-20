@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, bail};
 use meatus_core::{
-    DomainPolicy, OpenHandle, RateLimiter, TargetPolicy, UsageRecord, copy_bidirectional_limited,
-    write_frame,
+    ConnectionPool, DomainPolicy, RateLimiter, TargetPolicy, UsageRecord,
+    copy_bidirectional_limited, write_frame,
 };
 use meatus_proto::v1::{StreamHeader, StreamKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -35,7 +35,7 @@ pub struct Socks5Route {
     pub tenant_id: String,
     pub client_id: String,
     pub run_id: String,
-    pub open: OpenHandle,
+    pub pool: Arc<ConnectionPool>,
     pub limiter: Arc<RateLimiter>,
     pub conn_limiter: Arc<RateLimiter>,
     pub quota: Arc<ProxyQuota>,
@@ -178,8 +178,8 @@ async fn handle(
         }
     };
 
-    let mut tunnel = match timeout(OPEN_TIMEOUT, route.open.open()).await {
-        Ok(Ok(tunnel)) => tunnel,
+    let (mut tunnel, _guard) = match timeout(OPEN_TIMEOUT, route.pool.open()).await {
+        Ok(Ok((tunnel, guard))) => (tunnel, guard),
         Ok(Err(err)) => {
             let _ = reply(&mut user, 0x01).await;
             return Err(err).context("open socks5 tunnel stream");
