@@ -542,3 +542,21 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_host, parse_sni};
+
+    #[test]
+    fn parses_ipv6_host_header() {
+        let head = b"GET / HTTP/1.1\r\nHost: [::1]:8443\r\n\r\n";
+        assert_eq!(parse_host(head).expect("ipv6 host"), "[::1]:8443");
+    }
+
+    #[test]
+    fn parses_ipv6_literal_sni() {
+        // list_len=8, type=0, name_len=5, name="[::1]"
+        let payload = b"\x00\x08\x00\x00\x05[::1]";
+        assert_eq!(parse_sni(payload).expect("ipv6 sni"), "[::1]");
+    }
+}

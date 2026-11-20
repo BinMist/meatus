@@ -5,6 +5,7 @@
 //! `*.example.com` 形式，匹配任意层级的子域名。
 
 use std::collections::HashMap;
+use std::net::Ipv6Addr;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -240,6 +241,13 @@ fn normalize_domain(domain: &str) -> Result<String, String> {
     if domain.is_empty() || domain.contains(char::is_whitespace) || domain.contains('/') {
         return Err(format!("invalid domain {domain:?}"));
     }
+    if let Some(inner) = domain
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        && inner.parse::<Ipv6Addr>().is_ok()
+    {
+        return Ok(domain);
+    }
     if let Some(suffix) = domain.strip_prefix("*.") {
         if suffix.is_empty() || suffix.contains('*') || !suffix.contains('.') {
             return Err(format!("invalid wildcard domain {domain:?}"));
@@ -259,6 +267,9 @@ fn normalize_host(host: &str) -> String {
             host.truncate(end + 1);
         }
         return host;
+    }
+    if host.matches(':').count() > 1 {
+        return host.trim_end_matches('.').to_string();
     }
     if let Some((base, port)) = host.rsplit_once(':')
         && port.parse::<u16>().is_ok()
@@ -291,6 +302,9 @@ mod tests {
         );
         assert_eq!(normalize_host("Example.com:8080"), "example.com");
         assert_eq!(normalize_host("[::1]:443"), "[::1]");
+        assert_eq!(normalize_domain("[::1]").unwrap(), "[::1]");
+        assert_eq!(normalize_host("2001:db8::1"), "2001:db8::1");
+        assert!(normalize_domain("[::1").is_err());
         assert!(normalize_domain("foo").is_err());
         assert!(normalize_domain("*").is_err());
     }
