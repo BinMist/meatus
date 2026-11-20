@@ -2,14 +2,14 @@
 //! QUIC 控制面监听；D1-02 只建立传输连接，应用层握手在 D1-04 接入。
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use meatus_core::{ServerConfig, quic as core_quic};
-use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio::time::timeout;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -30,7 +30,7 @@ pub fn endpoint(config: &ServerConfig) -> anyhow::Result<quinn::Endpoint> {
         .as_ref()
         .context("server.tls_key is required for QUIC")?;
     let (certs, key) = crate::tls::load_der(cert, key)?;
-    let bind = format!("{}:{}", config.server.bind_addr, config.server.control_port);
+    let bind = meatus_core::config::host_port(&config.server.bind_addr, config.server.control_port);
     let addr: SocketAddr = bind
         .parse()
         .with_context(|| format!("parse QUIC bind {bind}"))?;

@@ -2426,7 +2426,7 @@ fn set_bool(
 async fn preflight_binds(current: &ServerConfig, next: &ServerConfig) -> Result<(), String> {
     if next.server.control_port != current.server.control_port {
         test_bind(
-            &format!("{}:{}", next.server.bind_addr, next.server.control_port),
+            &meatus_core::config::host_port(&next.server.bind_addr, next.server.control_port),
             "server control",
         )
         .await?;

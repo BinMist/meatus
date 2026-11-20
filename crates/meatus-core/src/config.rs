@@ -1146,6 +1146,33 @@ pub struct ProxySpec {
     pub options: ProxyOptions,
 }
 
+/// 拼接 `host:port`，对 IPv6 字面量自动加方括号。
+#[must_use]
+pub fn host_port(host: &str, port: u16) -> String {
+    if host.starts_with('[') {
+        format!("{host}:{port}")
+    } else if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// 规范化客户端拨号地址：裸 IPv6 字面量自动补方括号，已带方括号的保持原样。
+#[must_use]
+pub fn normalize_host_port(addr: &str) -> String {
+    let addr = addr.trim();
+    if addr.starts_with('[') || addr.matches(':').count() <= 1 {
+        return addr.to_string();
+    }
+    match addr.rsplit_once(':') {
+        Some((host, port)) if port.parse::<u16>().is_ok() && host.contains(':') => {
+            format!("[{host}]:{port}")
+        }
+        _ => addr.to_string(),
+    }
+}
+
 impl ClientConfig {
     /// 代理名到配置的映射，数据面按 `StreamHeader.proxy_name` 查找。
     #[must_use]
@@ -1159,11 +1186,14 @@ impl ClientConfig {
     /// 实际拨号列表：`server_addrs` 非空时优先，否则退回 `server_addr`。
     #[must_use]
     pub fn dial_addrs(&self) -> Vec<String> {
-        if self.client.server_addrs.is_empty() {
+        let raw = if self.client.server_addrs.is_empty() {
             vec![self.client.server_addr.clone()]
         } else {
             self.client.server_addrs.clone()
-        }
+        };
+        raw.into_iter()
+            .map(|addr| normalize_host_port(&addr))
+            .collect()
     }
 
     /// 从首个拨号地址提取主机名，用于 TLS SNI / 证书校验。
@@ -1987,6 +2017,17 @@ token = "secret-token"
         )
         .expect("valid");
         assert_eq!(ipv6.server_host(), "::1");
+    }
+
+    #[test]
+    fn host_port_brackets_ipv6_literals() {
+        assert_eq!(host_port("::", 7000), "[::]:7000");
+        assert_eq!(host_port("::1", 7000), "[::1]:7000");
+        assert_eq!(host_port("[::1]", 7000), "[::1]:7000");
+        assert_eq!(host_port("0.0.0.0", 7000), "0.0.0.0:7000");
+        assert_eq!(normalize_host_port("::1:7000"), "[::1]:7000");
+        assert_eq!(normalize_host_port("[::1]:7000"), "[::1]:7000");
+        assert_eq!(normalize_host_port("example.com:7000"), "example.com:7000");
     }
 
     #[test]

@@ -645,6 +645,187 @@ remote_port = {proxy_port}
 }
 
 #[tokio::test]
+async fn ipv6_only_control_and_proxy_roundtrip() {
+    let _guard = TEST_MUTEX.lock().await;
+    let (echo_port, control_port, proxy_port) = distinct_ports();
+    spawn_echo(echo_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-ipv6-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "::1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [{proxy_port}, {proxy_port}]
+
+[admin]
+bind = "[::1]:0"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+    let client_config = format!(
+        r#"
+[client]
+server_addr = "[::1]:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+
+[[proxy]]
+name = "echo"
+type = "tcp"
+local_addr = "127.0.0.1:{echo_port}"
+remote_port = {proxy_port}
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let client_state = ClientState::new(parse_client_config(&client_config).expect("client cfg"))
+        .expect("client state");
+    let server_cancel = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let mut tunneled = false;
+    for _ in 0..60 {
+        sleep(Duration::from_millis(200)).await;
+        if probe_addr("::1", proxy_port).await.is_ok() {
+            tunneled = true;
+            break;
+        }
+    }
+
+    client_cancel.cancel();
+    server_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), server_task).await;
+    assert!(tunneled, "IPv6-only tunnel did not come up");
+}
+
+#[tokio::test]
+async fn dual_stack_bind_accepts_ipv4_and_ipv6() {
+    let _guard = TEST_MUTEX.lock().await;
+    let (echo_port, control_port, proxy_port) = distinct_ports();
+    spawn_echo(echo_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-dual-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "::"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [{proxy_port}, {proxy_port}]
+
+[admin]
+bind = "127.0.0.1:0"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+    let client_config = format!(
+        r#"
+[client]
+server_addr = "127.0.0.1:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+
+[[proxy]]
+name = "echo"
+type = "tcp"
+local_addr = "127.0.0.1:{echo_port}"
+remote_port = {proxy_port}
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    let client_state = ClientState::new(parse_client_config(&client_config).expect("client cfg"))
+        .expect("client state");
+    let server_cancel = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let mut v4 = false;
+    let mut v6 = false;
+    for _ in 0..60 {
+        sleep(Duration::from_millis(200)).await;
+        if probe_addr("127.0.0.1", proxy_port).await.is_ok() {
+            v4 = true;
+        }
+        if probe_addr("::1", proxy_port).await.is_ok() {
+            v6 = true;
+        }
+        if v4 && v6 {
+            break;
+        }
+    }
+
+    client_cancel.cancel();
+    server_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), server_task).await;
+    assert!(v4, "dual-stack proxy did not accept IPv4");
+    assert!(v6, "dual-stack proxy did not accept IPv6");
+}
+
+#[tokio::test]
 async fn client_fails_over_to_second_server_addr() {
     let _guard = TEST_MUTEX.lock().await;
     let (echo_port, control_port, proxy_port) = distinct_ports();
@@ -1299,9 +1480,13 @@ async fn status_json(port: u16) -> Result<serde_json::Value, String> {
 }
 
 async fn probe(proxy_port: u16) -> Result<(), String> {
+    probe_addr("127.0.0.1", proxy_port).await
+}
+
+async fn probe_addr(ip: &str, proxy_port: u16) -> Result<(), String> {
     let mut stream = timeout(
         Duration::from_secs(1),
-        tokio::net::TcpStream::connect(("127.0.0.1", proxy_port)),
+        tokio::net::TcpStream::connect((ip, proxy_port)),
     )
     .await
     .map_err(|_| "connect timeout".to_string())?

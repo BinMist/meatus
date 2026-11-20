@@ -145,15 +145,13 @@ impl ServerState {
     /// 启动时会尝试占用的监听地址，`meatus check --dry-run` 也用它。
     #[must_use]
     pub fn planned_listeners(&self) -> Vec<String> {
-        let mut listeners = vec![format!(
-            "control tcp://{}:{}",
-            self.config.server.bind_addr, self.config.server.control_port
-        )];
+        let bind = meatus_core::config::host_port(
+            &self.config.server.bind_addr,
+            self.config.server.control_port,
+        );
+        let mut listeners = vec![format!("control tcp://{bind}")];
         if self.config.server.quic {
-            listeners.push(format!(
-                "control udp://{}:{}",
-                self.config.server.bind_addr, self.config.server.control_port
-            ));
+            listeners.push(format!("control udp://{bind}"));
         }
 
         if self.config.http.enabled {
@@ -226,9 +224,9 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
     state.config.validate_runtime()?;
     let acceptor = TlsAcceptor::from(tls::load(&state.config)?);
 
-    let bind = format!(
-        "{}:{}",
-        state.config.server.bind_addr, state.config.server.control_port
+    let bind = meatus_core::config::host_port(
+        &state.config.server.bind_addr,
+        state.config.server.control_port,
     );
     let listener = TcpListener::bind(&bind)
         .await

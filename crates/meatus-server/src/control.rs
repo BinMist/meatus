@@ -1332,7 +1332,7 @@ async fn start_proxy_inner(
                     ),
                 })?;
 
-            let bind = format!("{}:{}", ctx.state.config.server.bind_addr, port);
+            let bind = meatus_core::config::host_port(&ctx.state.config.server.bind_addr, port);
             let task = match kind {
                 ProxyType::Tcp => {
                     let listener = match TcpListener::bind(&bind).await {
