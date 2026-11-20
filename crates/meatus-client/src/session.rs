@@ -8,16 +8,17 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
+use meatus_core::multiplex::Inbound;
 use meatus_core::{
     ClientConfig, MultiplexedStream, ProxySpec, ProxyType as ConfigProxyType, TargetPolicy,
     WireError, multiplex, read_frame, write_frame,
 };
 use meatus_proto::{
-    PROTOCOL_VERSION, default_client_caps,
+    ErrorCode, PROTOCOL_VERSION, default_client_caps,
     v1::{
-        AdminProxyAck, Auth, Challenge, ControlMsg, Hello, NewProxy, Ping, Pong, ProxyOk,
-        ProxyOptions, ProxyType as WireProxyType, StreamHeader, StreamKind, UdpPacket, Welcome,
-        control_msg,
+        AdminProxyAck, Auth, Challenge, ControlMsg, Error as ProtocolError, Hello, NewProxy, Ping,
+        Pong, ProxyOk, ProxyOptions, ProxyType as WireProxyType, StreamHeader, StreamKind,
+        UdpPacket, Welcome, control_msg,
     },
 };
 use tokio::io::{AsyncWrite, ReadHalf, WriteHalf};
@@ -47,22 +48,53 @@ const UDP_CLEANUP: Duration = Duration::from_secs(30);
 type Reader = ReadHalf<MultiplexedStream>;
 type Writer = WriteHalf<MultiplexedStream>;
 
+/// 已建立 TLS + yamux 并完成控制面握手的客户端会话。
+struct EstablishedSession {
+    reader: Reader,
+    writer: Writer,
+    inbound: Inbound,
+}
+
+/// 服务端明确拒绝当前协议版本；只有 `1002` 才允许回落一次。
+#[derive(Debug)]
+struct UnsupportedProtocol {
+    attempted: u32,
+    code: u32,
+    message: String,
+}
+
+impl std::fmt::Display for UnsupportedProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "server rejected protocol {}: {} ({})",
+            self.attempted, self.message, self.code
+        )
+    }
+}
+
+impl std::error::Error for UnsupportedProtocol {}
+
+fn is_unsupported_version(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<UnsupportedProtocol>().is_some()
+}
+
 pub async fn run_session(
     config: &ClientConfig,
     cancel: &CancellationToken,
     reload_rx: &mut mpsc::Receiver<Vec<ProxySpec>>,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let tls_stream = crate::tls::connect(config).await?;
-    let (open, mut inbound) = multiplex::spawn(tls_stream.compat(), yamux::Mode::Client);
-
-    let control = timeout(HANDSHAKE_TIMEOUT, open.open())
-        .await
-        .context("timed out opening control stream")?
-        .context("open control stream")?;
-    let (mut reader, mut writer) = tokio::io::split(control);
-
-    handshake(config, &mut reader, &mut writer).await?;
+    let (negotiated_version, session) = establish_with_fallback(config).await?;
+    info!(
+        client_protocol = negotiated_version,
+        "client session transport selected"
+    );
+    let EstablishedSession {
+        mut reader,
+        mut writer,
+        mut inbound,
+    } = session;
     let stats = Arc::new(ClientStats::new(&config.proxies));
     register_proxies(config, &stats, &mut reader, &mut writer).await?;
 
@@ -97,6 +129,56 @@ pub async fn run_session(
     result
 }
 
+/// 先按最高版本握手；旧服务端返回 `1002` 时，重连一次并降到 v1。
+async fn establish_with_fallback(
+    config: &ClientConfig,
+) -> anyhow::Result<(u32, EstablishedSession)> {
+    match establish(config, PROTOCOL_VERSION).await {
+        Ok(session) => Ok((PROTOCOL_VERSION, session)),
+        Err(err) if is_unsupported_version(&err) => {
+            let rejected = err
+                .downcast_ref::<UnsupportedProtocol>()
+                .expect("checked unsupported protocol error");
+            if rejected.attempted <= 1 {
+                return Err(err);
+            }
+            warn!(
+                attempted = rejected.attempted,
+                fallback = 1,
+                code = rejected.code,
+                reason = %rejected.message,
+                "server rejected protocol version; retrying with protocol 1"
+            );
+            let session = establish(config, 1)
+                .await
+                .context("fallback to protocol 1 after UnsupportedVersion")?;
+            Ok((1, session))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn establish(
+    config: &ClientConfig,
+    protocol_version: u32,
+) -> anyhow::Result<EstablishedSession> {
+    let tls_stream = crate::tls::connect(config).await?;
+    let (open, inbound) = multiplex::spawn(tls_stream.compat(), yamux::Mode::Client);
+
+    let control = timeout(HANDSHAKE_TIMEOUT, open.open())
+        .await
+        .context("timed out opening control stream")?
+        .context("open control stream")?;
+    let (mut reader, mut writer) = tokio::io::split(control);
+
+    handshake(config, &mut reader, &mut writer, protocol_version).await?;
+    Ok(EstablishedSession {
+        reader,
+        writer,
+        inbound,
+    })
+}
+
 /// Welcome 的 protocol_version 是 v2 加法字段：0 表示旧服务端未回显，按 v1 处理。
 fn welcome_protocol_version(value: u32) -> anyhow::Result<u32> {
     let version = if value == 0 { 1 } else { value };
@@ -112,12 +194,13 @@ async fn handshake(
     config: &ClientConfig,
     reader: &mut Reader,
     writer: &mut Writer,
+    protocol_version: u32,
 ) -> anyhow::Result<()> {
     write_frame(
         writer,
         &ControlMsg {
             kind: Some(control_msg::Kind::Hello(Hello {
-                protocol_version: PROTOCOL_VERSION,
+                protocol_version,
                 client_version: env!("CARGO_PKG_VERSION").to_string(),
                 client_id: config.client.client_id.clone(),
                 caps: default_client_caps(),
@@ -132,7 +215,7 @@ async fn handshake(
     let nonce = match challenge.kind {
         Some(control_msg::Kind::Challenge(Challenge { nonce })) => nonce,
         Some(control_msg::Kind::Error(err)) => {
-            bail!("server rejected Hello: {} ({})", err.message, err.code)
+            return Err(handshake_error(protocol_version, err));
         }
         _ => bail!("expected Challenge"),
     };
@@ -178,10 +261,22 @@ async fn handshake(
             );
             Ok(())
         }
-        Some(control_msg::Kind::Error(err)) => {
-            bail!("server rejected handshake: {} ({})", err.message, err.code)
-        }
+        Some(control_msg::Kind::Error(err)) => Err(handshake_error(protocol_version, err)),
         _ => bail!("expected Welcome"),
+    }
+}
+
+/// 只把 `1002` 包装成可回落错误；认证失败等仍按普通致命错误处理。
+fn handshake_error(protocol_version: u32, err: ProtocolError) -> anyhow::Error {
+    if err.code == ErrorCode::UnsupportedVersion.as_u32() {
+        UnsupportedProtocol {
+            attempted: protocol_version,
+            code: err.code,
+            message: err.message,
+        }
+        .into()
+    } else {
+        anyhow::anyhow!("server rejected handshake: {} ({})", err.message, err.code)
     }
 }
 
@@ -1036,6 +1131,33 @@ mod tests {
     #[test]
     fn welcome_protocol_rejects_future_version() {
         assert!(welcome_protocol_version(3).is_err());
+    }
+
+    #[test]
+    fn handshake_error_classifies_only_unsupported_version() {
+        let unsupported = handshake_error(
+            2,
+            ProtocolError {
+                code: ErrorCode::UnsupportedVersion.as_u32(),
+                message: "server supports 1".to_string(),
+                fatal: true,
+            },
+        );
+        assert!(is_unsupported_version(&unsupported));
+        let rejected = unsupported
+            .downcast_ref::<UnsupportedProtocol>()
+            .expect("unsupported protocol marker");
+        assert_eq!(rejected.attempted, 2);
+
+        let auth = handshake_error(
+            2,
+            ProtocolError {
+                code: ErrorCode::AuthFailed.as_u32(),
+                message: "bad token".to_string(),
+                fatal: true,
+            },
+        );
+        assert!(!is_unsupported_version(&auth));
     }
 
     #[tokio::test]
