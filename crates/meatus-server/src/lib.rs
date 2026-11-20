@@ -6,6 +6,7 @@ mod admin;
 mod admin_bus;
 pub mod audit;
 mod control;
+mod handshake;
 mod http;
 pub mod logbuf;
 mod metrics;
@@ -22,7 +23,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
+use handshake::{HANDSHAKE_FAIL_DELAY, HandshakeLimiter};
 use logbuf::LogBuffer;
 use meatus_core::{
     AllowAllQuota, AuthProvider, ConfigError, LocalPortAllocator, LocalTokenAuth, NameAllocator,
@@ -51,6 +53,7 @@ pub struct ServerState {
     pub quotas: Arc<quota::MonthlyQuota>,
     pub usage: Arc<dyn UsageSink>,
     pub metrics: Arc<Metrics>,
+    pub(crate) handshake_limiter: Arc<HandshakeLimiter>,
     pub domains: Arc<DomainRouter>,
     pub(crate) status: Arc<StatusRegistry>,
     pub(crate) socks5: Arc<Socks5Registry>,
@@ -91,6 +94,7 @@ impl ServerState {
             quotas: Arc::new(quota::MonthlyQuota::default()),
             usage: Arc::new(NullUsageSink),
             metrics: Arc::new(Metrics::new()),
+            handshake_limiter: Arc::new(HandshakeLimiter::default()),
             domains: Arc::new(DomainRouter::new()),
             status: Arc::new(StatusRegistry::default()),
             socks5: Arc::new(Socks5Registry::default()),
@@ -358,24 +362,46 @@ async fn serve_connection(
     state: Arc<ServerState>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
+    if !state.handshake_limiter.allow(peer.ip()) {
+        state.metrics.handshake_failed("rate_limit");
+        warn!(%peer, "control handshake rate limited");
+        tokio::time::sleep(HANDSHAKE_FAIL_DELAY).await;
+        return Err(anyhow!("control handshake rate limited"));
+    }
+
     let tls_stream = match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(err)) => {
             state.metrics.handshake_failed("tls");
+            warn!(%peer, error = %err, "TLS handshake failed");
+            tokio::time::sleep(HANDSHAKE_FAIL_DELAY).await;
             return Err(err).context("TLS handshake failed");
         }
         Err(err) => {
             state.metrics.handshake_failed("tls_timeout");
+            warn!(%peer, error = %err, "TLS handshake timed out");
+            tokio::time::sleep(HANDSHAKE_FAIL_DELAY).await;
             return Err(err).context("TLS handshake timed out");
         }
     };
 
     let (open, mut inbound) = multiplex::spawn(tls_stream.compat(), yamux::Mode::Server);
 
-    let control = timeout(CONTROL_STREAM_TIMEOUT, inbound.recv())
-        .await
-        .context("client did not open a control stream")?
-        .context("connection closed before control stream")?;
+    let control = match timeout(CONTROL_STREAM_TIMEOUT, inbound.recv()).await {
+        Ok(Some(control)) => control,
+        Ok(None) => {
+            state.metrics.handshake_failed("control_stream");
+            warn!(%peer, "connection closed before control stream");
+            tokio::time::sleep(HANDSHAKE_FAIL_DELAY).await;
+            return Err(anyhow!("connection closed before control stream"));
+        }
+        Err(err) => {
+            state.metrics.handshake_failed("control_stream_timeout");
+            warn!(%peer, error = %err, "control stream timed out");
+            tokio::time::sleep(HANDSHAKE_FAIL_DELAY).await;
+            return Err(err).context("client did not open a control stream");
+        }
+    };
     info!(%peer, "control stream accepted");
     state.metrics.connected_client(1);
     struct ConnectedGuard(Arc<ServerState>);

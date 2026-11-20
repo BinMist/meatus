@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
@@ -29,6 +29,7 @@ use tracing::{debug, info, warn};
 
 use crate::ServerState;
 use crate::admin_bus::AdminProxyCommand;
+use crate::handshake::HANDSHAKE_FAIL_DELAY;
 use crate::metrics::ProxyMetrics;
 use crate::quota::ProxyQuota;
 use crate::routes::{DomainRoute, RouteKind};
@@ -163,17 +164,33 @@ impl ProxyContext {
 }
 
 pub async fn serve(control: MultiplexedStream, ctx: SessionContext) -> anyhow::Result<()> {
-    let result = run_session(control, &ctx).await;
+    let handshake_complete = AtomicBool::new(false);
+    let result = run_session(control, &ctx, &handshake_complete).await;
+    if !handshake_complete.load(Ordering::Relaxed) {
+        // 握手失败统一延迟 3s 再断开，降低在线枚举与撞库速度。
+        tokio::time::sleep(HANDSHAKE_FAIL_DELAY).await;
+    }
     // 控制面结束即停止该会话的所有监听与转发任务。
     ctx.cancel.cancel();
     result
 }
 
-async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow::Result<()> {
+async fn run_session(
+    control: MultiplexedStream,
+    ctx: &SessionContext,
+    handshake_complete: &AtomicBool,
+) -> anyhow::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(control);
 
-    let hello = read_hello(&mut reader).await?;
+    let hello = match read_hello(&mut reader).await {
+        Ok(hello) => hello,
+        Err(err) => {
+            ctx.state.metrics.handshake_failed("hello");
+            return Err(err);
+        }
+    };
     if hello.protocol_version != PROTOCOL_VERSION {
+        ctx.state.metrics.handshake_failed("protocol");
         let _ = write_frame(
             &mut writer,
             &ErrorCode::UnsupportedVersion
@@ -183,6 +200,7 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
         bail!("unsupported protocol version {}", hello.protocol_version);
     }
     if hello.client_id.trim().is_empty() || hello.tenant_id.trim().is_empty() {
+        ctx.state.metrics.handshake_failed("identity");
         let _ = write_frame(
             &mut writer,
             &ErrorCode::AuthFailed.to_wire("client_id and tenant_id are required"),
@@ -204,10 +222,17 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
 
     let auth = match timeout(HANDSHAKE_TIMEOUT, read_frame::<_, ControlMsg>(&mut reader)).await {
         Ok(Ok(msg)) => msg,
-        Ok(Err(err)) => return Err(err).context("read auth frame"),
-        Err(_) => bail!("timed out waiting for Auth"),
+        Ok(Err(err)) => {
+            ctx.state.metrics.handshake_failed("auth_io");
+            return Err(err).context("read auth frame");
+        }
+        Err(_) => {
+            ctx.state.metrics.handshake_failed("auth_timeout");
+            bail!("timed out waiting for Auth");
+        }
     };
     let Some(control_msg::Kind::Auth(auth)) = auth.kind else {
+        ctx.state.metrics.handshake_failed("auth_protocol");
         let _ = write_frame(&mut writer, &ErrorCode::AuthFailed.to_wire("expected Auth")).await;
         bail!("expected Auth frame");
     };
@@ -231,8 +256,6 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
                 &ErrorCode::AuthFailed.to_wire("authentication failed"),
             )
             .await;
-            // 统一延迟，降低在线枚举速度。
-            tokio::time::sleep(Duration::from_secs(1)).await;
             bail!("authentication failed: {err}");
         }
     }
@@ -251,6 +274,7 @@ async fn run_session(control: MultiplexedStream, ctx: &SessionContext) -> anyhow
         },
     )
     .await?;
+    handshake_complete.store(true, Ordering::Relaxed);
     ctx.state
         .status
         .client_connected(&hello.tenant_id, &hello.client_id, &run_id, &hello.caps);

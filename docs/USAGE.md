@@ -999,7 +999,7 @@ expires_at_ms = 1790000000000       # 可选；省略表示长期有效
 
 * 使用方式：`Authorization: Bearer mtk_...`。Token 过期或被吊销后立即返回 `401`；吊销与创建写入 `api_token.create` / `api_token.revoke` 审计，不记录明文。
 
-* 面板列表显示名称、Scope、SHA-256 指纹、创建 / 到期时间与最后使用时间；最后使用时间为内存统计，服务重启后清空。
+* 面板列表显示名称、Scope、SHA-256 指纹、创建 / 到期时间与最后使用时间；最后使用时间仅统计当前 server 进程生命周期内最近一次成功认证，服务重启后清空，不作为跨重启审计依据。
 
 * 备份会保留 `token_sha256` 与 Scope，不保留明文，因此恢复后 Token 仍可继续使用。
 
@@ -2213,7 +2213,7 @@ docker exec meatus-server cat /data/admin.token
 
 * 连续失败 5 次锁定 10 分钟。
 
-### 6.3 七个页面
+### 6.3 九个页面
 
 
 
@@ -2221,10 +2221,12 @@ docker exec meatus-server cat /data/admin.token
 | -------- | -------------------------------------------------- | ----------------------------------------------------------------------------- |
 | 总览       | 在线客户端、活跃 proxy、连接数、uptime、累计流量                     | 5 秒轮询 `/api/v1/status`                                                        |
 | Proxy 管理 | 新增 / 编辑 / 删除运行中的 proxy                             | 通过 server 下发管理帧，等待 client ack；client 带 `--config` 时**同步写回 client.toml / client.yaml**，重启后保留 |
-| 客户端 | 创建 / 轮换 / 删除 `auth.clients` token，查看在线状态与 token 指纹 | 明文 token 只显示一次；写回 `server.toml` / `server.yaml` 后约 1 秒重启；不能删除最后一个凭据 |
+| 客户端 | 创建 / 轮换 / 删除 `auth.clients` token，查看在线状态、授权摘要、配额与 token 指纹 | 明文 token 只显示一次；写回 `server.toml` / `server.yaml` 后热加载，无需重启；不能删除最后一个凭据 |
 | 证书状态     | ACME 证书 SAN、到期、剩余天数、序列号、链长度                        | 读取 `acme.cert_dir`                                                            |
+| 审计日志     | 查询最近 90 天审计事件，按时间、操作者、client、动作、结果过滤              | 只读；敏感值脱敏；可导出当前查询结果为 NDJSON                                                   |
+| API Token  | 管理 CI / 脚本凭证的 Scope、到期与吊销状态                        | 仅 owner 可管理；明文只在创建时显示一次；“最后使用”为当前进程内统计                                      |
 | 实时日志     | 最近 300 行日志                                         | 2 秒轮询；进程内 2000 行环形缓冲，重启清空，不落盘                                                 |
-| 系统设置     | 在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志 | 保存写回 `server.toml` / `server.yaml` 并自动重启；TLS、admin、token、会话策略只读；YAML 会规范化重写 |
+| 系统设置     | 在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志 | 保存写回 `server.toml` / `server.yaml` 并热加载；需重启字段通过 `restart_required` 返回；TLS、admin、token、会话策略只读；YAML 会规范化重写 |
 | 登录       | token 换会话                                          | 失败限流                                                                          |
 
 ### 6.3.1 新客户端接入
@@ -2687,6 +2689,8 @@ meatus config restore -c /data/server.toml --from /data/backup.json \
 * 公网只开放 7000、实际业务端口、必要的 80/443；其余关闭。
 
 * 每个 client 单独 token；离职 / 设备退役时轮换。
+
+* 控制面握手：同 IP 60s 滑动窗口最多 10 次，超限直接拒绝；TLS、控制流、Hello 校验、认证失败或等待认证超时统一延迟 3s 再断开。已认证成功后的正常会话断线不延迟。
 
 * ACME 先用 staging 验证；生产证书注意配额。
 

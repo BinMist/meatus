@@ -2,6 +2,39 @@
 
 本文件记录 Meatus 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.3.0] - 2026-11-21
+
+> 状态：待发布；以 24h soak、20% 弱网与发布资产完成后为准。
+
+V1.3：多客户端调度、配置热加载、客户端授权与配额、审计、备份恢复、RBAC 与 API Token。
+
+### Added
+
+- 服务端配置热加载：`SIGHUP` 或管理面保存后重建鉴权与端口策略，已建立连接不中断；`acme`、`admin.tls`、监听地址等字段返回 `restart_required`，由部署方择机重启。
+- 客户端 `SIGHUP` 对 `[[proxy]]` 做差量增删改；新增 / 删除 proxy 不重建控制连接，失败保留旧配置。
+- 多客户端调度：同一 tenant 下按 client 隔离 proxy 名称与 owner；离线域名返回 `503`；端口按 `release_policy` 回收或保留。
+- 客户端级授权：`allow_types`、`allow_domains`、`max_proxies` 在 proxy 创建时校验，越权返回 `PolicyDenied`。
+- 控制面握手保护：按来源 IP 的 60s 滑动窗口最多 10 次握手，超限直接拒绝；TLS、控制流、Hello 校验、认证失败或等待认证超时统一延迟 3s 再断开，`meatus_handshake_failed_total{reason=...}` 覆盖 `rate_limit` / `tls` / `auth` / `hello` / `protocol` 等原因。
+- 客户端级配额：`rate_limit_bps`、`monthly_bytes`、`max_conns`、`conn_rate_per_s`、`quota_action`；月配额按 UTC 自然月累计，新增 `meatus_quota_denied_total` / `meatus_quota_throttled_total` 指标。
+- 审计日志：登录、配置 / 客户端 / proxy 变更、客户端上下线写入 JSONL，按 UTC 日切、默认保留 90 天；面板支持按时间、操作者、client、动作、结果过滤并导出 NDJSON；敏感值统一脱敏。
+- 配置备份与恢复：`meatus config backup/restore` 导出脱敏 JSON 信封，校验版本与 checksum；面板支持下载与上传恢复；备份不含明文 token、DNS API token 或私钥。
+- 多用户 RBAC：`[admin].users[]` 配置 owner / operator / viewer / auditor 四角色，管理 API 按角色校验，越权 `403` 并写审计；旧 `admin_token` 继续映射 `admin/owner`。
+- API Token：`[[admin.api_tokens]]` 为 CI / 脚本签发带 Scope 的凭证，Scope 为 `status:read`、`proxies:write`、`certs:read`、`audit:read`；服务端只存 SHA-256，明文只在创建响应出现一次，过期或吊销立即 `401`。
+
+### Changed
+
+- 客户端 CRUD 与配置保存由“写入后约 1 秒重启”改为热加载；响应中的 `restart_required` 只列出必须重启才生效的字段。
+- 面板新增“审计日志”与“API Token”页面；客户端页补充授权摘要与配额展示。
+- API Token 的 `last_used_at` 明确为当前 server 进程生命周期内最近一次成功认证，服务重启后清空；不作为跨重启审计字段。
+- `README.md` / `docs/USAGE.md` 面板页面数更新为 9 个；README 心跳口径更新为客户端 10s Ping / 30s 无 Pong、服务端 10s Ping / 25s 无消息。
+
+### Known limitations
+
+- `last_used_at` 不跨重启；判断长期未使用或凭据泄露需依赖外部审计 / 网关，V1.3 不做持久化。
+- `allow_domains=["*.example.com"]` 仍不能放行通配 `custom_domains`；本次 24h soak 未覆盖该授权路径。
+- `sighup_hot_reload_add_and_remove_without_disconnect` 集成测试仍标记 `ignored`（libtest 屏蔽 `SIGHUP`），以真实容器 + CLI 手工验收替代。
+- SOCKS5 仍只支持一个全局路由，第二个 SOCKS5 proxy 会被拒绝。
+
 ## [1.2.1] - 2026-11-19
 
 V1.2.1：代理连通性诊断、Cloudflare / DNSPod DNS-01 泛域名与镜像健康检查。

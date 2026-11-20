@@ -120,12 +120,13 @@ kill -HUP <client_pid>
 当前行为边界：
 
 - 控制面：客户端先连 control 端口，TLS 1.3 握手后由客户端打开 control stream 并发 `Hello`；服务端回 `Challenge`，客户端用 `HMAC-SHA256(key=sha256(token), nonce)` 应答。
+- 控制面防护：每个控制面连接在 TLS 握手前按来源 IP 计数，60s 滑动窗口最多 10 次；超限直接拒绝。TLS、控制流、Hello 校验、认证失败或等待认证超时统一延迟 3s 再断开；已认证成功后的正常会话断线不延迟。
 - 数据面：TCP 每个公网连接一条 yamux stream，先写 `StreamHeader` 再双向拷贝；UDP 每个 proxy 一条专用 stream，帧为 `UdpPacket{session_id,payload}`，空闲 60s 回收会话，单包 ≤1500B，默认上限 2048 会话/proxy。
 - HTTP：server `[http] enabled = true` 时绑定 `http.bind` / `https_bind`；`Host` 精确优先、再最长后缀泛域名，未知 404，非法请求 400，超过 route `max_conns` 返回 503。代理类型写 `type = "http"`，`custom_domains` 必填，`remote_port` 必须为 0。
 - HTTPS：同一 listener 读取 TLS ClientHello 的 SNI。默认走 `type = "https"` 的 **SNI 透传**，客户端 `local_addr` 指向自己的 TLS 服务；`acme.enabled = true` 且域名由 `type = "http"` 注册时，精确域名优先用 ACME HTTP-01，泛域名用 DNS-01 签发证书并终止 TLS；DNS-01 下未启用 HTTP 时，精确域名也走 DNS-01；泛域名证书只覆盖一级子域名。签发后把明文 HTTP 转发给本地 HTTP 服务。无 SNI / 无路由直接断开。
 - SOCKS5：server `[socks5] enabled = true` 才监听；只接受 `CONNECT`，支持 IPv4/IPv6 与域名目标。域名目标必须命中 client `options.allow_domains`（精确域名或 `*.suffix`），由 client 解析 DNS 并按 `allow_cidrs` 过滤后固定首个允许 IP；server 只做白名单校验，不解析内网域名。未配置 `allow_domains` 时域名目标仍拒绝，默认拒绝公网目标。当前只登记一个全局路由，`remote_port` 必须为 0。
 - ACME：精确域名支持 HTTP-01；泛域名支持 Cloudflare / DNSPod DNS-01，按 `_acme-challenge.<域名>` 创建/清理 TXT，到期前 30 天续期，续期失败保留旧证书。证书与账户缓存在 `acme.cert_dir`，文件 0600、目录 0700；`staging = true` 指向 Let's Encrypt staging。TLS-ALPN-01 尚未接入。
-- 心跳：客户端 10s Ping、30s 无 Pong 重连；服务端 15s Ping、45s 无消息关闭。
+- 心跳：客户端 10s Ping、30s 无 Pong 重连；服务端 10s Ping、25s 无消息关闭。
 - 重连：`1→2→4→8→16→30s`，±20% 抖动；重连后全量重注册 proxy。`kill -9 client` 需要 systemd / Docker 等 supervisor 拉起。
 - 证书：默认系统根；自签 / 私有 CA 用 `client.server_ca_cert`。`server_public_key_pin` 支持 `sha256:<64hex>` 或裸 64 hex：先校验证书链，再比对叶子 SPKI SHA-256。
 - 限速 / 统计：每 proxy 一个令牌桶（`rate_limit_bps`，默认不限），超限只延迟不丢包；client 每 10s 上报 `Stats`，server 输出 Prometheus 文本到 `/metrics`（含 `meatus_probe_total{result}`），`/healthz` 返回 uptime。
@@ -165,13 +166,16 @@ enabled = false
 hsts = true
 ```
 
-六个页面：登录、总览、Proxy 管理、证书状态、实时日志、系统设置。
+九个页面：登录、总览、Proxy 管理、客户端与令牌、证书状态、审计日志、API Token、实时日志、系统设置。
 
 - 总览：5 秒轮询 `/api/v1/status`，展示客户端 / proxy / 活跃连接 / uptime 与累计流量曲线。
 - Proxy 管理：通过 admin API 新增、编辑、删除运行中的 proxy；server 下发管理帧到指定 `run_id` 的 client，等待 ack 后生效，失败回滚上一份 runtime。client 启动时带 `--config` 会把变更写回 `client.toml` / `client.yaml`，重启后仍保留；YAML 会规范化重写。写操作走 CSRF 校验，表单支持类型、域名、本地地址、端口、连接数 / 限速 / 空闲 / CIDR 高级项。
+- 客户端与令牌：管理 `auth.clients`，展示在线状态、proxy 数量、授权摘要、配额与 token 指纹；支持创建、轮换、删除，明文 token 只在响应中出现一次。
 - 证书状态：读取 `acme.cert_dir` 中的 PEM，解析叶证书 SAN、到期时间、剩余天数、序列号、签发者与链长度；状态区分 managed / expiring / expired / pending / not-configured。
+- 审计日志：查询最近 90 天 JSONL，按时间、操作者、client、动作、结果过滤，并可导出当前查询结果为 NDJSON；敏感值已脱敏。
+- API Token：管理 `[[admin.api_tokens]]` 的 Scope、到期与吊销状态；服务端只存 SHA-256，面板显示指纹与“最后使用”时间。
 - 实时日志：2 秒拉取 `/api/v1/logs?limit=300`，页脚显示总行数与当前展示行数；内容来自进程内 2000 行环形缓冲，重启即清空，不落盘、不包含 admin token。
-- 系统设置：在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志并写回 `server.toml` / `server.yaml`；保存前校验配置和端口预检，成功后自动重启生效。TLS、admin 绑定、认证 token 与会话策略保持只读；YAML 会规范化重写。
+- 系统设置：在线修改 server / 租户 / 端口池 / HTTP / ACME / SOCKS5 / 日志并写回 `server.toml` / `server.yaml`；保存前校验配置和端口预检，成功后热加载，需重启的字段通过 `restart_required` 返回。TLS、admin 绑定、认证 token 与会话策略保持只读；YAML 会规范化重写。
 
 安全边界：
 
