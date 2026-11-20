@@ -412,8 +412,18 @@ async fn serve_connection(
         }
     };
 
-    let mut connection = transport::attach(tls_stream.compat(), transport::Role::Server);
+    let connection = transport::attach(tls_stream.compat(), transport::Role::Server);
+    serve_transport(connection, peer, state, cancel, "tcp").await
+}
 
+async fn serve_transport(
+    mut connection: transport::Connection,
+    peer: std::net::SocketAddr,
+    state: Arc<ServerState>,
+    cancel: CancellationToken,
+    transport_kind: &'static str,
+) -> anyhow::Result<()> {
+    state.metrics.transport_connected(transport_kind);
     let control = match timeout(CONTROL_STREAM_TIMEOUT, connection.accept()).await {
         Ok(Some(control)) => control,
         Ok(None) => {

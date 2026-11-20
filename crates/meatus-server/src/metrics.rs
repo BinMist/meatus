@@ -114,6 +114,8 @@ impl ProxyMetrics {
 pub struct Metrics {
     started: Instant,
     connected: AtomicU64,
+    transport_tcp: AtomicU64,
+    transport_quic: AtomicU64,
     pool_stats: Arc<PoolStats>,
     probe_ok: AtomicU64,
     probe_fail: AtomicU64,
@@ -126,6 +128,8 @@ impl Default for Metrics {
         Self {
             started: Instant::now(),
             connected: AtomicU64::new(0),
+            transport_tcp: AtomicU64::new(0),
+            transport_quic: AtomicU64::new(0),
             pool_stats: Arc::new(PoolStats::default()),
             probe_ok: AtomicU64::new(0),
             probe_fail: AtomicU64::new(0),
@@ -164,6 +168,15 @@ impl Metrics {
             .entry(name.to_string())
             .or_insert_with(|| Arc::new(ProxyMetrics::default()))
             .clone()
+    }
+
+    /// 记录一次控制面传输选择；`transport` 只接受 `tcp` / `quic`。
+    pub fn transport_connected(&self, transport: &str) {
+        match transport {
+            "tcp" => self.transport_tcp.fetch_add(1, Ordering::Relaxed),
+            "quic" => self.transport_quic.fetch_add(1, Ordering::Relaxed),
+            _ => 0,
+        };
     }
 
     pub fn connected_client(&self, delta: i64) {
@@ -207,6 +220,22 @@ impl Metrics {
             out,
             "meatus_client_connected {}",
             self.connected.load(Ordering::Relaxed)
+        );
+
+        let _ = writeln!(
+            out,
+            "# HELP meatus_transport_connections_total Control-plane transport connections."
+        );
+        let _ = writeln!(out, "# TYPE meatus_transport_connections_total counter");
+        let _ = writeln!(
+            out,
+            "meatus_transport_connections_total{{transport=\"tcp\"}} {}",
+            self.transport_tcp.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "meatus_transport_connections_total{{transport=\"quic\"}} {}",
+            self.transport_quic.load(Ordering::Relaxed)
         );
 
         let pool = self.pool_stats.snapshot();
@@ -390,6 +419,7 @@ mod tests {
     #[test]
     fn render_contains_core_metrics() {
         let metrics = Metrics::new();
+        metrics.transport_connected("tcp");
         let proxy = metrics.proxy("echo");
         proxy.connection_started();
         proxy.add_bytes(10, 20);
@@ -400,6 +430,8 @@ mod tests {
         assert!(text.contains("meatus_proxy_active{proxy=\"echo\"} 1"));
         assert!(text.contains("meatus_bytes_total{proxy=\"echo\",direction=\"in\"} 10"));
         assert!(text.contains("meatus_handshake_fail_total{reason=\"auth\"} 1"));
+        assert!(text.contains("meatus_transport_connections_total{transport=\"tcp\"} 1"));
+        assert!(text.contains("meatus_transport_connections_total{transport=\"quic\"} 0"));
         assert!(text.contains("meatus_pool_connections 0"));
         assert!(text.contains("meatus_pool_waits_total 0"));
     }

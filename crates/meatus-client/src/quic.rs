@@ -23,6 +23,16 @@ impl QuicClient {
     pub fn connection(&self) -> &Connection {
         &self.connection
     }
+
+    /// 打开一条双向流；v2 的 yamux 控制面承载在这条流上。
+    pub async fn open_bi(&self) -> anyhow::Result<meatus_core::QuicStream> {
+        let (send, recv) = self
+            .connection
+            .open_bi()
+            .await
+            .context("open QUIC bidirectional stream")?;
+        Ok(meatus_core::QuicStream::new(send, recv))
+    }
 }
 
 /// 拨号 `server_addr` 的 UDP 端口，SNI 与证书规则与 TCP 一致。

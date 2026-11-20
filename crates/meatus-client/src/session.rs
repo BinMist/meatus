@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, bail};
 use meatus_core::{
     ClientConfig, Connection, MultiplexedStream, ProxySpec, ProxyType as ConfigProxyType,
-    TargetPolicy, WireError, read_frame, transport, write_frame,
+    TargetPolicy, TransportMode, WireError, read_frame, transport, write_frame,
 };
 use meatus_proto::{
     ErrorCode, PROTOCOL_VERSION, default_client_caps,
@@ -52,6 +52,12 @@ struct EstablishedSession {
     reader: Reader,
     writer: Writer,
     connection: Connection,
+    quic: Option<crate::quic::QuicClient>,
+}
+
+struct EstablishedData {
+    connection: Connection,
+    quic: Option<crate::quic::QuicClient>,
 }
 
 /// 服务端明确拒绝当前协议版本；只有 `1002` 才允许回落一次。
@@ -93,6 +99,7 @@ pub async fn run_session(
         mut reader,
         mut writer,
         connection,
+        quic: _quic,
     } = session;
     let stats = Arc::new(ClientStats::new(&config.proxies));
     register_proxies(config, &stats, &mut reader, &mut writer).await?;
@@ -190,8 +197,7 @@ async fn establish(
     config: &ClientConfig,
     protocol_version: u32,
 ) -> anyhow::Result<(EstablishedSession, String)> {
-    let tls_stream = crate::tls::connect(config).await?;
-    let connection = transport::attach(tls_stream.compat(), transport::Role::Client);
+    let (connection, quic) = connect_control(config).await?;
 
     let control = timeout(HANDSHAKE_TIMEOUT, connection.open())
         .await
@@ -213,9 +219,56 @@ async fn establish(
             reader,
             writer,
             connection,
+            quic,
         },
         run_id,
     ))
+}
+
+async fn connect_control(
+    config: &ClientConfig,
+) -> anyhow::Result<(Connection, Option<crate::quic::QuicClient>)> {
+    match config.client.transport {
+        TransportMode::Tcp => {
+            let tls_stream = crate::tls::connect(config).await?;
+            Ok((
+                transport::attach(tls_stream.compat(), transport::Role::Client),
+                None,
+            ))
+        }
+        TransportMode::Quic => {
+            let quic = crate::quic::connect(config).await?;
+            let stream = quic.open_bi().await?;
+            info!(transport = "quic", "client control transport connected");
+            Ok((
+                transport::attach(stream.compat(), transport::Role::Client),
+                Some(quic),
+            ))
+        }
+        TransportMode::Auto => match crate::quic::connect(config).await {
+            Ok(quic) => {
+                let stream = quic.open_bi().await?;
+                info!(transport = "quic", "client control transport connected");
+                Ok((
+                    transport::attach(stream.compat(), transport::Role::Client),
+                    Some(quic),
+                ))
+            }
+            Err(err) => {
+                warn!(
+                    transport = "quic",
+                    fallback = "tcp",
+                    error = %err,
+                    "QUIC control connect failed; falling back to TCP"
+                );
+                let tls_stream = crate::tls::connect(config).await?;
+                Ok((
+                    transport::attach(tls_stream.compat(), transport::Role::Client),
+                    None,
+                ))
+            }
+        },
+    }
 }
 
 /// Welcome 的 protocol_version 是 v2 加法字段：0 表示旧服务端未回显，按 v1 处理。
@@ -815,7 +868,10 @@ async fn run_pool_data_connection(
             return;
         }
         match establish_data(&config, &run_id).await {
-            Ok(mut connection) => {
+            Ok(EstablishedData {
+                mut connection,
+                quic: _quic,
+            }) => {
                 info!(session_id = %run_id, "pooled data connection established");
                 backoff = Duration::from_secs(1);
                 let mut idle = interval_at(TokioInstant::now() + idle_timeout, idle_timeout);
@@ -852,9 +908,41 @@ async fn run_pool_data_connection(
     }
 }
 
-async fn establish_data(config: &ClientConfig, run_id: &str) -> anyhow::Result<Connection> {
-    let tls_stream = crate::tls::connect(config).await?;
-    let connection = transport::attach(tls_stream.compat(), transport::Role::Client);
+async fn establish_data(config: &ClientConfig, run_id: &str) -> anyhow::Result<EstablishedData> {
+    let (connection, quic) = match config.client.transport {
+        TransportMode::Tcp => {
+            let tls_stream = crate::tls::connect(config).await?;
+            (
+                transport::attach(tls_stream.compat(), transport::Role::Client),
+                None,
+            )
+        }
+        TransportMode::Quic => {
+            let quic = crate::quic::connect(config).await?;
+            let stream = quic.open_bi().await?;
+            (
+                transport::attach(stream.compat(), transport::Role::Client),
+                Some(quic),
+            )
+        }
+        TransportMode::Auto => match crate::quic::connect(config).await {
+            Ok(quic) => {
+                let stream = quic.open_bi().await?;
+                (
+                    transport::attach(stream.compat(), transport::Role::Client),
+                    Some(quic),
+                )
+            }
+            Err(err) => {
+                warn!(error = %err, "QUIC data connect failed; falling back to TCP");
+                let tls_stream = crate::tls::connect(config).await?;
+                (
+                    transport::attach(tls_stream.compat(), transport::Role::Client),
+                    None,
+                )
+            }
+        },
+    };
     let control = timeout(HANDSHAKE_TIMEOUT, connection.open())
         .await
         .context("timed out opening data control stream")?
@@ -871,7 +959,7 @@ async fn establish_data(config: &ClientConfig, run_id: &str) -> anyhow::Result<C
     .await?;
     drop(reader);
     drop(writer);
-    Ok(connection)
+    Ok(EstablishedData { connection, quic })
 }
 
 async fn handle_data(

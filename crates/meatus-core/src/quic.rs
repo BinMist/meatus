@@ -22,6 +22,58 @@ pub fn client_endpoint() -> io::Result<Endpoint> {
     Endpoint::client(SocketAddr::from(([0, 0, 0, 0], 0)))
 }
 
+/// 一条 QUIC 双向流，实现 tokio 的 `AsyncRead` / `AsyncWrite`。
+pub struct QuicStream {
+    send: quinn::SendStream,
+    recv: quinn::RecvStream,
+}
+
+impl QuicStream {
+    #[must_use]
+    pub fn new(send: quinn::SendStream, recv: quinn::RecvStream) -> Self {
+        Self { send, recv }
+    }
+}
+
+impl tokio::io::AsyncRead for QuicStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.recv
+            .poll_read_buf(cx, buf)
+            .map(|result| result.map_err(|err| std::io::Error::other(err.to_string())))
+    }
+}
+
+impl tokio::io::AsyncWrite for QuicStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.send)
+            .poll_write(cx, buf)
+            .map(|result| result.map_err(|err| std::io::Error::other(err.to_string())))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let _ = self.send.finish();
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};

@@ -1145,7 +1145,7 @@ YAML 写回前会先解析并校验；校验失败不会覆盖原文件。成功
 | ----------------------- | -- | --------------------------------------- |
 | `server_addr`           | 是  | `host:port`，如 `tunnel.example.com:7000` |
 | `server_name`           | 否  | TLS SNI / 证书校验名；自签时写证书 SAN              |
-| `transport`             | 否  | `tcp`     | 控制面传输：`tcp` / `quic`；`auto` 在 D1-03 接入        |
+| `transport`             | 否  | `tcp`     | 控制面传输：`tcp` / `quic`；`auto` 先试 QUIC，5 秒内失败回落 TCP        |
 | `client_id`             | 否  | 默认 `default`；必须匹配 server `clients[].id` |
 | `tenant`                | 否  | 默认 `default`                            |
 | `token`                 | 是  | 明文 token                                |

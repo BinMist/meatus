@@ -1980,6 +1980,30 @@ transport = "quic"
         .expect("valid");
         assert_eq!(config.client.transport, TransportMode::Quic);
         assert_eq!(TransportMode::Auto.to_string(), "auto");
+
+        let config = parse_client_config(
+            r#"
+[client]
+server_addr = "tunnel.example.com:7000"
+token = "secret-token"
+transport = "auto"
+"#,
+        )
+        .expect("valid");
+        assert_eq!(config.client.transport, TransportMode::Auto);
+
+        assert!(
+            parse_client_config(
+                r#"
+[client]
+server_addr = "tunnel.example.com:7000"
+token = "secret-token"
+transport = "udp"
+"#,
+            )
+            .is_err(),
+            "unknown transport must be rejected"
+        );
     }
 
     #[test]

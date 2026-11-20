@@ -35,6 +35,7 @@ pub use multiplex::{Inbound, MultiplexError, MultiplexedStream, OpenHandle};
 pub use net::{DomainPolicy, TargetPolicy, normalize_domain};
 pub use pin::parse_spki_pin;
 pub use pool::{ConnectionPool, PoolConnId, PoolError, PoolGuard, PoolSnapshot, PoolStats};
+pub use quic::QuicStream;
 pub use rate::{RateLimiter, copy_bidirectional_limited};
 pub use seams::{
     AllocError, AllowAllQuota, AuthError, AuthProvider, ClientIdentity, ConfigSnapshot,
