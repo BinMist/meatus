@@ -1,7 +1,7 @@
 # Meatus 完整使用教程（V1.3）
 
-> 适用版本：Meatus `1.3.0`（完全开源、Apache-2.0、自托管；发布准备中）
-> 发布状态：当前开发版本 `1.3.0`，线上正式版本 `1.2.1`。`1.3.0` 以全量测试、20% 弱网与 ZAP baseline 为发布门禁，24h soak 经决策延至下一版本，不阻塞本次发布；四平台安装包与 ACR 多架构镜像将在发布流程中上传。当前可用的 Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.2.1>。Windows 暂不提供；GHCR / GitHub Release 暂缓。
+> 适用版本：Meatus `1.3.0`（完全开源、Apache-2.0、自托管；已发布）
+> 发布状态：`1.3.0` 已于 2026-11-21 发布，线上正式版本为 `1.3.0`。`1.3.0` 以全量测试、20% 弱网与 ZAP baseline 为发布门禁，24h soak 经决策延至下一版本，不阻塞本次发布；四平台安装包、`.sha256`、SBOM 与 ACR 多架构镜像均已发布。Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.3.0>。Windows 暂不提供；GHCR / GitHub Release 暂缓。
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
 > 依赖：单二进制 + TOML（默认）/ YAML（管理面可写，规范化重写）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 > 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
@@ -558,7 +558,7 @@ server /client 使用同一镜像，启动参数同上，只替换镜像名。�
 
 
 
-* `1.3.0` 多架构 index digest：发布流水线完成后补记；历史 `1.2.1` digest 为 `sha256:bc1f9ae5e496bc83bb02bf50170ffbb4ffca4ade1e2ccea6d4b3d27bf2f7881e`
+* `1.3.0` 多架构 index digest：`sha256:0d1d94177b4f7cd5e44c0f543abc9c14fd3b1cffa6b39aa7dd358b68ddc8d619`（`1.3.0` / `1.3` / `latest` 同一 index；amd64 `sha256:0183ea28a152fdade440305397986fbc0b96e160bc68a1f9100dd05bad9e7be5`，arm64 `sha256:afefa8cf039665480b304527f4aaa503f32024214be6a20581470e5d64831b0f`）；历史 `1.2.1` digest 为 `sha256:bc1f9ae5e496bc83bb02bf50170ffbb4ffca4ade1e2ccea6d4b3d27bf2f7881e`
 
 * ACR 仓库当前为私有：匿名拉取返回 401；使用方必须先 `docker login`，或由仓库管理员在 ACR 控制台改为公开。
 
