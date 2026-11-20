@@ -131,6 +131,7 @@ pub struct Metrics {
     probe_fail: AtomicU64,
     proxies: Mutex<HashMap<String, Arc<ProxyMetrics>>>,
     handshake_fail: Mutex<HashMap<String, u64>>,
+    drain_phase: AtomicU64,
 }
 
 impl Default for Metrics {
@@ -145,6 +146,7 @@ impl Default for Metrics {
             probe_fail: AtomicU64::new(0),
             proxies: Mutex::new(HashMap::new()),
             handshake_fail: Mutex::new(HashMap::new()),
+            drain_phase: AtomicU64::new(0),
         }
     }
 }
@@ -218,7 +220,20 @@ impl Metrics {
         self.started.elapsed().as_secs()
     }
 
-    #[must_use]
+    pub fn set_drain_phase(&self, phase: u8) {
+        self.drain_phase.store(u64::from(phase), Ordering::Relaxed);
+    }
+
+    /// 当前所有 proxy 的活动数据流总数；drain 等待条件。
+    pub fn data_active_total(&self) -> u64 {
+        self.proxies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .map(|metrics| metrics.active())
+            .sum()
+    }
+
     pub fn render(&self) -> String {
         let mut out = String::with_capacity(4096);
         let _ = writeln!(
@@ -230,6 +245,17 @@ impl Metrics {
             out,
             "meatus_client_connected {}",
             self.connected.load(Ordering::Relaxed)
+        );
+
+        let _ = writeln!(
+            out,
+            "# HELP meatus_server_drain 0=serving 1=draining 2=drained."
+        );
+        let _ = writeln!(out, "# TYPE meatus_server_drain gauge");
+        let _ = writeln!(
+            out,
+            "meatus_server_drain {}",
+            self.drain_phase.load(Ordering::Relaxed)
         );
 
         let _ = writeln!(

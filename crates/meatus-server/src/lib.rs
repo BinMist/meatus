@@ -6,6 +6,7 @@ mod admin;
 mod admin_bus;
 pub mod audit;
 mod control;
+mod drain;
 mod handshake;
 mod http;
 pub mod logbuf;
@@ -71,6 +72,8 @@ pub struct ServerState {
     pub reloader: Option<Arc<ConfigReloader>>,
     /// CLI 注入的日志级别热加载句柄。
     pub log_reload: Option<LogReloadHandle>,
+    /// 优雅 drain 状态，进程信号与管理面共享。
+    pub drain: drain::DrainState,
 }
 
 impl ServerState {
@@ -112,6 +115,7 @@ impl ServerState {
             runtime,
             reloader: None,
             log_reload: None,
+            drain: drain::DrainState::default(),
         })
     }
 
@@ -177,15 +181,35 @@ impl ServerState {
 }
 
 pub async fn run(state: ServerState) -> anyhow::Result<()> {
+    const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
     let cancel = CancellationToken::new();
     let run_cancel = cancel.clone();
+    let drain = state.drain.clone();
+    let metrics = Arc::clone(&state.metrics);
+
+    let run = run_until(state, run_cancel);
+    tokio::pin!(run);
 
     tokio::select! {
-        result = run_until(state, run_cancel) => result,
+        result = &mut run => result,
         _ = shutdown_signal() => {
+            drain.begin();
+            metrics.set_drain_phase(1);
+            info!("shutdown requested; draining existing streams");
+            let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
+            while metrics.data_active_total() > 0 && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if metrics.data_active_total() > 0 {
+                warn!(
+                    active = metrics.data_active_total(),
+                    "drain timeout; forcing shutdown"
+                );
+            }
+            drain.finish();
+            metrics.set_drain_phase(2);
             cancel.cancel();
-            info!("shutdown requested");
-            Ok(())
+            run.await
         }
     }
 }
@@ -352,6 +376,7 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
+            _ = state.drain.stopped_accepting() => break,
             accepted = listener.accept() => {
                 let (tcp, peer) = match accepted {
                     Ok(pair) => pair,
@@ -372,6 +397,9 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
         }
     }
 
+    if state.drain.is_draining() {
+        cancel.cancelled().await;
+    }
     admin_task.abort();
     for task in data_tasks {
         task.abort();
