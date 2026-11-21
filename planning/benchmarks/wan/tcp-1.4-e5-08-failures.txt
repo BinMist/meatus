@@ -1,0 +1,28 @@
+E5-08 QUIC 稳定性失败证据（2026-11-21，公网 43.173.105.47，32×16KB×10s）
+
+## 失败 1：整轮 32/32 worker 失败（约 12:56–12:57 UTC）
+
+客户端关键行：
+2026-11-21T12:56:03.740469Z INFO meatus_client::session: client control transport connected transport="quic" server=43.173.105.47:22000
+2026-11-21T12:56:12.612577Z INFO meatus_client::session: client data stream accepted trace_id=...0001
+...（32 条 data stream 在 12:56:12–12:57:13 陆续受理）
+2026-11-21T12:57:31.859971Z WARN meatus_client: control session failed, reconnecting server=43.173.105.47:22000 entry_index=0 entry_total=1 failures=1 error=no Pong for 68.988979041s
+2026-11-21T12:57:33.352367Z INFO meatus_client::session: client control transport connected transport="quic" server=43.173.105.47:22000
+
+服务端（同窗口 `server-remote.log` 未落盘）在重连前后出现：
+WARN meatus_core::multiplex: yamux inbound stream failed error=decode error: i/o error: peer closed connection without sending TLS close_notify
+WARN meatus_core::multiplex: yamux inbound stream failed error=decode error: i/o error: Connection reset by peer (os error 104)
+INFO meatus_server::control: control session ended run_id=a4e05a6e6c3fbedf942e685f77eb0def proxies=1
+
+判读：控制连接建立后约 69s 未收到 Pong，被客户端判死；此时数据流仍在受理，说明 QUIC 连接整体未断，控制帧与数据帧在同一条 QUIC 连接的不同 yamux 流上互相排队/饥饿的嫌疑最大。
+
+## 失败 2：3/32 worker 单请求 >60s（约 13:25 UTC）
+
+bench 输出：
+RuntimeError: 3/32 workers failed: [('ERR', "TimeoutError('timed out')", 0, 0), ...]
+
+客户端日志无 WARN/ERROR；控制会话未断。判读：单条数据流出现 >60s 停顿，控制面存活，属于数据面调度或丢包恢复的长尾。
+
+## 复现
+
+QUIC 需服务端 `[server] quic = true`（TCP + UDP 22000 同时监听），客户端 `transport = "quic"`，防火墙同时放行 TCP 22000-22001 与 UDP 22000。
