@@ -1,7 +1,7 @@
 # Meatus 完整使用教程（V1.4）
 
-> 适用版本：Meatus `1.4.0`（完全开源、Apache-2.0、自托管；发布收尾中）
-> 发布状态：`1.4.0` 代码已冻结、发布收尾中，当前线上正式版本仍为 `1.3.0`。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，发布后补跑。发布资产在完成后回填。Windows 暂不提供；GHCR / GitHub Release 暂缓。
+> 适用版本：Meatus `1.4.0`（完全开源、Apache-2.0、自托管；2026-11-22 已发布）
+> 发布状态：`1.4.0` 已发布，当前线上正式版本为 `1.4.0`；四平台包、SBOM、ACR 多架构镜像与 Gitee Release 均已提供。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，发布后补跑。Windows 暂不提供；GHCR / GitHub Release 暂缓。
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
 > 依赖：单二进制 + TOML（默认）/ YAML（管理面可写，规范化重写）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 > 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
@@ -575,7 +575,7 @@ server /client 使用同一镜像，启动参数同上，只替换镜像名。�
 
 
 
-* `1.4.0` 多架构 index digest：发布后回填（`1.4.0` / `1.4` / `latest` 同一 index）。
+* `1.4.0` 多架构 index digest：`sha256:410ba5a992f3169ccce4c1162fb709c5b88aa773e68529c14469a499747f4e9d`（`1.4.0` / `1.4` / `latest` 同一 index；amd64 `sha256:ff62ab7c21c8326deab71ba43aec5d135039d58703c3af437da3cb3a7e7e8844`，arm64 `sha256:2834d8c1d5007a5d015a69384f460e925b794edbc2936db3c52e0681c974172f`）。
 
 * `1.3.0` 多架构历史 index digest：`sha256:0d1d94177b4f7cd5e44c0f543abc9c14fd3b1cffa6b39aa7dd358b68ddc8d619`（`1.3.0` / `1.3` / `latest` 同一 index；amd64 `sha256:0183ea28a152fdade440305397986fbc0b96e160bc68a1f9100dd05bad9e7be5`，arm64 `sha256:afefa8cf039665480b304527f4aaa503f32024214be6a20581470e5d64831b0f`）；历史 `1.2.1` digest 为 `sha256:bc1f9ae5e496bc83bb02bf50170ffbb4ffca4ade1e2ccea6d4b3d27bf2f7881e`
 
