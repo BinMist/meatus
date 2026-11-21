@@ -39,7 +39,13 @@ const READ_SLICE: Duration = Duration::from_secs(35);
 const DATA_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// 未启用连接池时，TCP 数据面默认使用的独立连接数。
-const DEFAULT_TCP_DATA_CONNECTIONS: u32 = 2;
+const DEFAULT_TCP_DATA_CONNECTIONS: u32 = 4;
+
+/// 未启用连接池时的实际 TCP 数据连接数：默认值不能超过 Hello 声明的 `pool_size`，
+/// 否则调小 `[client.pool].size` 后多开的连接会被服务端拒收。
+fn default_tcp_data_connections(pool_size: u32) -> u32 {
+    DEFAULT_TCP_DATA_CONNECTIONS.min(pool_size.max(1))
+}
 const DNS_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 const STATS_INTERVAL: Duration = Duration::from_secs(10);
 const UDP_MAX_PACKET: usize = 1500;
@@ -121,7 +127,8 @@ pub async fn run_session(
         } else if matches!(config.client.transport, TransportMode::Tcp) {
             // TCP 的控制帧与数据帧共用发送队列；未启用连接池时也要单独开数据连接。
             // 多条连接让 yamux 流分散到不同 TCP 拥塞窗口，降低高 RTT 下的队头阻塞。
-            DEFAULT_TCP_DATA_CONNECTIONS
+            // Hello 里声明的 pool_size 是服务端接受上限，默认连接数不能超过它。
+            default_tcp_data_connections(config.client.pool.size)
         } else {
             0
         }
@@ -1373,6 +1380,18 @@ mod tests {
     #[test]
     fn spec_helper_is_available() {
         assert_eq!(spec("p0", 20000).name, "p0");
+    }
+
+    #[test]
+    fn default_data_connections_are_capped_by_pool_size() {
+        assert_eq!(default_tcp_data_connections(0), 1);
+        assert_eq!(default_tcp_data_connections(1), 1);
+        assert_eq!(default_tcp_data_connections(2), 2);
+        assert_eq!(default_tcp_data_connections(4), 4);
+        assert_eq!(
+            default_tcp_data_connections(16),
+            DEFAULT_TCP_DATA_CONNECTIONS
+        );
     }
 
     #[test]
