@@ -2,6 +2,44 @@
 
 本文件记录 Meatus 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.4.0] - 2026-11-21
+
+> 状态：发布收尾中（2026-11-21）。发布门禁为全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线；24h soak 不作为发布前门禁，发布后对 1.4.0 构建补跑。
+
+V1.4：传输升级与协议 v2。默认行为保持 TCP，QUIC 显式启用；旧客户端继续兼容。
+
+### Added
+
+- `MEATUS/2` 加法协商：复用 `Hello.protocol_version` 与 `caps`，新增 `stream_meta`、`drain`、`conn_pool`、`quic`、`multi_addr`、`ipv6` 能力位；未知版本 / 能力按 v1 语义忽略，不影响旧客户端。
+- 可选 QUIC 数据面：`[server] quic = true` 与 TCP 共用控制端口 UDP；客户端 `transport = "quic"` 强制 QUIC，`auto` 先试 QUIC、5 秒内失败回落 TCP，并写日志与指标。
+- 多入口与故障切换：`server_addrs` 非空时优先于 `server_addr`，按顺序轮转；当前入口断开后自动切下一个，全部不可用时按 1s→30s 指数退避，日志含 `entry_index` / `failure_count` / `next_retry`。
+- IPv6 双栈：`bind_addr = "::"`、`[::1]:7000` 与混合多入口可用；Host / SNI / ACL 支持 IPv6 字面量。
+- TCP 数据连接：默认在控制连接之外建立 4 条专用数据连接，控制面心跳不再与数据流争抢同一条 yamux 连接；`[client.pool]` 可显式开启连接池，支持 `size`、`max_streams_per_conn`、`idle_timeout_s` 与池指标。
+- 流元数据：`trace_id` / `connection_id` 贯穿控制面、数据面、日志、指标与审计；`/metrics` 暴露 `meatus_proxy_last_stream`，审计 API 支持按 ID 前缀检索。
+- 优雅 drain：`SIGTERM` 后进入 `serving → draining → drained`，停止接受新连接、存量流继续完成，超时后强制关闭。
+- 可复现性能与兼容实验室：`scripts/bench.sh`、`bench-gate.py`、`compat-matrix.sh`、旧客户端 fixture 缓存与 CI 门禁；覆盖 1.2.1 / 1.3.0 / 1.4.0 客户端 × 1.3.0 / 1.4.0 服务端。
+
+### Changed
+
+- 控制面握手限流只统计控制连接，池化数据连接在认证后不再占用每 IP 10 次/60s 额度；修复同一 NAT 下多个客户端因 1 控制 + 4 数据连接互相挤占额度的问题。
+- 默认传输仍为 `transport = "tcp"`；未启用池时也使用 4 条数据连接，控制连接只承载控制帧。
+- 服务端接受的控制连接与 proxy 连接设置 `TCP_NODELAY`，消除 Linux 上 4KB 小块转发的 40ms 延迟 ACK 固定代价。
+- `README.md`、`docs/USAGE.md`、示例配置补充 QUIC、多入口、IPv6、连接池、流元数据与 drain 说明。
+- 版本升至 `1.4.0`。
+
+### Fixed
+
+- 修复 32 并发 × 16KB 下数据流占满单条 yamux 连接导致控制面心跳饥饿、Pong 超时的问题；控制面与数据面连接分离后回归通过。
+- 修复 drain 开始后控制监听未及时关闭的问题，避免 draining 期间继续接受新连接。
+
+### Known limitations
+
+- QUIC 不作为默认传输：公网 E5-08 同窗 A/B 吞吐与 P99 优于 TCP×4，但 7 次尝试有 2 次因控制面饥饿出现整轮或部分 worker 超时，整轮成功率 71%；1.4 保持显式 opt-in，1.5 再评估独立控制连接或原生多流。
+- `[client.pool]` 默认关闭；开启后的收益取决于链路与并发形态，生产启用前应先小流量验证。
+- 24h soak 不作为 1.4.0 发布门禁，发布后补跑；1.3.0 的 24h soak 已于 2026-11-21 发布后补跑 PASS（1436/1436）。
+- Windows 客户端与桌面 GUI 仍不提供；GHCR / GitHub Release 暂缓。
+- SOCKS5 仍只支持一个全局路由。
+
 ## [1.3.0] - 2026-11-21
 
 > 状态：已发布（2026-11-21）；四平台包、4 个 `.sha256`、源码/镜像 SBOM、ACR 多架构镜像与 Gitee Release 12 资产均已完成，生产已升级并验证回滚。24h soak 经决策延至 1.4 发布后补跑，不作为 `1.3.0` 发布门禁。

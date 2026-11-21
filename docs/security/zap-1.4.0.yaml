@@ -1,0 +1,49 @@
+# Meatus 1.4.0 管理面 ZAP baseline。
+# reportFile 使用相对路径，避免 reportDir 与绝对路径重复拼接。
+env:
+  contexts:
+  - excludePaths: []
+    name: baseline
+    urls:
+    - http://host.docker.internal:17401/
+  parameters:
+    failOnError: true
+    progressToStdout: false
+jobs:
+- parameters:
+    enableTags: false
+    maxAlertsPerRule: 10
+  type: passiveScan-config
+- parameters:
+    maxDuration: 1
+    url: http://host.docker.internal:17401/
+  type: spider
+- parameters:
+    maxDuration: 5
+  type: passiveScan-wait
+- parameters:
+    format: Short
+    summaryFile: /home/zap/zap_out.json
+  rules: []
+  type: outputSummary
+- parameters:
+    reportDescription: ''
+    reportDir: /zap/wrk/
+    reportFile: zap-baseline-2026-11-21-1.4.0.html
+    reportTitle: ZAP Scanning Report
+    template: traditional-html
+  type: report
+- parameters:
+    reportDescription: ''
+    reportDir: /zap/wrk/
+    reportFile: zap-baseline-2026-11-21-1.4.0.md
+    reportTitle: ZAP Scanning Report
+    template: traditional-md
+  type: report
+- parameters:
+    reportDescription: ''
+    reportDir: /zap/wrk/
+    reportFile: zap-baseline-2026-11-21-1.4.0.json
+    reportTitle: ZAP Scanning Report
+    template: traditional-json
+  type: report

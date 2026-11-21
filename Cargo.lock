@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "meatus-cli"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "meatus-client"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "getrandom 0.4.3",
@@ -1276,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "meatus-core"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1305,7 +1305,7 @@ dependencies = [
 
 [[package]]
 name = "meatus-proto"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "bytes",
  "prost",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "meatus-server"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "async-trait",

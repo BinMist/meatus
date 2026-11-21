@@ -10,23 +10,23 @@
 
 Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**完全开源（Apache-2.0）、面向个人 / 小团队自托管**。核心代码、协议、面板和部署脚本都在本仓库中。
 
-- **传输**：TCP + TLS 1.3 + yamux；V1.4 可选 QUIC（`server.quic = true` + `client.transport = "quic"` / `"auto"`）
+- **传输**：默认 TCP + TLS 1.3 + yamux，控制连接与 4 条数据连接分离；可选 QUIC（`server.quic = true` + `client.transport = "quic"` / `"auto"`，`auto` 5 秒失败回落 TCP）
 - **配置**：单二进制 + TOML（默认）/ YAML（V1.1 支持，管理面可写）；服务端只存 token 的 SHA-256
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，精确域名由 server 用 HTTP-01 自动签发、TLS 终止并缓存/续期，泛域名走 DNS-01（支持 Cloudflare / DNSPod）
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **版本状态**：`1.3.0` 已于 2026-11-21 发布，线上正式版本为 `1.3.0`。提供 Linux x86_64 / arm64 musl、macOS aarch64 / x86_64 静态包 + 阿里云 ACR 多架构镜像（`1.3.0` / `1.3` / `latest`，index digest `sha256:0d1d94177b4f7cd5e44c0f543abc9c14fd3b1cffa6b39aa7dd358b68ddc8d619`；ACR 为私有仓库，拉取前需 `docker login`）。Gitee Release 共 12 个资产，见 <https://gitee.com/binsail/meatus/releases/tag/v1.3.0>。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。`1.3.0` 以全量测试、20% 弱网与 ZAP baseline 为发布门禁，24h soak 经决策延至 1.4 发布后补跑，不阻塞本次发布。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **版本状态**：`1.4.0` 代码已冻结、发布收尾中；当前线上正式版本为 `1.3.0`。发布资产（四平台包、`.sha256`、源码/镜像 SBOM、ACR 多架构镜像 `1.4.0` / `1.4` / `latest`、Gitee Release）在发布完成后回填。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，发布后补跑。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
 ## 当前版本摘要
 
-`1.3.0`：
+`1.4.0`：
 
-- **多客户端与热加载**：同一 tenant 下按 client 隔离 proxy 名称与 owner；server 接收 `SIGHUP` 或面板保存后重建鉴权 / 端口策略，已建立连接不中断。
-- **客户端授权与配额**：`auth.clients[]` 支持 `allow_types` / `allow_domains` / `max_proxies`，创建 proxy 时校验；支持速率、月流量、并发连接与新建连接速率配额。
-- **审计与备份恢复**：登录、配置 / 客户端 / proxy 变更、客户端上下线写入 JSONL；`meatus config backup/restore` 导出脱敏备份并校验版本与 checksum。
-- **RBAC 与 API Token**：`[admin].users[]` 提供 owner / operator / viewer / auditor 四角色；`[[admin.api_tokens]]` 提供带 Scope、仅存 SHA-256 的 CI 凭证。
-- **控制面握手防护**：按来源 IP 的 60s 滑动窗口最多 10 次握手；TLS、控制流、Hello 校验、认证失败或等待认证超时统一延迟 3s 断开。
-- **面板与文档**：新增审计日志、API Token 页面；客户端页展示授权摘要与配额；面板共 9 页。
+- **协议 v2 与旧客户端兼容**：`MEATUS/2` 加法协商，1.2.1 / 1.3.0 客户端继续以 v1 接入；1.4 客户端连接 1.3.0 服务端时自动回落 v1 + TCP。
+- **传输升级**：QUIC 可选、`auto` 5 秒回落；默认 TCP 下控制连接与 4 条数据连接分离，消除高并发心跳饥饿。
+- **多入口与 IPv6**：`server_addrs` 顺序切换与指数退避；`::` 双栈、IPv6-only、Host / SNI / ACL 全链路支持。
+- **连接池与流元数据**：`[client.pool]` 默认关闭、可按需开启；`trace_id` / `connection_id` 贯穿日志、指标与审计。
+- **优雅 drain**：`SIGTERM` 停止接收新连接，存量流继续完成。
+- **性能与兼容实验室**：TCP / QUIC 基准、性能门禁、3×2 兼容矩阵与旧客户端 fixture 全部脚本化并接入 CI。
 
 完整版本历史、升级说明与已知限制见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -62,8 +62,8 @@ docker compose exec meatus cat /data/admin.token
 # 不用 Compose 的纯 docker run 命令见 docs/INSTALL.md 4.6
 # 预构建镜像（ACR 当前为私有仓库，先登录）：
 # docker login registry.cn-hangzhou.aliyuncs.com
-# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0
-# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4
 ```
 
 ## 快速开始（TCP / UDP / HTTP / HTTPS 隧道）

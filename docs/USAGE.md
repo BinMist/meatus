@@ -1,16 +1,33 @@
-# Meatus 完整使用教程（V1.3）
+# Meatus 完整使用教程（V1.4）
 
-> 适用版本：Meatus `1.3.0`（完全开源、Apache-2.0、自托管；已发布）
-> 发布状态：`1.3.0` 已于 2026-11-21 发布，线上正式版本为 `1.3.0`。`1.3.0` 以全量测试、20% 弱网与 ZAP baseline 为发布门禁，24h soak 经决策延至 1.4 发布后补跑，不阻塞本次发布；四平台安装包、`.sha256`、SBOM 与 ACR 多架构镜像均已发布。Gitee Release：<https://gitee.com/binsail/meatus/releases/tag/v1.3.0>。Windows 暂不提供；GHCR / GitHub Release 暂缓。
+> 适用版本：Meatus `1.4.0`（完全开源、Apache-2.0、自托管；发布收尾中）
+> 发布状态：`1.4.0` 代码已冻结、发布收尾中，当前线上正式版本仍为 `1.3.0`。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，发布后补跑。发布资产在完成后回填。Windows 暂不提供；GHCR / GitHub Release 暂缓。
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
 > 依赖：单二进制 + TOML（默认）/ YAML（管理面可写，规范化重写）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 > 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 
 本教程覆盖：本机跑通、公网部署、systemd、Docker Compose、纯 `docker run`、配置项、YAML、管理面 TLS、TCP / UDP / HTTP / HTTPS / ACME / SOCKS5、管理面板、指标与日志、热重载、升级备份、故障排查和安全基线。
 
-## V1.3 更新与升级
+## V1.4 更新与升级
 
-### V1.3.0 发布
+### V1.4.0 发布
+
+V1.4.0 以协议 v2、可选 QUIC、多入口故障切换、IPv6、TCP 数据连接分离、连接池、流元数据与优雅 drain 为主。默认传输仍为 `transport = "tcp"`，旧 1.2.1 / 1.3.0 客户端继续以 v1 接入；1.4 客户端连接 1.3.0 服务端时自动回落 v1 + TCP。
+
+| 能力 | 说明 |
+| --- | --- |
+| 协议 v2 | `MEATUS/2` 加法协商，新增 `stream_meta` / `drain` / `conn_pool` / `quic` / `multi_addr` / `ipv6` 能力位；未知字段忽略 |
+| QUIC 可选 | `server.quic = true` 与 TCP 共用 UDP 控制端口；`transport = "quic"` 强制，`auto` 5 秒失败回落 TCP |
+| 多入口 | `server_addrs` 按顺序轮转；入口断开后切下一个，全部不可用按 1s→30s 退避 |
+| IPv6 | `bind_addr = "::"` 双栈、`[::1]:7000` IPv6-only；Host / SNI / ACL 支持 IPv6 字面量 |
+| TCP 数据连接 | 默认控制连接 + 4 条专用数据连接，控制面心跳不与数据流争抢；消除 32 并发心跳饥饿 |
+| 连接池 | `[client.pool]` 默认关闭；可设 `size` / `max_streams_per_conn` / `idle_timeout_s`，暴露池指标 |
+| 流元数据 | `trace_id` / `connection_id` 贯穿日志、指标与审计；审计 API 支持 ID 前缀检索 |
+| 优雅 drain | `SIGTERM` 后停止接受新连接，存量流完成；超时强制关闭 |
+
+发布门禁：全量测试、3×2 兼容矩阵、20% 弱网、ZAP baseline、10 client 并发、性能基线、四平台包、ACR 与生产升级/回滚。24h soak 不作为 1.4.0 发布前门禁，发布后对 1.4.0 构建补跑。
+
+### V1.3.0 发布（历史）
 
 V1.3.0 以多客户端、授权与配额、审计备份、RBAC、API Token 与控制面握手防护为主。代码门禁已完成：`cargo test` 159 passed / 1 ignored，20% 弱网 20/20，ZAP 0 High / 0 Medium；24h soak 经决策延至 1.4 发布后补跑，不阻塞本次发布。
 
@@ -69,7 +86,7 @@ V1.3.0 以多客户端、授权与配额、审计备份、RBAC、API Token 与�
 
 
 
-* **现有 TOML 配置继续可用**，不需要迁移数据库或改 token；V1.0 的 `server.toml` / `client.toml` 可直接被 `1.3.0` 读取。
+* **现有 TOML 配置继续可用**，不需要迁移数据库或改 token；V1.0 的 `server.toml` / `client.toml` 可直接被 `1.4.0` 读取。
 
 * `[admin.tls]` 是可选能力；不开启时行为与 V1.0 一致，但非 loopback 仍必须配置 `admin_token`。
 
@@ -88,8 +105,8 @@ V1.3.0 以多客户端、授权与配额、审计备份、RBAC、API Token 与�
 sudo tar czf meatus-backup-$(date +%F).tgz \
   -C / var/lib/meatus etc/meatus
 
-# 2. 下载并校验 1.3.0 发布包
-VERSION=1.3.0
+# 2. 下载并校验 1.4.0 发布包
+VERSION=1.4.0
 TARGET=x86_64-unknown-linux-musl
 curl -LO "https://gitee.com/binsail/meatus/releases/download/v${VERSION}/meatus-${VERSION}-${TARGET}.tar.gz"
 sha256sum -c "meatus-${VERSION}-${TARGET}.tar.gz.sha256"
@@ -352,7 +369,7 @@ ssh -p 20022 <user>@127.0.0.1
 
 
 ```
-VERSION=1.3.0
+VERSION=1.4.0
 TARGET=x86_64-unknown-linux-musl
 curl -LO "https://gitee.com/binsail/meatus/releases/download/v${VERSION}/meatus-${VERSION}-${TARGET}.tar.gz"
 sha256sum -c "meatus-${VERSION}-${TARGET}.tar.gz.sha256"
@@ -473,7 +490,7 @@ docker run -d --name meatus-server \
   --health-timeout 5s \
   --health-start-period 10s \
   --health-retries 3 \
-  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0 \
+  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0 \
   server --config /data/server.toml
 ```
 
@@ -526,7 +543,7 @@ docker run -d --name meatus-client \
   -v "$PWD/client.toml:/data/client.toml" \
   -v "$PWD/server.crt:/data/server.crt:ro" \
   --add-host host.docker.internal:host-gateway \
-  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0 \
+  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0 \
   client --config /data/client.toml
 
 docker logs -f meatus-client
@@ -549,8 +566,8 @@ docker logs -f meatus-client
 docker login registry.cn-hangzhou.aliyuncs.com
 
 # 固定版本 / 次版本 / 最新
-docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0
-docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.2
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4
 docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:latest
 ```
 
@@ -558,7 +575,9 @@ server /client 使用同一镜像，启动参数同上，只替换镜像名。�
 
 
 
-* `1.3.0` 多架构 index digest：`sha256:0d1d94177b4f7cd5e44c0f543abc9c14fd3b1cffa6b39aa7dd358b68ddc8d619`（`1.3.0` / `1.3` / `latest` 同一 index；amd64 `sha256:0183ea28a152fdade440305397986fbc0b96e160bc68a1f9100dd05bad9e7be5`，arm64 `sha256:afefa8cf039665480b304527f4aaa503f32024214be6a20581470e5d64831b0f`）；历史 `1.2.1` digest 为 `sha256:bc1f9ae5e496bc83bb02bf50170ffbb4ffca4ade1e2ccea6d4b3d27bf2f7881e`
+* `1.4.0` 多架构 index digest：发布后回填（`1.4.0` / `1.4` / `latest` 同一 index）。
+
+* `1.3.0` 多架构历史 index digest：`sha256:0d1d94177b4f7cd5e44c0f543abc9c14fd3b1cffa6b39aa7dd358b68ddc8d619`（`1.3.0` / `1.3` / `latest` 同一 index；amd64 `sha256:0183ea28a152fdade440305397986fbc0b96e160bc68a1f9100dd05bad9e7be5`，arm64 `sha256:afefa8cf039665480b304527f4aaa503f32024214be6a20581470e5d64831b0f`）；历史 `1.2.1` digest 为 `sha256:bc1f9ae5e496bc83bb02bf50170ffbb4ffca4ade1e2ccea6d4b3d27bf2f7881e`
 
 * ACR 仓库当前为私有：匿名拉取返回 401；使用方必须先 `docker login`，或由仓库管理员在 ACR 控制台改为公开。
 
@@ -2417,7 +2436,7 @@ Docker：
 
 ```
 docker login registry.cn-hangzhou.aliyuncs.com
-docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0
 docker stop meatus-server
 docker rm meatus-server
 # 用原来的 docker run 命令重新启动，保留 meatus-data 卷
@@ -2450,7 +2469,7 @@ Docker 命名卷：
 docker stop meatus-server
 docker run --rm --entrypoint sh \
   -v meatus-data:/data -v "$PWD:/backup" \
-  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0 \
+  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0 \
   -c 'tar czf /backup/meatus-data.tgz -C /data .'
 docker start meatus-server
 ```
@@ -2826,7 +2845,7 @@ A：面板是运行时管理，TOML 配置下会写回 `client.toml` 并保留�
 
 **Q：**`docker pull ghcr.io/binsail/meatus`**&#x20;失败？**
 
-A：GHCR 镜像尚未推送，当前只发布到阿里云 ACR。先 `docker login registry.cn-hangzhou.aliyuncs.com`，再拉 `registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3.0`。
+A：GHCR 镜像尚未推送，当前只发布到阿里云 ACR。先 `docker login registry.cn-hangzhou.aliyuncs.com`，再拉 `registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0`。
 
 **Q：自签证书浏览器报警告怎么办？**
 
@@ -2840,7 +2859,7 @@ A：自签只适合内网 / 测试。公网终端用户访问请用公网 CA 或
 
 
 
-* 版本发布：[https://gitee.com/binsail/meatus/releases/tag/v1.3.0](https://gitee.com/binsail/meatus/releases/tag/v1.3.0)
+* 版本发布：[https://gitee.com/binsail/meatus/releases/tag/v1.4.0](https://gitee.com/binsail/meatus/releases/tag/v1.4.0)
 
 * 安装与长期运行：`docs/INSTALL.md`
 
