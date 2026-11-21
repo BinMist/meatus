@@ -1,0 +1,9 @@
+round: a4 (1 data connection)
+timestamp: 2026-11-21T10:59Z .. 11:00Z
+client: /tmp/meatus-e5-06-a (sha256 6ed8c8042a5a7a30651cdb0c68f6aac7efb562b2831bdc6d415928226f39d635)
+server: meatus-1.4 (sha256 cd5ffecb9dd7e2395a899dd2528d2b13088585329b36237ad23d2a7d046d883c)
+params: tcp, 32 concurrency, 16384 bytes, 10s
+outcome: FAILED - 11/32 workers TimeoutError, 21 completed
+no JSON emitted (bench-wan.py raised before writing)
+client log: tcp-1.4-e5-06-a4-client.log (1 data connection established, 46 data streams accepted, no client-side WARN/ERROR)
+note: same server, same network window as b4 (53 requests, p50 9.975s, p99 13.880s)

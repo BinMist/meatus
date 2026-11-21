@@ -38,6 +38,8 @@ const PONG_TIMEOUT: Duration = Duration::from_secs(60);
 const READ_SLICE: Duration = Duration::from_secs(35);
 const DATA_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// 未启用连接池时，TCP 数据面默认使用的独立连接数。
+const DEFAULT_TCP_DATA_CONNECTIONS: u32 = 2;
 const DNS_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 const STATS_INTERVAL: Duration = Duration::from_secs(10);
 const UDP_MAX_PACKET: usize = 1500;
@@ -111,15 +113,15 @@ pub async fn run_session(
 
     let proxies = Arc::new(RwLock::new(config.proxy_map()));
     let mut pool_tasks = Vec::new();
-    // 协议 2 起数据面与控制面分离：即使未启用连接池，也保留一条独立数据连接，
+    // 协议 2 起数据面与控制面分离：即使未启用连接池，也保留独立数据连接，
     // 避免数据帧占满控制连接后把 Ping/Pong 饿到服务端 idle 超时。
     let data_conns = if negotiated_version >= 2 {
         if config.client.pool.enabled {
             config.client.pool.size.max(1)
         } else if matches!(config.client.transport, TransportMode::Tcp) {
-            // TCP 的控制帧与数据帧共用发送队列；未启用连接池时也要单独开一条数据连接。
-            // QUIC 的控制帧本身就在独立流上，不需要额外连接。
-            1
+            // TCP 的控制帧与数据帧共用发送队列；未启用连接池时也要单独开数据连接。
+            // 多条连接让 yamux 流分散到不同 TCP 拥塞窗口，降低高 RTT 下的队头阻塞。
+            DEFAULT_TCP_DATA_CONNECTIONS
         } else {
             0
         }
