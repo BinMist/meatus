@@ -468,14 +468,6 @@ async fn serve_transport(
         }
     };
     info!(%peer, "control stream accepted");
-    state.metrics.connected_client(1);
-    struct ConnectedGuard(Arc<ServerState>);
-    impl Drop for ConnectedGuard {
-        fn drop(&mut self) {
-            self.0.metrics.connected_client(-1);
-        }
-    }
-    let _connected = ConnectedGuard(Arc::clone(&state));
 
     let open = connection.open_handle();
     let closed = CancellationToken::new();

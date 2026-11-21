@@ -670,19 +670,19 @@ log:
 - `server_ca_cert` 是服务端证书副本；使用公网 CA 证书时这一行可以删除。
 - `local_addr` 是客户端本机被暴露的服务地址，不是公网地址。
 
-V1.4 起客户端支持 `[client.pool]` 数据连接池，**默认关闭**；关闭时与 1.3 的单流行为完全一致：
+V1.4 起客户端支持 `[client.pool]` 数据连接池，**默认关闭**；关闭时 TCP 仍会建立一条专用数据连接，控制连接只承载控制帧：
 
 ```toml
 [client.pool]
 enabled = false
-size = 4                    # 1..=16，每个 proxy/host 的连接上限
+size = 4                    # 1..=16，数据连接数量（主控制连接额外保留）
 max_streams_per_conn = 64   # 1..=1024，单连接并发流上限
-idle_timeout_s = 300        # 1..=3600，空闲连接回收时间
+idle_timeout_s = 300        # 1..=3600，空闲数据连接回收时间
 ```
 
 YAML 写法为 `client:` 下的嵌套 `pool:`。三个数值即使 `enabled = false` 也会校验，越界会在启动时直接报 `client.pool.*` 字段错误。
 
-启用后，`size` 是**总量**（含主控制连接）：客户端额外建立 `size - 1` 条 TLS + yamux 数据连接，服务端按“在途流最少”选择连接。单连接并发流达到 `max_streams_per_conn` 时新请求返回 `3002 StreamLimit`；客户端数据连接空闲超过 `idle_timeout_s` 会主动关闭，再按 1s 起指数退避重建。池依赖协议 v2，回落到 v1 时自动退回单连接。
+启用后，`size` 是**数据连接数量**，控制连接不占该额度：客户端建立 `size` 条 TLS + yamux 数据连接，服务端按“在途流最少”选择连接。控制连接被标记为 control-only，只要存在数据连接就不会承载数据流；仅当数据连接全部不可用时才回退到控制连接。单连接并发流达到 `max_streams_per_conn` 时新请求返回 `3002 StreamLimit`；客户端数据连接空闲超过 `idle_timeout_s` 会主动关闭，再按 1s 起指数退避重建。池依赖协议 v2，回落到 v1 时自动退回单连接。QUIC 的控制帧本身就在独立流上，默认关闭时不额外建立数据连接。服务端控制面空闲阈值为 75s、客户端 Pong 超时为 60s，用于容忍 TCP 重传退避。
 - `remote_port` 必须在服务端的 `ports.range` 内，并在安全组放行。
 
 启动并验证：

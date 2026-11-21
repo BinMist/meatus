@@ -58,7 +58,7 @@ impl SessionPools {
             max_streams,
             Arc::clone(&self.stats),
         ));
-        pool.add(handle)?;
+        pool.add_control(handle)?;
         let mut inner = lock(&self.inner);
         inner.insert(
             run_id.to_string(),

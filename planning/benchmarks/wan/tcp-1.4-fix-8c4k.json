@@ -1,0 +1,50 @@
+{
+  "schema": "meatus-bench/v1",
+  "timestamp": "2026-11-21T09:51:07Z",
+  "binary": "/Users/binsail/workspace/项目/meatus/target/release/meatus",
+  "version": "meatus 1.3.0",
+  "server_binary": "meatus-1.4",
+  "transport": "tcp",
+  "remote": "43.173.105.47",
+  "host": {
+    "platform": "darwin",
+    "cpu_count": 8
+  },
+  "params": {
+    "duration_s": 10.0,
+    "concurrency": 8,
+    "payload_bytes": 4096,
+    "latency_duration_s": 5.0
+  },
+  "wan_tcp_handshake_p50_ms": 314.596,
+  "wan_tcp_handshake_max_ms": 925.801,
+  "idle": {
+    "duration_s": 5.0,
+    "concurrency": 1,
+    "payload_bytes": 64,
+    "requests": 5,
+    "bytes": 640,
+    "throughput_mbps": 0.001,
+    "p50_ms": 753.246,
+    "p99_ms": 1553.722,
+    "p999_ms": 1553.722
+  },
+  "loaded": {
+    "duration_s": 10.0,
+    "concurrency": 8,
+    "payload_bytes": 4096,
+    "requests": 39,
+    "bytes": 319488,
+    "throughput_mbps": 0.256,
+    "p50_ms": 1885.961,
+    "p99_ms": 7134.166,
+    "p999_ms": 7134.166
+  },
+  "requests": 39,
+  "bytes": 319488,
+  "throughput_mbps": 0.256,
+  "p50_ms": 1885.961,
+  "p99_ms": 7134.166,
+  "server_cpu_percent": "0.0 11124",
+  "logs": "/var/folders/d9/lg34kg0d26dd8d15d6vgn8k40000gn/T/meatus-wan-oboo839u"
+}

@@ -46,6 +46,14 @@ pub async fn serve(
     state: Arc<ServerState>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
+    // 即使任务被 abort，也要关闭端点，避免 UDP 端口被旧连接继续占用。
+    struct EndpointCloseGuard(quinn::Endpoint);
+    impl Drop for EndpointCloseGuard {
+        fn drop(&mut self) {
+            self.0.close(0u32.into(), b"server shutdown");
+        }
+    }
+    let _close_guard = EndpointCloseGuard(endpoint.clone());
     let active = Arc::new(AtomicUsize::new(0));
     loop {
         tokio::select! {

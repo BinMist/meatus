@@ -33,7 +33,8 @@ use crate::stats::{ClientStats, ProxyCounter};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_PING: Duration = Duration::from_secs(10);
-const PONG_TIMEOUT: Duration = Duration::from_secs(30);
+// 与控制面空闲阈值对齐：给 TCP 重传退避留足余量，避免链路抖动被误判为断线。
+const PONG_TIMEOUT: Duration = Duration::from_secs(60);
 const READ_SLICE: Duration = Duration::from_secs(35);
 const DATA_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -110,9 +111,24 @@ pub async fn run_session(
 
     let proxies = Arc::new(RwLock::new(config.proxy_map()));
     let mut pool_tasks = Vec::new();
-    if config.client.pool.enabled && negotiated_version >= 2 {
+    // 协议 2 起数据面与控制面分离：即使未启用连接池，也保留一条独立数据连接，
+    // 避免数据帧占满控制连接后把 Ping/Pong 饿到服务端 idle 超时。
+    let data_conns = if negotiated_version >= 2 {
+        if config.client.pool.enabled {
+            config.client.pool.size.max(1)
+        } else if matches!(config.client.transport, TransportMode::Tcp) {
+            // TCP 的控制帧与数据帧共用发送队列；未启用连接池时也要单独开一条数据连接。
+            // QUIC 的控制帧本身就在独立流上，不需要额外连接。
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    if data_conns > 0 {
         let idle = Duration::from_secs(u64::from(config.client.pool.idle_timeout_s));
-        for _ in 1..config.client.pool.size {
+        for _ in 0..data_conns {
             let config = config.clone();
             let run_id = run_id.clone();
             let proxies = Arc::clone(&proxies);
@@ -124,8 +140,11 @@ pub async fn run_session(
                     .await;
             }));
         }
+    }
+    if config.client.pool.enabled && negotiated_version >= 2 {
         info!(
             pool_size = config.client.pool.size,
+            data_connections = data_conns,
             max_streams_per_conn = config.client.pool.max_streams_per_conn,
             idle_timeout_s = config.client.pool.idle_timeout_s,
             "client data pool enabled"
@@ -891,7 +910,7 @@ async fn run_pool_data_connection(
                 mut connection,
                 quic: _quic,
             }) => {
-                info!(session_id = %run_id, "pooled data connection established");
+                info!(session_id = %run_id, "data connection established");
                 backoff = Duration::from_secs(1);
                 let mut idle = interval_at(TokioInstant::now() + idle_timeout, idle_timeout);
                 loop {

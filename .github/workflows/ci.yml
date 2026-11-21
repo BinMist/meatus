@@ -57,6 +57,8 @@ jobs:
         run: cargo build --release -p meatus-cli
       - name: benchmark and gate
         run: bash scripts/bench.sh
+      - name: tcp high-concurrency regression
+        run: bash scripts/bench-tcp-concurrency.sh
       - name: upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4

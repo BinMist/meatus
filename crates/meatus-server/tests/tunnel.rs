@@ -2645,7 +2645,10 @@ local_addr = "127.0.0.1:0"
         .await
         .expect("metrics request");
     assert_eq!(ok, 200);
-    assert!(metrics.contains("meatus_client_connected 1"));
+    assert!(
+        metrics.contains("meatus_client_connected 1"),
+        "unexpected metrics: {metrics}"
+    );
     assert!(metrics.contains("meatus_proxy_active{proxy=\"socks\"}"));
 
     client_cancel.cancel();

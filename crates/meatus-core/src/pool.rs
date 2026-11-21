@@ -61,6 +61,8 @@ struct PooledConn {
     inflight: AtomicUsize,
     uses: AtomicU64,
     last_used: Mutex<Instant>,
+    /// 控制连接只承载控制帧；有独立数据连接时不得再分配数据流。
+    control_only: bool,
 }
 
 impl PooledConn {
@@ -144,10 +146,28 @@ impl ConnectionPool {
         }
     }
 
-    /// 加入一条连接；超过 `size` 返回 [`PoolError::Full`]。
+    /// 加入一条数据连接；超过 `size` 返回 [`PoolError::Full`]。
     pub fn add(&self, handle: OpenHandle) -> Result<PoolConnId, PoolError> {
+        self.add_with_role(handle, false)
+    }
+
+    /// 加入主控制连接。控制连接仅作为没有数据连接时的兜底，
+    /// 只要池内存在数据连接就不会被选中承载数据流。
+    pub fn add_control(&self, handle: OpenHandle) -> Result<PoolConnId, PoolError> {
+        self.add_with_role(handle, true)
+    }
+
+    fn add_with_role(
+        &self,
+        handle: OpenHandle,
+        control_only: bool,
+    ) -> Result<PoolConnId, PoolError> {
         let mut conns = lock(&self.conns);
-        if conns.len() >= self.max_conns {
+        if !control_only && conns.iter().filter(|conn| !conn.control_only).count() >= self.max_conns
+        {
+            return Err(PoolError::Full);
+        }
+        if control_only && conns.iter().any(|conn| conn.control_only) {
             return Err(PoolError::Full);
         }
         let id = PoolConnId(self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -157,6 +177,7 @@ impl ConnectionPool {
             inflight: AtomicUsize::new(0),
             uses: AtomicU64::new(0),
             last_used: Mutex::new(Instant::now()),
+            control_only,
         }));
         self.stats.connections.fetch_add(1, Ordering::Relaxed);
         Ok(id)
@@ -196,7 +217,11 @@ impl ConnectionPool {
                 return Err(PoolError::Closed);
             }
             let mut chosen = None;
+            let has_data_conn = candidates.iter().any(|(conn, _)| !conn.control_only);
             for (conn, inflight) in &candidates {
+                if conn.control_only && has_data_conn {
+                    continue;
+                }
                 if *inflight >= self.max_streams_per_conn {
                     continue;
                 }
@@ -248,7 +273,9 @@ impl ConnectionPool {
         let now = Instant::now();
         let mut conns = lock(&self.conns);
         let before = conns.len();
-        conns.retain(|conn| conn.idle_for(now).is_none_or(|elapsed| elapsed < idle));
+        conns.retain(|conn| {
+            conn.control_only || conn.idle_for(now).is_none_or(|elapsed| elapsed < idle)
+        });
         let removed = before - conns.len();
         if removed > 0 {
             self.stats
@@ -273,6 +300,15 @@ impl ConnectionPool {
     pub fn inflight(&self) -> usize {
         lock(&self.conns)
             .iter()
+            .map(|conn| conn.inflight.load(Ordering::Acquire))
+            .sum()
+    }
+
+    #[cfg(test)]
+    fn inflight_by_role(&self, control_only: bool) -> usize {
+        lock(&self.conns)
+            .iter()
+            .filter(|conn| conn.control_only == control_only)
             .map(|conn| conn.inflight.load(Ordering::Acquire))
             .sum()
     }
@@ -389,6 +425,58 @@ mod tests {
         assert_eq!(snapshot.reuses, 1);
         drop((g1, g2, g3));
         assert_eq!(pool.inflight(), 0);
+    }
+
+    #[tokio::test]
+    async fn control_connection_does_not_consume_data_capacity() {
+        let pool = ConnectionPool::new(1, 4);
+        let control = make_handle();
+        let data = make_handle();
+        pool.add_control(control.open).expect("add control");
+        pool.add(data.open)
+            .expect("control must not occupy data slot");
+        assert_eq!(pool.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn control_connection_is_not_used_for_data_when_data_exists() {
+        let pool = ConnectionPool::new(2, 4);
+        let control = make_handle();
+        let data = make_handle();
+        pool.add_control(control.open).expect("add control");
+        pool.add(data.open).expect("add data");
+
+        let mut guards = Vec::new();
+        for _ in 0..4 {
+            let (_stream, guard) = pool.open().await.expect("open data stream");
+            guards.push(guard);
+        }
+        assert_eq!(pool.inflight_by_role(true), 0, "control must stay clean");
+        assert_eq!(pool.inflight_by_role(false), 4);
+        drop(guards);
+        assert_eq!(pool.inflight(), 0);
+    }
+
+    #[tokio::test]
+    async fn control_connection_is_only_a_fallback_without_data() {
+        let pool = ConnectionPool::new(1, 4);
+        let control = make_handle();
+        pool.add_control(control.open).expect("add control");
+        let (_stream, guard) = pool.open().await.expect("control fallback");
+        assert_eq!(pool.inflight(), 1);
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn idle_reaper_keeps_control_connection() {
+        let pool = ConnectionPool::new(2, 4);
+        let control = make_handle();
+        let data = make_handle();
+        pool.add_control(control.open).expect("add control");
+        pool.add(data.open).expect("add data");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(pool.reap_idle(Duration::from_millis(1)), 1);
+        assert_eq!(pool.len(), 1, "control connection must survive reaping");
     }
 
     #[tokio::test]

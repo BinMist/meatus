@@ -38,7 +38,8 @@ use crate::status::ProxyEntry;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVER_PING: Duration = Duration::from_secs(10);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(25);
+// 容忍 TCP 重传退避（1+2+4+8+16+32≈63s）：控制面短暂饥饿不应直接判定会话死亡。
+const IDLE_TIMEOUT: Duration = Duration::from_secs(75);
 const IDLE_CHECK: Duration = Duration::from_secs(5);
 const READ_SLICE: Duration = Duration::from_secs(60);
 const UDP_MAX_PACKET: usize = 1500;
@@ -361,6 +362,7 @@ async fn run_session(
             hello.max_streams_per_conn,
         )
         .map_err(|err| anyhow!("create session pool: {err}"))?;
+    ctx.state.metrics.connected_client(1);
     ctx.state.status.client_connected(
         &hello.tenant_id,
         &hello.client_id,
@@ -382,6 +384,7 @@ async fn run_session(
     }
     impl Drop for ClientStatusGuard {
         fn drop(&mut self) {
+            self.state.metrics.connected_client(-1);
             self.state
                 .status
                 .client_disconnected(&self.tenant_id, &self.client_id, &self.run_id);
