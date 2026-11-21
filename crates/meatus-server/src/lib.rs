@@ -416,13 +416,6 @@ async fn serve_connection(
     state: Arc<ServerState>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
-    if !state.handshake_limiter.allow(peer.ip()) {
-        state.metrics.handshake_failed("rate_limit");
-        warn!(%peer, "control handshake rate limited");
-        tokio::time::sleep(HANDSHAKE_FAIL_DELAY).await;
-        return Err(anyhow!("control handshake rate limited"));
-    }
-
     let _ = tcp.set_nodelay(true);
     let tls_stream = match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
         Ok(Ok(stream)) => stream,

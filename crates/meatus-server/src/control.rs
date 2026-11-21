@@ -277,6 +277,18 @@ async fn run_session(
         bail!("hello missing identity");
     }
 
+    if !hello.data_connection && !ctx.state.handshake_limiter.allow(ctx.peer) {
+        ctx.state.metrics.handshake_failed("rate_limit");
+        warn!(peer = %ctx.peer, "control handshake rate limited");
+        let _ = write_frame(
+            &mut writer,
+            &ErrorCode::AuthFailed.to_wire("control handshake rate limited"),
+        )
+        .await;
+        tokio::time::sleep(HANDSHAKE_FAIL_DELAY).await;
+        bail!("control handshake rate limited");
+    }
+
     let nonce = random_bytes(32)?;
     write_frame(
         &mut writer,
