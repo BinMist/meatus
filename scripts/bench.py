@@ -42,9 +42,10 @@ def wait_port(port: int, timeout: float = 15.0) -> None:
 def start_echo(port: int) -> subprocess.Popen:
     code = f"""
 import socket, threading
-s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 s.bind(('127.0.0.1',{port})); s.listen(128)
 def h(c):
+    c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     try:
         while True:
             b=c.recv(65536)
@@ -59,6 +60,7 @@ while True:
 
 def run_worker(port, payload, deadline, barrier, out, idx):
     sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     sock.settimeout(10)
     barrier.wait()
     lat = []

@@ -423,6 +423,7 @@ async fn serve_connection(
         return Err(anyhow!("control handshake rate limited"));
     }
 
+    let _ = tcp.set_nodelay(true);
     let tls_stream = match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(err)) => {

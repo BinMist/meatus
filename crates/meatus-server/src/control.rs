@@ -1590,6 +1590,7 @@ async fn tcp_accept_loop(
                         continue;
                     }
                 };
+                let _ = user.set_nodelay(true);
                 if !ctx.allow_connection() {
                     debug!(proxy = %ctx.proxy_name, "connection denied by quota or rate limit");
                     continue;
