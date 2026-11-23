@@ -159,8 +159,12 @@ fn import(args: ImportArgs) -> anyhow::Result<()> {
 }
 
 fn load_config(path: &Path) -> anyhow::Result<ServerConfig> {
-    load_server_config_with_format(path, ConfigFormat::Auto)
-        .with_context(|| format!("load server config {}", path.display()))
+    let config = load_server_config_with_format(path, ConfigFormat::Auto)
+        .with_context(|| format!("load server config {}", path.display()))?;
+    config
+        .validate()
+        .with_context(|| format!("validate server config {}", path.display()))?;
+    Ok(config)
 }
 
 fn verify_path(config: &ServerConfig, path: &Path) -> anyhow::Result<RelayBundle> {
