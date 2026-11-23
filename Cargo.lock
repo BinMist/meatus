@@ -1279,6 +1279,7 @@ name = "meatus-core"
 version = "1.4.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "futures-io",
  "getrandom 0.4.3",
@@ -1288,6 +1289,7 @@ dependencies = [
  "prost",
  "quinn",
  "rcgen 0.14.10",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

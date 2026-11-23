@@ -12,6 +12,7 @@ pub mod pin;
 pub mod pool;
 pub mod quic;
 pub mod rate;
+pub mod relay_bundle;
 pub mod seams;
 pub mod tenant;
 pub mod transport;
@@ -39,6 +40,12 @@ pub use pin::parse_spki_pin;
 pub use pool::{ConnectionPool, PoolConnId, PoolError, PoolGuard, PoolSnapshot, PoolStats};
 pub use quic::QuicStream;
 pub use rate::{RateLimiter, copy_bidirectional_limited};
+pub use relay_bundle::{
+    BUNDLE_VERSION, BundleError, RelayBundle, RelayBundleBody, RelayMember, RelaySigningKey,
+    canonical_body_bytes, check_epoch_rollback, compute_config_hash, current_epoch,
+    epoch_state_path, load_bundle, now_rfc3339, parse_bundle, parse_public_key,
+    verify_against_config, verify_bundle, verify_for_config, write_bundle, write_epoch_state,
+};
 pub use seams::{
     AllocError, AllowAllQuota, AuthError, AuthProvider, ClientIdentity, ConfigSnapshot,
     ConfigSource, FileConfigSource, LocalPortAllocator, LocalTokenAuth, NameAllocator,

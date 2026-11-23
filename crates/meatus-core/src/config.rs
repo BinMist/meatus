@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -176,7 +176,7 @@ pub struct RelaySection {
     pub cert_sync: RelayCertSync,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RelayRole {
     Primary,
@@ -253,14 +253,8 @@ impl RelaySection {
             return Err(invalid("relay.bundle must not be empty"));
         }
         let key = self.bundle_pubkey.trim();
-        let Some(key_body) = key.strip_prefix("ed25519:") else {
-            return Err(invalid(
-                "relay.bundle_pubkey must use the \"ed25519:BASE64\" format",
-            ));
-        };
-        if key_body.trim().is_empty() {
-            return Err(invalid("relay.bundle_pubkey must not be empty"));
-        }
+        crate::relay_bundle::parse_public_key(key)
+            .map_err(|err| invalid(format!("relay.bundle_pubkey: {err}")))?;
         if !is_valid_host_port(&self.health_bind) {
             return Err(invalid(
                 "relay.health_bind must be host:port with a non-zero port",
@@ -281,7 +275,7 @@ impl RelaySection {
     }
 }
 
-fn is_valid_host_port(addr: &str) -> bool {
+pub(crate) fn is_valid_host_port(addr: &str) -> bool {
     split_host_port(addr).is_some()
 }
 
@@ -1860,7 +1854,7 @@ group = "prod"
 role = "primary"
 advertise_addr = "relay-a.example.com:7000"
 bundle = "/etc/meatus/relay-bundle.json"
-bundle_pubkey = "ed25519:AAAA"
+bundle_pubkey = "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 peer_secret_file = "/etc/meatus/relay-peer.key"
 "#;
 
@@ -1928,7 +1922,7 @@ relay:
   role: primary
   advertise_addr: "relay-a.example.com:7000"
   bundle: /etc/meatus/relay-bundle.json
-  bundle_pubkey: "ed25519:AAAA"
+  bundle_pubkey: "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
   peer_secret_file: /etc/meatus/relay-peer.key
 "#;
         let config = parse_server_config_with_format(yaml, ConfigFormat::Yaml)
@@ -1961,9 +1955,19 @@ relay:
 
     #[test]
     fn relay_bundle_pubkey_requires_ed25519_prefix() {
-        let bad = RELAY_TOML.replace("ed25519:AAAA", "AAAA");
+        let bad = RELAY_TOML.replace("ed25519:", "");
         let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
         assert!(err.to_string().contains("ed25519:BASE64"), "{err}");
+    }
+
+    #[test]
+    fn relay_bundle_pubkey_requires_32_bytes() {
+        let bad = RELAY_TOML.replace(
+            "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "ed25519:AAAA",
+        );
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(err.to_string().contains("32 bytes"), "{err}");
     }
 
     #[test]

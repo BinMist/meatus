@@ -79,9 +79,11 @@ pub struct ServerState {
 impl ServerState {
     pub fn new(config: ServerConfig) -> Result<Self, ConfigError> {
         config.validate()?;
+        meatus_core::relay_bundle::verify_for_config(&config)
+            .map_err(|err| ConfigError::Invalid(format!("relay bundle: {err}")))?;
         if config.relay.is_some() {
             return Err(ConfigError::Invalid(
-                "[relay] is valid but relay runtime is not implemented before G1-02; remove [relay] to run standalone"
+                "relay bundle verified, but relay runtime starts in G2-01; remove [relay] to run standalone"
                     .to_string(),
             ));
         }

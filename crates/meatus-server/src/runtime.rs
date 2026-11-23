@@ -369,6 +369,8 @@ range = [20000, 20010]
     }
 
     fn relay_text() -> String {
+        let bundle =
+            std::env::temp_dir().join(format!("meatus-g1-02-missing-{}.json", std::process::id()));
         format!(
             r#"
 {}
@@ -378,11 +380,12 @@ id = "relay-a"
 group = "prod"
 role = "primary"
 advertise_addr = "relay-a.example.com:7000"
-bundle = "/etc/meatus/relay-bundle.json"
-bundle_pubkey = "ed25519:AAAA"
+bundle = "{}"
+bundle_pubkey = "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 peer_secret_file = "/etc/meatus/relay-peer.key"
 "#,
-            config_text(7000, &"00".repeat(32))
+            config_text(7000, &"00".repeat(32)),
+            bundle.display()
         )
     }
 
@@ -394,12 +397,12 @@ peer_secret_file = "/etc/meatus/relay-peer.key"
     }
 
     #[test]
-    fn relay_runtime_is_gated_until_g1_02() {
+    fn relay_config_requires_readable_bundle() {
         let config = parse_server_config(&relay_text()).expect("relay config");
         let err = match crate::ServerState::new(config) {
-            Ok(_) => panic!("relay runtime must not start before G1-02"),
+            Ok(_) => panic!("relay config without bundle must not start"),
             Err(err) => err,
         };
-        assert!(err.to_string().contains("G1-02"), "{err}");
+        assert!(err.to_string().contains("relay bundle"), "{err}");
     }
 }

@@ -22,6 +22,8 @@ use meatus_server::logbuf::LogBuffer;
 use sha2::Digest;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+mod relay_cmd;
+
 #[derive(Parser)]
 #[command(name = "meatus", version, about = "Rust 内网穿透：完全开源，自托管")]
 struct Cli {
@@ -45,6 +47,8 @@ enum Command {
     Status(StatusArgs),
     /// 配置备份与恢复
     Config(ConfigArgs),
+    /// Relay 组签名配置包
+    Relay(relay_cmd::RelayArgs),
 }
 
 #[derive(Args)]
@@ -194,6 +198,7 @@ async fn main() -> anyhow::Result<()> {
         Command::GenCert(args) => gen_cert(&args),
         Command::Status(args) => status(&args).await,
         Command::Config(args) => run_config(&args),
+        Command::Relay(args) => relay_cmd::run(args),
     }
 }
 
