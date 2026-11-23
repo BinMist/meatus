@@ -5,7 +5,10 @@ use std::net::TcpListener as StdTcpListener;
 use std::time::Duration;
 
 use meatus_client::ClientState;
-use meatus_core::{parse_client_config, parse_server_config};
+use meatus_core::{
+    RelayBundleBody, RelayMember, RelayRole, RelaySigningKey, parse_client_config,
+    parse_server_config, write_bundle,
+};
 use meatus_server::ServerState;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, copy};
 use tokio::net::TcpListener;
@@ -2288,6 +2291,157 @@ custom_domains = ["exact.test.local"]
         not_found.as_ref().is_ok_and(|body| body.contains("404")),
         "unknown host should return 404: {not_found:?}"
     );
+}
+
+#[tokio::test]
+async fn relay_member_serves_http_after_verified_bundle() {
+    let _guard = TEST_MUTEX.lock().await;
+    let control_port = free_port();
+    let http_port = free_port();
+    let https_port = free_port();
+    let admin_port = free_port();
+    let local_port = free_port();
+    spawn_http_echo(local_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-relay-http-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let (signing, _) = RelaySigningKey::generate().expect("relay key");
+    let body = RelayBundleBody {
+        version: 1,
+        group: "prod".to_string(),
+        epoch: 3,
+        generated_at: "2026-11-23T00:00:00Z".to_string(),
+        relays: vec![
+            RelayMember {
+                id: "relay-a".to_string(),
+                role: RelayRole::Primary,
+                control_addr: "relay-a.example.com:7000".to_string(),
+                http_domains: vec!["*.test.local".to_string()],
+                ports: [20_000, 20_999],
+            },
+            RelayMember {
+                id: "relay-b".to_string(),
+                role: RelayRole::Secondary,
+                control_addr: "relay-b.example.com:7000".to_string(),
+                http_domains: vec!["*.test.local".to_string()],
+                ports: [21_000, 21_999],
+            },
+        ],
+    };
+    let bundle = signing.sign(&body).expect("sign bundle");
+    let bundle_path = dir.join("relay-bundle.json");
+    write_bundle(&bundle_path, &bundle).expect("write bundle");
+    let peer_path = dir.join("relay-peer.key");
+    std::fs::write(&peer_path, b"0123456789abcdef0123456789abcdef").expect("write peer");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&peer_path, std::fs::Permissions::from_mode(0o600))
+            .expect("peer mode");
+    }
+
+    let server_config = format!(
+        r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control_port}
+tls_cert = "{cert}"
+tls_key = "{key}"
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [20000, 20999]
+
+[http]
+enabled = true
+bind = "127.0.0.1:{http_port}"
+https_bind = "127.0.0.1:{https_port}"
+domain = "app.test.local"
+
+[admin]
+bind = "127.0.0.1:{admin_port}"
+
+[relay]
+id = "relay-a"
+group = "prod"
+role = "primary"
+advertise_addr = "relay-a.example.com:7000"
+bundle = "{bundle}"
+bundle_pubkey = "{public}"
+peer_secret_file = "{peer}"
+"#,
+        cert = cert_path.display(),
+        key = key_path.display(),
+        bundle = bundle_path.display(),
+        public = signing.public_key(),
+        peer = peer_path.display(),
+    );
+
+    let client_config = format!(
+        r#"
+[client]
+server_addr = "127.0.0.1:{control_port}"
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+
+[[proxy]]
+name = "web"
+type = "http"
+local_addr = "127.0.0.1:{local_port}"
+custom_domains = ["app.test.local"]
+"#,
+        cert = cert_path.display(),
+    );
+
+    let server_state = ServerState::new(parse_server_config(&server_config).expect("server cfg"))
+        .expect("server state");
+    assert!(server_state.relay.is_some(), "relay context missing");
+    let client_state = ClientState::new(parse_client_config(&client_config).expect("client cfg"))
+        .expect("client state");
+    let server_cancel = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let server_task = {
+        let cancel = server_cancel.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_state, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let mut routed = false;
+    for _ in 0..30 {
+        sleep(Duration::from_millis(200)).await;
+        if let Ok(body) = http_get_host(http_port, "app.test.local", "/relay").await
+            && body.contains("hello:/relay")
+        {
+            routed = true;
+            break;
+        }
+    }
+
+    client_cancel.cancel();
+    server_cancel.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), server_task).await;
+    let _ = std::fs::remove_dir_all(dir);
+
+    assert!(routed, "relay member http routing failed");
 }
 
 async fn spawn_tls_http_echo(
