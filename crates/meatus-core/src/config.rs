@@ -82,6 +82,9 @@ fn default_tenant() -> String {
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub server: ServerSection,
+    /// V1.5 relay 组；缺省即 standalone。
+    #[serde(default)]
+    pub relay: Option<RelaySection>,
     #[serde(default)]
     pub tenant: TenantSection,
     pub auth: AuthSection,
@@ -140,6 +143,178 @@ impl Default for ServerSection {
             tls_cert: None,
             tls_key: None,
             quic: false,
+        }
+    }
+}
+
+/// V1.5 relay 组配置；缺省时服务端保持 1.4 standalone 行为。
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelaySection {
+    /// 组内唯一 id，例如 `relay-a`。
+    pub id: String,
+    /// 组名，例如 `prod`。
+    pub group: String,
+    /// `primary` 才允许 ACME 下单；`secondary` 只读同步证书。
+    pub role: RelayRole,
+    /// 对端可访问的控制地址，host:port。
+    pub advertise_addr: String,
+    /// 签名配置包路径；解析与验签在 G1-02 实现。
+    pub bundle: PathBuf,
+    /// Ed25519 公钥，格式 `ed25519:BASE64`。
+    pub bundle_pubkey: String,
+    /// peer 健康/状态监听地址；默认只绑 loopback。
+    #[serde(default = "default_relay_health_bind")]
+    pub health_bind: String,
+    /// peer 健康探测超时，秒。
+    #[serde(default = "default_relay_peer_timeout_s")]
+    pub peer_timeout_s: u64,
+    /// group peer 鉴权密钥文件，32B，权限 0600。
+    pub peer_secret_file: PathBuf,
+    /// 证书同步模式；G1-02 实现前默认关闭。
+    #[serde(default)]
+    pub cert_sync: RelayCertSync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RelayRole {
+    Primary,
+    Secondary,
+}
+
+impl RelayRole {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Secondary => "secondary",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RelayCertSync {
+    /// 不主动同步；证书由运维或 bundle 手工分发。
+    #[default]
+    Off,
+    /// primary 推给 secondary。
+    Push,
+    /// secondary 从 primary 拉取。
+    Pull,
+}
+
+impl RelayCertSync {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Push => "push",
+            Self::Pull => "pull",
+        }
+    }
+}
+
+fn default_relay_health_bind() -> String {
+    "127.0.0.1:7401".to_string()
+}
+
+const fn default_relay_peer_timeout_s() -> u64 {
+    5
+}
+
+impl RelaySection {
+    fn validate(&self) -> Result<(), ConfigError> {
+        let id = self.id.trim();
+        if id.is_empty() {
+            return Err(invalid("relay.id must not be empty"));
+        }
+        if id.len() > 64 || id.chars().any(char::is_whitespace) {
+            return Err(invalid(
+                "relay.id must be <=64 characters and contain no whitespace",
+            ));
+        }
+        let group = self.group.trim();
+        if group.is_empty() {
+            return Err(invalid("relay.group must not be empty"));
+        }
+        if group.len() > 64 || group.chars().any(char::is_whitespace) {
+            return Err(invalid(
+                "relay.group must be <=64 characters and contain no whitespace",
+            ));
+        }
+        if !is_valid_host_port(&self.advertise_addr) {
+            return Err(invalid(
+                "relay.advertise_addr must be host:port with a non-zero port",
+            ));
+        }
+        if self.bundle.as_os_str().is_empty() {
+            return Err(invalid("relay.bundle must not be empty"));
+        }
+        let key = self.bundle_pubkey.trim();
+        let Some(key_body) = key.strip_prefix("ed25519:") else {
+            return Err(invalid(
+                "relay.bundle_pubkey must use the \"ed25519:BASE64\" format",
+            ));
+        };
+        if key_body.trim().is_empty() {
+            return Err(invalid("relay.bundle_pubkey must not be empty"));
+        }
+        if !is_valid_host_port(&self.health_bind) {
+            return Err(invalid(
+                "relay.health_bind must be host:port with a non-zero port",
+            ));
+        }
+        if !is_private_bind_addr(&self.health_bind) {
+            return Err(invalid(
+                "relay.health_bind must bind loopback or a private/link-local address",
+            ));
+        }
+        if !(1..=300).contains(&self.peer_timeout_s) {
+            return Err(invalid("relay.peer_timeout_s must be 1..=300"));
+        }
+        if self.peer_secret_file.as_os_str().is_empty() {
+            return Err(invalid("relay.peer_secret_file must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+fn is_valid_host_port(addr: &str) -> bool {
+    split_host_port(addr).is_some()
+}
+
+fn split_host_port(addr: &str) -> Option<(&str, u16)> {
+    let addr = addr.trim();
+    if addr.is_empty() || addr.contains("://") {
+        return None;
+    }
+    let (host, port) = addr.rsplit_once(':')?;
+    let host = host.trim();
+    if host.is_empty() || host.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let port = port.parse::<u16>().ok()?;
+    (port > 0).then_some((host, port))
+}
+
+fn is_private_bind_addr(addr: &str) -> bool {
+    let Some((host, _)) = split_host_port(addr) else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let Ok(ip) = host.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        std::net::IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            ip.is_loopback() || (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
         }
     }
 }
@@ -674,6 +849,15 @@ impl Default for LogSection {
 impl ServerConfig {
     /// 校验配置，不通过就不该启动。
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(relay) = &self.relay {
+            relay.validate()?;
+            if relay.role == RelayRole::Secondary && self.acme.enabled {
+                return Err(invalid(
+                    "relay.role = \"secondary\" must not enable acme; secondary loads synced certs",
+                ));
+            }
+        }
+
         if self.server.control_port < 1024 {
             return Err(invalid("server.control_port must be >= 1024"));
         }
@@ -1651,6 +1835,148 @@ token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         assert_eq!(config.server.bind_addr, "0.0.0.0");
         assert_eq!(config.ports.range, [20000, 30000]);
         assert_eq!(config.auth.credential_entries().len(), 1);
+        assert!(config.relay.is_none(), "standalone must stay standalone");
+    }
+
+    fn server_with_relay(relay: &str, acme: &str) -> String {
+        format!(
+            r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+{relay}
+{acme}
+"#
+        )
+    }
+
+    const RELAY_TOML: &str = r#"
+[relay]
+id = "relay-a"
+group = "prod"
+role = "primary"
+advertise_addr = "relay-a.example.com:7000"
+bundle = "/etc/meatus/relay-bundle.json"
+bundle_pubkey = "ed25519:AAAA"
+peer_secret_file = "/etc/meatus/relay-peer.key"
+"#;
+
+    #[test]
+    fn relay_config_parses_with_defaults() {
+        let config = parse_server_config(&server_with_relay(RELAY_TOML, ""))
+            .expect("relay config should be valid");
+        let relay = config.relay.expect("relay section");
+        assert_eq!(relay.id, "relay-a");
+        assert_eq!(relay.group, "prod");
+        assert_eq!(relay.role, RelayRole::Primary);
+        assert_eq!(relay.health_bind, "127.0.0.1:7401");
+        assert_eq!(relay.peer_timeout_s, 5);
+        assert_eq!(relay.cert_sync, RelayCertSync::Off);
+    }
+
+    #[test]
+    fn relay_id_and_group_must_not_be_blank() {
+        let bad = RELAY_TOML.replace("id = \"relay-a\"", "id = \" \"");
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(err.to_string().contains("relay.id"), "{err}");
+
+        let bad = RELAY_TOML.replace("group = \"prod\"", "group = \" \"");
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(err.to_string().contains("relay.group"), "{err}");
+    }
+
+    #[test]
+    fn relay_health_bind_requires_host_and_port() {
+        let bad = RELAY_TOML.replace(
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"",
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"\nhealth_bind = \"7401\"",
+        );
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(err.to_string().contains("relay.health_bind"), "{err}");
+    }
+
+    #[test]
+    fn relay_health_bind_rejects_public_interfaces() {
+        let bad = RELAY_TOML.replace(
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"",
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"\nhealth_bind = \"0.0.0.0:7401\"",
+        );
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(err.to_string().contains("loopback"), "{err}");
+
+        let private = RELAY_TOML.replace(
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"",
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"\nhealth_bind = \"10.0.0.5:7401\"",
+        );
+        parse_server_config(&server_with_relay(&private, ""))
+            .expect("private health bind should be valid");
+    }
+
+    #[test]
+    fn relay_yaml_matches_toml_defaults() {
+        let yaml = r#"
+server:
+  control_port: 7000
+auth:
+  token_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+relay:
+  id: relay-a
+  group: prod
+  role: primary
+  advertise_addr: "relay-a.example.com:7000"
+  bundle: /etc/meatus/relay-bundle.json
+  bundle_pubkey: "ed25519:AAAA"
+  peer_secret_file: /etc/meatus/relay-peer.key
+"#;
+        let config = parse_server_config_with_format(yaml, ConfigFormat::Yaml)
+            .expect("yaml relay config should be valid");
+        let relay = config.relay.expect("relay section");
+        assert_eq!(relay.role, RelayRole::Primary);
+        assert_eq!(relay.health_bind, "127.0.0.1:7401");
+        assert_eq!(relay.peer_timeout_s, 5);
+    }
+
+    #[test]
+    fn relay_advertise_addr_requires_host_and_port() {
+        let bad = RELAY_TOML.replace(
+            "advertise_addr = \"relay-a.example.com:7000\"",
+            "advertise_addr = \"relay-a\"",
+        );
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(err.to_string().contains("relay.advertise_addr"), "{err}");
+    }
+
+    #[test]
+    fn relay_peer_timeout_is_bounded() {
+        let bad = RELAY_TOML.replace(
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"",
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"\npeer_timeout_s = 0",
+        );
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(err.to_string().contains("relay.peer_timeout_s"), "{err}");
+    }
+
+    #[test]
+    fn relay_bundle_pubkey_requires_ed25519_prefix() {
+        let bad = RELAY_TOML.replace("ed25519:AAAA", "AAAA");
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(err.to_string().contains("ed25519:BASE64"), "{err}");
+    }
+
+    #[test]
+    fn relay_secondary_must_not_enable_acme() {
+        let secondary = RELAY_TOML.replace("role = \"primary\"", "role = \"secondary\"");
+        let acme = r#"
+[acme]
+enabled = true
+email = "ops@example.com"
+"#;
+        let err = parse_server_config(&server_with_relay(&secondary, acme))
+            .expect_err("secondary + acme must fail");
+        assert!(err.to_string().contains("must not enable acme"), "{err}");
     }
 
     #[test]

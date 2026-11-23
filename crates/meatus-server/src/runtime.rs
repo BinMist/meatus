@@ -244,6 +244,9 @@ pub fn restart_fields(current: &ServerConfig, next: &ServerConfig) -> Vec<String
     if current.ctrl != next.ctrl {
         fields.push("ctrl".to_string());
     }
+    if current.relay != next.relay {
+        fields.push("relay".to_string());
+    }
     fields
 }
 
@@ -363,5 +366,40 @@ range = [20000, 20010]
         next.http.bind = "0.0.0.0:8080".to_string();
         let fields = restart_fields(&base, &next);
         assert_eq!(fields, vec!["http".to_string()]);
+    }
+
+    fn relay_text() -> String {
+        format!(
+            r#"
+{}
+
+[relay]
+id = "relay-a"
+group = "prod"
+role = "primary"
+advertise_addr = "relay-a.example.com:7000"
+bundle = "/etc/meatus/relay-bundle.json"
+bundle_pubkey = "ed25519:AAAA"
+peer_secret_file = "/etc/meatus/relay-peer.key"
+"#,
+            config_text(7000, &"00".repeat(32))
+        )
+    }
+
+    #[test]
+    fn relay_change_requires_restart() {
+        let base = parse_server_config(&config_text(7000, &"00".repeat(32))).expect("base");
+        let next = parse_server_config(&relay_text()).expect("relay config");
+        assert_eq!(restart_fields(&base, &next), vec!["relay".to_string()]);
+    }
+
+    #[test]
+    fn relay_runtime_is_gated_until_g1_02() {
+        let config = parse_server_config(&relay_text()).expect("relay config");
+        let err = match crate::ServerState::new(config) {
+            Ok(_) => panic!("relay runtime must not start before G1-02"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("G1-02"), "{err}");
     }
 }

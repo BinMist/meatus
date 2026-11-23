@@ -10,6 +10,21 @@ server:
   tls_key: "certs/server.key"
   quic: false
 
+# V1.5 relay 组（可选；缺省即保持 1.4 standalone）。
+# G1-01 只做配置校验；G1-02 前启用 relay 会被 serve/check 明确拒绝，不会静默按 standalone 启动。
+# bundle 验签与 peer/证书同步在 G1-02 接入。
+# relay:
+#   id: "relay-a"                 # 组内唯一
+#   group: "prod"
+#   role: "primary"               # primary 才允许 ACME 下单；secondary 只同步证书
+#   advertise_addr: "relay-a.example.com:7000"
+#   bundle: "/etc/meatus/relay-bundle.json"
+#   bundle_pubkey: "ed25519:REPLACE_WITH_BASE64_PUBLIC_KEY"
+#   health_bind: "127.0.0.1:7401"
+#   peer_timeout_s: 5
+#   peer_secret_file: "/etc/meatus/relay-peer.key"
+#   cert_sync: "push"             # off | push | pull；G1-02 前默认 off
+
 tenant:
   default: "default"
 

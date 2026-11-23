@@ -22,11 +22,12 @@ pub use config::{
     AcmeChallenge, AcmeSection, AdminApiToken, AdminSection, AdminTlsSection, ApiTokenScope,
     AuthMode, AuthSection, ClientConfig, ClientEntry, ClientLimits, ClientPolicy, ClientSection,
     ConfigError, ConfigFormat, ConfigKind, CtrlSection, HttpSection, LogFormat, LogSection,
-    PortReleasePolicy, PortsSection, ProxyOptions, ProxySpec, ProxyType, QuotaAction, ServerConfig,
-    ServerSection, Socks5Section, TransportMode, detect_kind, detect_kind_with_format,
-    load_client_config, load_client_config_with_format, load_server_config,
-    load_server_config_with_format, parse_client_config, parse_client_config_with_format,
-    parse_server_config, parse_server_config_with_format, resolve_config_format,
+    PortReleasePolicy, PortsSection, ProxyOptions, ProxySpec, ProxyType, QuotaAction,
+    RelayCertSync, RelayRole, RelaySection, ServerConfig, ServerSection, Socks5Section,
+    TransportMode, detect_kind, detect_kind_with_format, load_client_config,
+    load_client_config_with_format, load_server_config, load_server_config_with_format,
+    parse_client_config, parse_client_config_with_format, parse_server_config,
+    parse_server_config_with_format, resolve_config_format,
 };
 pub use config_edit::{
     remove_client_proxy, remove_server_client, set_admin_api_tokens, upsert_client_proxy,

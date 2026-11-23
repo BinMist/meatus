@@ -79,6 +79,12 @@ pub struct ServerState {
 impl ServerState {
     pub fn new(config: ServerConfig) -> Result<Self, ConfigError> {
         config.validate()?;
+        if config.relay.is_some() {
+            return Err(ConfigError::Invalid(
+                "[relay] is valid but relay runtime is not implemented before G1-02; remove [relay] to run standalone"
+                    .to_string(),
+            ));
+        }
 
         let auth: Arc<dyn AuthProvider> = Arc::new(LocalTokenAuth::from_config(&config)?);
         let allocator = LocalPortAllocator::new(config.ports.range)
