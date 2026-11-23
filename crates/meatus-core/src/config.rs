@@ -850,6 +850,14 @@ impl ServerConfig {
                     "relay.role = \"secondary\" must not enable acme; secondary loads synced certs",
                 ));
             }
+            if relay.role == RelayRole::Primary
+                && relay.cert_sync != RelayCertSync::Off
+                && !self.acme.enabled
+            {
+                return Err(invalid(
+                    "relay.role = \"primary\" with cert_sync requires acme.enabled = true",
+                ));
+            }
         }
 
         if self.server.control_port < 1024 {
@@ -2069,6 +2077,23 @@ peer_secret_file = "{}"
         );
         let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
         assert!(err.to_string().contains("32 bytes"), "{err}");
+    }
+
+    #[test]
+    fn relay_primary_cert_sync_requires_acme() {
+        let with_push =
+            RELAY_TOML.replace("peer_secret_file", "cert_sync = \"push\"\npeer_secret_file");
+        let err = parse_server_config(&server_with_relay(&with_push, ""))
+            .expect_err("primary cert_sync without acme must fail");
+        assert!(err.to_string().contains("requires acme.enabled"), "{err}");
+
+        let acme = r#"
+[acme]
+enabled = true
+email = "ops@example.com"
+"#;
+        parse_server_config(&server_with_relay(&with_push, acme))
+            .expect("primary cert_sync with acme");
     }
 
     #[test]

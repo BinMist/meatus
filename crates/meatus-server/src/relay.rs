@@ -31,6 +31,17 @@ impl RelayContext {
                     relay.id
                 ))
             })?;
+        if relay.cert_sync != meatus_core::RelayCertSync::Off
+            && let Some(missing) = bundle
+                .relays
+                .iter()
+                .find(|peer| peer.id != relay.id && peer.peer_addr.is_none())
+        {
+            return Err(ConfigError::Invalid(format!(
+                "relay.id {:?} must set peer_addr for cert_sync",
+                missing.id
+            )));
+        }
         Ok(Self { bundle, member })
     }
 
@@ -79,7 +90,8 @@ mod tests {
     use std::path::PathBuf;
 
     use meatus_core::{
-        RelayBundleBody, RelaySigningKey, config::RelayRole, parse_server_config, write_bundle,
+        RelayBundleBody, RelayCertSync, RelaySigningKey, config::RelayRole, load_bundle,
+        parse_server_config, write_bundle,
     };
 
     struct Fixture {
@@ -107,6 +119,7 @@ mod tests {
                         role: RelayRole::Primary,
                         control_addr: "relay-a.example.com:7000".to_string(),
                         http_domains: vec!["*.example.com".to_string()],
+                        peer_addr: Some("relay-a.example.com:7401".to_string()),
                         ports: [20_000, 20_999],
                     },
                     RelayMember {
@@ -114,6 +127,7 @@ mod tests {
                         role: RelayRole::Secondary,
                         control_addr: "relay-b.example.com:7000".to_string(),
                         http_domains: vec!["*.example.com".to_string()],
+                        peer_addr: Some("relay-b.example.com:7401".to_string()),
                         ports: [21_000, 21_999],
                     },
                 ],
@@ -169,6 +183,23 @@ peer_secret_file = "{}"
         fn cleanup(self) {
             let _ = fs::remove_dir_all(self.dir);
         }
+    }
+
+    #[test]
+    fn cert_sync_requires_every_peer_addr() {
+        let fixture = Fixture::new("peer-addr");
+        let mut config = fixture.config(
+            "relay-a",
+            "primary",
+            "relay-a.example.com:7000",
+            [20_000, 20_999],
+        );
+        config.relay.as_mut().expect("relay").cert_sync = RelayCertSync::Push;
+        let mut bundle = load_bundle(&fixture.bundle).expect("bundle");
+        bundle.relays[1].peer_addr = None;
+        let err = RelayContext::new(&config, bundle).expect_err("missing peer_addr");
+        assert!(err.to_string().contains("peer_addr"), "{err}");
+        fixture.cleanup();
     }
 
     #[test]

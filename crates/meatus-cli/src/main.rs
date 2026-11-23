@@ -786,6 +786,7 @@ clients = [
                     role: RelayRole::Primary,
                     control_addr: "relay-a.example.com:7000".to_string(),
                     http_domains: vec!["*.example.com".to_string()],
+                    peer_addr: Some("relay-a.example.com:7401".to_string()),
                     ports: [20_000, 20_999],
                 },
                 RelayMember {
@@ -793,6 +794,7 @@ clients = [
                     role: RelayRole::Secondary,
                     control_addr: "relay-b.example.com:7000".to_string(),
                     http_domains: vec!["*.example.com".to_string()],
+                    peer_addr: Some("relay-b.example.com:7401".to_string()),
                     ports: [21_000, 21_999],
                 },
             ],

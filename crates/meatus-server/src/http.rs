@@ -58,10 +58,7 @@ pub async fn serve_https(
     state: Arc<ServerState>,
     cancel: CancellationToken,
 ) {
-    let tls_acceptor = state
-        .acme
-        .as_ref()
-        .map(|acme| TlsAcceptor::from(acme.tls_config()));
+    let tls_acceptor = state.https_tls_config().map(TlsAcceptor::from);
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -138,10 +135,14 @@ async fn handle_https(
     tls_acceptor: Option<TlsAcceptor>,
 ) -> anyhow::Result<()> {
     let (hello, host) = read_client_hello(&mut client).await?;
-    let terminate = state
+    let terminate = (state
         .acme
         .as_ref()
         .is_some_and(|acme| acme.has_domain(&host))
+        || state
+            .relay_certs
+            .as_ref()
+            .is_some_and(|store| store.has_domain(&host)))
         && (state.domains.resolve(&host, RouteKind::Http).is_some()
             || state.domains.is_offline(&host, RouteKind::Http));
     if terminate {

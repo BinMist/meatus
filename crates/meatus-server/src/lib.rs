@@ -15,6 +15,8 @@ mod pool;
 mod quic;
 pub mod quota;
 mod relay;
+mod relay_cert;
+mod relay_peer;
 mod routes;
 mod runtime;
 mod socks5;
@@ -66,6 +68,10 @@ pub struct ServerState {
     pub(crate) pools: Arc<SessionPools>,
     /// 验签后的 relay 组成员上下文；standalone 为 `None`。
     pub relay: Option<Arc<RelayContext>>,
+    /// secondary 只读证书库；primary 或 standalone 为 `None`。
+    pub(crate) relay_certs: Option<Arc<relay_cert::RelayCertStore>>,
+    /// relay peer HMAC 密钥；standalone 或 cert_sync = off 时为 `None`。
+    pub(crate) peer_auth: Option<Arc<relay_peer::PeerAuth>>,
     pub acme: Option<Arc<acme::AcmeManager>>,
     pub logs: Arc<LogBuffer>,
     pub audit: Arc<audit::AuditLog>,
@@ -116,6 +122,8 @@ impl ServerState {
             socks5: Arc::new(Socks5Registry::default()),
             pools,
             relay,
+            relay_certs: None,
+            peer_auth: None,
             acme,
             logs: Arc::new(LogBuffer::default()),
             audit: Arc::new(audit::AuditLog::default()),
@@ -125,6 +133,15 @@ impl ServerState {
             log_reload: None,
             drain: drain::DrainState::default(),
         })
+    }
+
+    /// HTTPS 终结用的 TLS 配置：primary 用 ACME resolver，secondary 用同步证书库。
+    #[must_use]
+    pub(crate) fn https_tls_config(&self) -> Option<Arc<rustls::ServerConfig>> {
+        if let Some(acme) = &self.acme {
+            return Some(acme.tls_config());
+        }
+        self.relay_certs.as_ref().map(|store| store.tls_config())
     }
 
     /// 记录启动配置文件路径，并建立 SIGHUP / 面板共用的热加载器。
@@ -252,9 +269,51 @@ async fn shutdown_signal() {
 }
 
 /// 可在测试中通过 `CancellationToken` 停止的服务端入口。
-pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow::Result<()> {
+pub async fn run_until(mut state: ServerState, cancel: CancellationToken) -> anyhow::Result<()> {
     state.config.validate_runtime()?;
     let acceptor = TlsAcceptor::from(tls::load(&state.config)?);
+
+    let mut peer_listener = None;
+    if let Some(relay) = state.relay.as_ref() {
+        if relay.role() == meatus_core::RelayRole::Secondary {
+            state.relay_certs = Some(Arc::new(relay_cert::RelayCertStore::new(
+                &state.config.acme.cert_dir,
+            )?));
+            info!(
+                dir = %state.config.acme.cert_dir.display(),
+                "secondary relay cert store ready"
+            );
+        }
+        if state
+            .config
+            .relay
+            .as_ref()
+            .is_some_and(|section| section.cert_sync != meatus_core::RelayCertSync::Off)
+        {
+            let auth = relay_peer::PeerAuth::load(
+                &state
+                    .config
+                    .relay
+                    .as_ref()
+                    .expect("relay config exists")
+                    .peer_secret_file,
+            )?;
+            state.peer_auth = Some(auth);
+            let health_bind = state
+                .config
+                .relay
+                .as_ref()
+                .expect("relay config exists")
+                .health_bind
+                .clone();
+            let listener = TcpListener::bind(&health_bind)
+                .await
+                .with_context(|| format!("bind relay health listener {health_bind}"))?;
+            let local = listener.local_addr().context("relay health local_addr")?;
+            info!(%local, "relay peer listener ready: health + cert sync");
+            peer_listener = Some(listener);
+        }
+    }
 
     let bind = meatus_core::config::host_port(
         &state.config.server.bind_addr,
@@ -313,6 +372,22 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
     ));
 
     let mut data_tasks = Vec::new();
+    if let Some(peer_listener) = peer_listener {
+        let peer_state = Arc::clone(&state);
+        let peer_cancel = cancel.child_token();
+        data_tasks.push(tokio::spawn(async move {
+            if let Err(err) = relay_peer::serve(peer_listener, peer_state, peer_cancel).await {
+                warn!(error = %err, "relay peer listener stopped");
+            }
+        }));
+        let sync_state = Arc::clone(&state);
+        let sync_cancel = cancel.child_token();
+        data_tasks.push(tokio::spawn(async move {
+            if let Err(err) = relay_peer::run_sync(sync_state, sync_cancel).await {
+                warn!(error = %err, "relay cert sync stopped");
+            }
+        }));
+    }
     if let Some(endpoint) = quic_endpoint {
         let quic_state = Arc::clone(&state);
         let quic_cancel = cancel.child_token();

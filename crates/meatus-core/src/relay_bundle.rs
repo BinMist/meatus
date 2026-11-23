@@ -61,6 +61,9 @@ pub struct RelayMember {
     pub control_addr: String,
     #[serde(default)]
     pub http_domains: Vec<String>,
+    /// 组内证书同步/健康端点，host:port；未填时由部署层推导。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_addr: Option<String>,
     pub ports: [u16; 2],
 }
 
@@ -175,6 +178,13 @@ impl RelayMember {
         if !crate::config::is_valid_host_port(&self.control_addr) {
             return Err(invalid(format!(
                 "relays[{index}].control_addr must be host:port with a non-zero port"
+            )));
+        }
+        if let Some(peer_addr) = &self.peer_addr
+            && !crate::config::is_valid_host_port(peer_addr)
+        {
+            return Err(invalid(format!(
+                "relays[{index}].peer_addr must be host:port with a non-zero port"
             )));
         }
         if self.http_domains.len() > 16 {
@@ -621,6 +631,7 @@ mod tests {
                     role: RelayRole::Primary,
                     control_addr: "relay-a.example.com:7000".to_string(),
                     http_domains: vec!["*.example.com".to_string()],
+                    peer_addr: Some("relay-a.example.com:7401".to_string()),
                     ports: [20_000, 20_999],
                 },
                 RelayMember {
@@ -628,6 +639,7 @@ mod tests {
                     role: RelayRole::Secondary,
                     control_addr: "relay-b.example.com:7000".to_string(),
                     http_domains: vec!["*.example.com".to_string()],
+                    peer_addr: Some("relay-b.example.com:7401".to_string()),
                     ports: [21_000, 22_000],
                 },
             ],

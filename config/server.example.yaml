@@ -25,7 +25,9 @@ server:
 #   health_bind: "127.0.0.1:7401"
 #   peer_timeout_s: 5
 #   peer_secret_file: "/etc/meatus/relay-peer.key"
-#   cert_sync: "push"             # off | push | pull；G2-02 前默认 off
+#   cert_sync: "push"             # off | push | pull；primary 下单，secondary 只读同步证书
+#                                  # push: primary→secondary；pull: secondary←primary；成员 peer_addr 必填
+#                                  # 只同步 cert-*.pem，不同步 account-*.pem
 
 tenant:
   default: "default"
