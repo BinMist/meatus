@@ -1,7 +1,7 @@
 # Meatus 完整使用教程（V1.4）
 
 > 适用版本：Meatus `1.4.0`（完全开源、Apache-2.0、自托管；2026-11-22 已发布）
-> 发布状态：`1.4.0` 已发布，当前线上正式版本为 `1.4.0`；四平台包、SBOM、ACR 多架构镜像与 Gitee Release 均已提供。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，发布后补跑。Windows 暂不提供；GHCR / GitHub Release 暂缓。
+> 发布状态：`1.4.0` 已发布，当前线上正式版本为 `1.4.0`；四平台包、SBOM、ACR 多架构镜像与 Gitee Release 均已提供。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，1.4.0 构建已于 2026-11-22 发布后补跑 PASS（1437/1437、fail=0、max_restarts=0）。Windows 暂不提供；GHCR / GitHub Release 暂缓。
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
 > 依赖：单二进制 + TOML（默认）/ YAML（管理面可写，规范化重写）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 > 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
@@ -25,11 +25,11 @@ V1.4.0 以协议 v2、可选 QUIC、多入口故障切换、IPv6、TCP 数据连
 | 流元数据 | `trace_id` / `connection_id` 贯穿日志、指标与审计；审计 API 支持 ID 前缀检索 |
 | 优雅 drain | `SIGTERM` 后停止接受新连接，存量流完成；超时强制关闭 |
 
-发布门禁：全量测试、3×2 兼容矩阵、20% 弱网、ZAP baseline、10 client 并发、性能基线、四平台包、ACR 与生产升级/回滚。24h soak 不作为 1.4.0 发布前门禁，发布后对 1.4.0 构建补跑。
+发布门禁：全量测试、3×2 兼容矩阵、20% 弱网、ZAP baseline、10 client 并发、性能基线、四平台包、ACR 与生产升级/回滚。24h soak 不作为 1.4.0 发布前门禁；1.4.0 构建已于 2026-11-22 发布后补跑 PASS（1437/1437、fail=0、max_restarts=0，24h0m47s）。
 
 ### V1.3.0 发布（历史）
 
-V1.3.0 以多客户端、授权与配额、审计备份、RBAC、API Token 与控制面握手防护为主。代码门禁已完成：`cargo test` 159 passed / 1 ignored，20% 弱网 20/20，ZAP 0 High / 0 Medium；24h soak 经决策延至 1.4 发布后补跑，不阻塞本次发布。
+V1.3.0 以多客户端、授权与配额、审计备份、RBAC、API Token 与控制面握手防护为主。代码门禁已完成：`cargo test` 159 passed / 1 ignored，20% 弱网 20/20，ZAP 0 High / 0 Medium；24h soak 不作为 1.3.0 发布门禁；1.3.0 构建的 soak 已于 2026-11-21 补跑 PASS（1436/1436），不阻塞本次发布。
 
 | 能力 | 说明 |
 | --- | --- |
