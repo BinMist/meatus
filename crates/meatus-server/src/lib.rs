@@ -14,12 +14,14 @@ mod metrics;
 mod pool;
 mod quic;
 pub mod quota;
+mod relay;
 mod routes;
 mod runtime;
 mod socks5;
 mod status;
 mod tls;
 
+pub use relay::RelayContext;
 pub use runtime::{ConfigReloader, LogReloadHandle, ReloadSnapshot, RuntimeConfig};
 
 use std::path::PathBuf;
@@ -62,6 +64,8 @@ pub struct ServerState {
     pub(crate) status: Arc<StatusRegistry>,
     pub(crate) socks5: Arc<Socks5Registry>,
     pub(crate) pools: Arc<SessionPools>,
+    /// 验签后的 relay 组成员上下文；standalone 为 `None`。
+    pub relay: Option<Arc<RelayContext>>,
     pub acme: Option<Arc<acme::AcmeManager>>,
     pub logs: Arc<LogBuffer>,
     pub audit: Arc<audit::AuditLog>,
@@ -79,14 +83,9 @@ pub struct ServerState {
 impl ServerState {
     pub fn new(config: ServerConfig) -> Result<Self, ConfigError> {
         config.validate()?;
-        meatus_core::relay_bundle::verify_for_config(&config)
+        let bundle = meatus_core::relay_bundle::verify_for_config(&config)
             .map_err(|err| ConfigError::Invalid(format!("relay bundle: {err}")))?;
-        if config.relay.is_some() {
-            return Err(ConfigError::Invalid(
-                "relay bundle verified, but relay runtime starts in G2-01; remove [relay] to run standalone"
-                    .to_string(),
-            ));
-        }
+        let relay = relay::build_context(&config, bundle)?;
 
         let auth: Arc<dyn AuthProvider> = Arc::new(LocalTokenAuth::from_config(&config)?);
         let allocator = LocalPortAllocator::new(config.ports.range)
@@ -116,6 +115,7 @@ impl ServerState {
             status: Arc::new(StatusRegistry::default()),
             socks5: Arc::new(Socks5Registry::default()),
             pools,
+            relay,
             acme,
             logs: Arc::new(LogBuffer::default()),
             audit: Arc::new(audit::AuditLog::default()),
@@ -281,6 +281,16 @@ pub async fn run_until(state: ServerState, cancel: CancellationToken) -> anyhow:
         "http"
     };
     info!(%admin_local, scheme = admin_scheme, "admin listener ready: panel + /metrics /healthz /api/v1/*");
+    if let Some(relay) = &state.relay {
+        info!(
+            relay_id = %relay.id(),
+            group = %relay.group(),
+            role = relay.role().as_str(),
+            epoch = relay.epoch(),
+            peers = relay.peers().count(),
+            "relay group member runtime ready"
+        );
+    }
     let config_path = state.config_path.clone();
     let state = Arc::new(state);
     let admin_state = admin::AdminState::new(

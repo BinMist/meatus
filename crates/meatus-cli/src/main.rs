@@ -266,6 +266,16 @@ fn run_check(args: CheckArgs) -> anyhow::Result<()> {
             state.config.validate_runtime()?;
             println!("OK  {} (server, {})", args.config.display(), actual.label());
             print!("{}", server_summary(&state.config));
+            if let Some(relay) = &state.relay {
+                println!(
+                    "relay   id={} group={} role={} epoch={} peers={}",
+                    relay.id(),
+                    relay.group(),
+                    relay.role().as_str(),
+                    relay.epoch(),
+                    relay.peers().count()
+                );
+            }
             println!("\nplanned listeners:");
             for listener in state.planned_listeners() {
                 println!("  {listener}");
@@ -705,7 +715,10 @@ fn client_summary(config: &ClientConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use meatus_core::{parse_client_config, parse_server_config};
+    use meatus_core::{
+        RelayBundleBody, RelayMember, RelayRole, RelaySigningKey, parse_client_config,
+        parse_server_config, write_bundle,
+    };
 
     #[test]
     fn client_summary_redacts_token() {
@@ -746,5 +759,104 @@ clients = [
         let summary = server_summary(&config);
         assert!(!summary.contains("2bb80d537b1da3e38bd30361aa855686"));
         assert!(summary.contains("nas"));
+    }
+
+    #[test]
+    fn relay_server_check_accepts_verified_bundle() {
+        let dir =
+            std::env::temp_dir().join(format!("meatus-cli-check-relay-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create dir");
+        let certified = rcgen::generate_simple_self_signed(vec!["tunnel.example.com".to_string()])
+            .expect("cert");
+        let cert_path = dir.join("server.crt");
+        let key_path = dir.join("server.key");
+        fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+        fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+        let (signing, _) = RelaySigningKey::generate().expect("key");
+        let body = RelayBundleBody {
+            version: 1,
+            group: "prod".to_string(),
+            epoch: 3,
+            generated_at: "2026-11-23T00:00:00Z".to_string(),
+            relays: vec![
+                RelayMember {
+                    id: "relay-a".to_string(),
+                    role: RelayRole::Primary,
+                    control_addr: "relay-a.example.com:7000".to_string(),
+                    http_domains: vec!["*.example.com".to_string()],
+                    ports: [20_000, 20_999],
+                },
+                RelayMember {
+                    id: "relay-b".to_string(),
+                    role: RelayRole::Secondary,
+                    control_addr: "relay-b.example.com:7000".to_string(),
+                    http_domains: vec!["*.example.com".to_string()],
+                    ports: [21_000, 21_999],
+                },
+            ],
+        };
+        let bundle = signing.sign(&body).expect("sign");
+        let bundle_path = dir.join("relay-bundle.json");
+        write_bundle(&bundle_path, &bundle).expect("write bundle");
+
+        let peer_path = dir.join("relay-peer.key");
+        fs::write(&peer_path, b"0123456789abcdef0123456789abcdef").expect("write peer");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&peer_path, fs::Permissions::from_mode(0o600)).expect("peer mode");
+        }
+
+        let config_path = dir.join("server.toml");
+        let config = format!(
+            r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = 7000
+tls_cert = "{}"
+tls_key = "{}"
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{}" }},
+]
+
+[ports]
+range = [20000, 20999]
+
+[http]
+enabled = true
+bind = "127.0.0.1:18080"
+https_bind = "127.0.0.1:18443"
+domain = "tunnel.example.com"
+
+[relay]
+id = "relay-a"
+group = "prod"
+role = "primary"
+advertise_addr = "relay-a.example.com:7000"
+bundle = "{}"
+bundle_pubkey = "{}"
+peer_secret_file = "{}"
+"#,
+            cert_path.display(),
+            key_path.display(),
+            "00".repeat(32),
+            bundle_path.display(),
+            signing.public_key(),
+            peer_path.display()
+        );
+        fs::write(&config_path, config).expect("write config");
+
+        run_check(CheckArgs {
+            config: config_path,
+            kind: None,
+            format: FormatArg::Auto,
+        })
+        .expect("relay check");
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

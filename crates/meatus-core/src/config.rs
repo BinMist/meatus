@@ -1039,6 +1039,9 @@ impl ServerConfig {
     /// 真正启动服务端前的额外校验：M1 必须启用 TLS。
     pub fn validate_runtime(&self) -> Result<(), ConfigError> {
         self.validate()?;
+        if let Some(relay) = &self.relay {
+            self.validate_relay_peer_secret(relay)?;
+        }
         if self.acme.enabled {
             if self.acme.email.as_deref().unwrap_or("").trim().is_empty() {
                 return Err(invalid("acme.email is required when acme.enabled = true"));
@@ -1067,6 +1070,48 @@ impl ServerConfig {
             return Err(invalid(
                 "server.tls_cert and server.tls_key are required to serve TLS in M1",
             ));
+        }
+        Ok(())
+    }
+
+    fn validate_relay_peer_secret(&self, relay: &RelaySection) -> Result<(), ConfigError> {
+        let path = &relay.peer_secret_file;
+        let meta = fs::metadata(path)
+            .map_err(|err| invalid(format!("relay.peer_secret_file {}: {err}", path.display())))?;
+        if !meta.is_file() {
+            return Err(invalid(format!(
+                "relay.peer_secret_file {} must be a regular file",
+                path.display()
+            )));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.permissions().mode() & 0o777 != 0o600 {
+                return Err(invalid(format!(
+                    "relay.peer_secret_file {} must have mode 0600",
+                    path.display()
+                )));
+            }
+        }
+        let secret = fs::read(path)
+            .map_err(|err| invalid(format!("relay.peer_secret_file {}: {err}", path.display())))?;
+        if secret.len() != 32 {
+            return Err(invalid(format!(
+                "relay.peer_secret_file {} must contain exactly 32 bytes, got {}",
+                path.display(),
+                secret.len()
+            )));
+        }
+        for (field, value) in [
+            ("admin.admin_token", self.admin.admin_token.as_deref()),
+            ("acme.dns_api_token", self.acme.dns_api_token.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.as_bytes() == secret.as_slice()) {
+                return Err(invalid(format!(
+                    "relay.peer_secret_file must not reuse {field}"
+                )));
+            }
         }
         Ok(())
     }
@@ -1951,6 +1996,62 @@ relay:
         );
         let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
         assert!(err.to_string().contains("relay.peer_timeout_s"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_peer_secret_requires_32_bytes_and_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("meatus-peer-secret-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let secret_path = dir.join("relay-peer.key");
+        let admin_token = "x".repeat(32);
+        fs::write(&secret_path, b"0123456789abcdef0123456789abcdef").expect("write secret");
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600)).expect("set mode");
+
+        let toml = format!(
+            r#"
+[server]
+control_port = 7000
+tls_cert = "cert.pem"
+tls_key = "key.pem"
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[admin]
+admin_token = "{admin_token}"
+
+[relay]
+id = "relay-a"
+group = "prod"
+role = "primary"
+advertise_addr = "relay-a.example.com:7000"
+bundle = "/etc/meatus/relay-bundle.json"
+bundle_pubkey = "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+peer_secret_file = "{}"
+"#,
+            secret_path.display()
+        );
+        let config = parse_server_config(&toml).expect("config");
+        config.validate_runtime().expect("valid peer secret");
+
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o644)).expect("set mode");
+        let err = config.validate_runtime().expect_err("0644 must fail");
+        assert!(err.to_string().contains("0600"), "{err}");
+
+        fs::write(&secret_path, b"short").expect("write short");
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600)).expect("set mode");
+        let err = config.validate_runtime().expect_err("short must fail");
+        assert!(err.to_string().contains("32 bytes"), "{err}");
+
+        fs::write(&secret_path, admin_token.as_bytes()).expect("write reused");
+        let err = config.validate_runtime().expect_err("reused must fail");
+        assert!(err.to_string().contains("admin.admin_token"), "{err}");
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

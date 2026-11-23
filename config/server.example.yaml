@@ -11,9 +11,10 @@ server:
   quic: false
 
 # V1.5 relay 组（可选；缺省即保持 1.4 standalone）。
-# G1-01 只做配置校验；G1-02 起 serve/check 会先验签 bundle，验签通过后仍因
-# relay 运行时未接入（G2-01）而明确拒绝启动，不会静默按 standalone 启动。
-# bundle 验签与 epoch sidecar 已接入；peer/证书同步在 G2-01 接入。
+# G1-01 只做配置校验；G1-02 起 serve/check 先验签 bundle。
+# G2-01 起验签通过的成员可正常启动，按 http.enabled 提供 80/443 双入口；
+# peer_secret_file 必须是 32B、0600，且不得复用 admin/DNS token；
+# peer 通信、证书同步与路由镜像在 G2-02 / G3 接入。
 # relay:
 #   id: "relay-a"                 # 组内唯一
 #   group: "prod"
@@ -24,7 +25,7 @@ server:
 #   health_bind: "127.0.0.1:7401"
 #   peer_timeout_s: 5
 #   peer_secret_file: "/etc/meatus/relay-peer.key"
-#   cert_sync: "push"             # off | push | pull；G2-01 前默认 off
+#   cert_sync: "push"             # off | push | pull；G2-02 前默认 off
 
 tenant:
   default: "default"

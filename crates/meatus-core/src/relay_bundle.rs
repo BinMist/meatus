@@ -144,6 +144,17 @@ impl RelayBundleBody {
             )));
         }
 
+        let reference_domains = normalized_http_domains(&self.relays[0])?;
+        for (index, member) in self.relays.iter().enumerate().skip(1) {
+            let domains = normalized_http_domains(member)?;
+            if domains != reference_domains {
+                return Err(invalid(format!(
+                    "relays[{index}].http_domains must match relays[0].http_domains; \
+                     all relay members must expose the same HTTP domains"
+                )));
+            }
+        }
+
         let mut ranges: Vec<[u16; 2]> = self.relays.iter().map(|relay| relay.ports).collect();
         ranges.sort_by_key(|range| range[0]);
         for window in ranges.windows(2) {
@@ -249,6 +260,17 @@ fn normalize_bundle_domain(value: &str) -> Result<String, String> {
     } else {
         Ok(suffix)
     }
+}
+
+fn normalized_http_domains(member: &RelayMember) -> Result<Vec<String>, BundleError> {
+    let mut domains = member
+        .http_domains
+        .iter()
+        .map(|domain| normalize_bundle_domain(domain))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| invalid(format!("relay {:?} http_domains entry: {err}", member.id)))?;
+    domains.sort();
+    Ok(domains)
 }
 
 /// canonical body bytes：字段顺序由结构体固定，不包含 `config_hash` / `signature`。
@@ -417,6 +439,16 @@ pub fn verify_against_config(
             "bundle member {:?} ports {:?} do not match ports.range {:?}",
             relay.id, member.ports, config.ports.range
         )));
+    }
+    if config.http.enabled {
+        let policy = crate::net::DomainPolicy::from_allow_domains(&member.http_domains)
+            .map_err(|err| invalid(format!("relay member http_domains: {err}")))?;
+        if !policy.allows(&config.http.domain) {
+            return Err(invalid(format!(
+                "http.domain {:?} is not covered by relay member {:?} http_domains {:?}",
+                config.http.domain, relay.id, member.http_domains
+            )));
+        }
     }
     if relay.role == RelayRole::Secondary && config.acme.enabled {
         return Err(invalid(
@@ -644,6 +676,70 @@ mod tests {
         body.relays[1].id = body.relays[0].id.clone();
         let err = body.validate().expect_err("must fail");
         assert!(err.to_string().contains("duplicate relay id"), "{err}");
+    }
+
+    #[test]
+    fn members_must_share_http_domains() {
+        let mut body = body();
+        body.relays[1].http_domains = vec!["*.other.example".to_string()];
+        let err = body.validate().expect_err("must fail");
+        assert!(
+            err.to_string()
+                .contains("must match relays[0].http_domains"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn http_domain_must_be_covered_by_relay_member() {
+        let (signing, public) = key();
+        let bundle = signing.sign(&body()).expect("sign");
+        let dir = std::env::temp_dir().join(format!("meatus-http-domain-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("relay-bundle.json");
+        write_bundle(&path, &bundle).expect("write bundle");
+
+        let toml = format!(
+            r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[ports]
+range = [20000, 20999]
+
+[http]
+enabled = true
+bind = "127.0.0.1:18080"
+https_bind = "127.0.0.1:18443"
+domain = "tunnel.example.com"
+
+[relay]
+id = "relay-a"
+group = "prod"
+role = "primary"
+advertise_addr = "relay-a.example.com:7000"
+bundle = "{}"
+bundle_pubkey = "{}"
+peer_secret_file = "/etc/meatus/relay-peer.key"
+"#,
+            path.display(),
+            public
+        );
+        let config = parse_server_config(&toml).expect("config");
+        verify_against_config(&config, &bundle).expect("domain is covered by wildcard");
+
+        let mut wrong = config.clone();
+        wrong.http.domain = "other.example".to_string();
+        let err = verify_against_config(&wrong, &bundle).expect_err("must fail");
+        assert!(
+            err.to_string().contains("http.domain") && err.to_string().contains("is not covered"),
+            "{err}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
