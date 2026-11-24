@@ -44,7 +44,16 @@ BIN="$ROOT/target/$TARGET/release/meatus"
 
 # 能 strip 就 strip；失败只告警，不影响产物。
 if file "$BIN" | grep -q 'ELF'; then
-    if command -v llvm-strip >/dev/null 2>&1; then
+    if [[ "$TARGET" == *linux-musl* ]]; then
+        CROSS_STRIP="${TARGET%%-*}-linux-musl-strip"
+        if command -v "$CROSS_STRIP" >/dev/null 2>&1; then
+            "$CROSS_STRIP" "$BIN" || echo "WARN: $CROSS_STRIP failed, keep unstripped" >&2
+        elif command -v llvm-strip >/dev/null 2>&1; then
+            llvm-strip "$BIN" || echo "WARN: llvm-strip failed, keep unstripped" >&2
+        else
+            echo "WARN: no musl cross strip, keep unstripped" >&2
+        fi
+    elif command -v llvm-strip >/dev/null 2>&1; then
         llvm-strip "$BIN" || echo "WARN: llvm-strip failed, keep unstripped" >&2
     elif command -v strip >/dev/null 2>&1; then
         strip "$BIN" || echo "WARN: strip failed, keep unstripped" >&2
