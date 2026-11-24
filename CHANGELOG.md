@@ -2,6 +2,34 @@
 
 本文件记录 Meatus 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.5.0] - 未发布（范围冻结 2026-11-24）
+
+> 状态：**未发布、未打 tag**。用户决策 B：`1.5.0` 降级收口，只交付 G1–G6 的代码与单机门禁，定位为 HA-ready；不宣称生产 HA，不包含 Windows 客户端。H1–H4、G2-03 双活外部健康检查与 V5-01 真实双主机验收全部移到 `1.5.1`。
+
+V1.5 的高可用能力进入代码与单机验收，但真实双主机 HA 尚未闭环。
+
+### Added
+
+- Relay 组配置与签名配置包：`[relay] id/group/role/advertise_addr/bundle`；`meatus relay bundle export/verify/import`，Ed25519 验签、group/member/端口/epoch 校验，bundle 不含秘密。
+- 客户端 multi-home：每成员独立控制会话，`Hello/Welcome` 携带 relay 身份并拒绝组错配；每个 proxy 注册到所有成员，保存 `proxy → relay_id → port`，单成员断开只清理该成员绑定。
+- 证书同步：primary-only ACME、secondary 只读证书库、60s push/pull 同步、HMAC/AEAD peer 通道、HTTPS secondary 接入。
+- Relay 健康与摘除：`/healthz` 输出 relay/peer 状态，metrics 暴露 role、epoch、peer_up；配置 hash/epoch 漂移拒绝启动，运行时按漂移与失败阈值摘除轮转资格。
+- 滚动 drain 与蓝绿：`drain_grace_s`、`/healthz` 503、`scripts/relay-roll.sh` 逐台升级/回滚、`bundle keygen`。
+- QUIC 控制面隔离：协议 v2 + QUIC 时，即使池关闭也另拨 1 条独立数据连接，控制连接 `control_only`；`ControlHealth` 记录 Pong RTT 直方图、连续丢失、最近 Pong 与最大间隔。
+
+### Changed
+
+- `[relay]` 可缺省，单机 standalone 行为保持 1.4 语义。
+- 默认传输仍为 TCP，`transport = "auto"` 失败回落 TCP；`[client.pool].enabled` 默认保持 `false`，1.5.0 不默认化。
+- `G6-03` 公网门禁：`.47` 真实公网 32×16KB×10s 连续 10 轮 **10/10**、`success_rate=1.0`、控制 Pong 最大 2.463s；attempt 3 仍有 0.839 Mbps / P50 32.5s 长尾，门禁通过不等于性能完全稳定。
+
+### Known limitations
+
+- **没有真实双主机 HA**：当前只有 `.47` 一台生产机，`.48` 公钥被拒，DNS 无双 A；G2-03 与 V5-01 未执行，单机双进程演练不得写成生产 HA。
+- **Windows 不进 1.5.0**：H1-01 服务命令代码已在仓库，但未做 Windows 11 真机 SCM 安装/卸载/重启自启/日志路径验收；不发布 Windows 包、不宣称可用。H1-02 安装包与托盘移到 `1.5.1`。
+- **1.5.0 尚未发布**：standalone 24h soak、Linux/macOS 包、SBOM、ACR 与 Gitee Release 资产仍未执行；在这些门禁完成前不创建 `v1.5.0` tag。
+- 双 relay 24h soak、DNS 双 A、外部健康检查与真实故障切换属于 `1.5.1`。
+
 ## [1.4.0] - 2026-11-22
 
 > 状态：已发布（2026-11-22 01:19 CST）。四平台包、`.sha256`、源码/镜像 SBOM、ACR 多架构镜像与 Gitee Release 均已发布；生产已从 `1.3.0` 升级到 `1.4.0` 并完成 `1.4.0 → 1.3.0 → 1.4.0` 回滚验证。发布门禁为全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线；24h soak 不作为发布前门禁，1.4.0 构建已于发布后补跑 PASS：1437/1437、fail=0、max_restarts=0，2026-11-21T17:39:00Z → 2026-11-22T17:39:47Z（24h0m47s）。

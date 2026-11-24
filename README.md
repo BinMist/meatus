@@ -15,7 +15,7 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，精确域名由 server 用 HTTP-01 自动签发、TLS 终止并缓存/续期，泛域名走 DNS-01（支持 Cloudflare / DNSPod）
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **版本状态**：`1.4.0` 已于 2026-11-22 发布，当前线上正式版本为 `1.4.0`。四平台包、`.sha256`、源码/镜像 SBOM、ACR 多架构镜像 `1.4.0` / `1.4` / `latest` 与 Gitee Release 均已发布；生产完成 `1.3.0 → 1.4.0` 升级与回滚验证。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，1.4.0 构建已于 2026-11-22 发布后补跑 PASS（1437/1437、fail=0、max_restarts=0）。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **版本状态**：`1.4.0` 已于 2026-11-22 发布，当前线上正式版本为 `1.4.0`。四平台包、`.sha256`、源码/镜像 SBOM、ACR 多架构镜像 `1.4.0` / `1.4` / `latest` 与 Gitee Release 均已发布；生产完成 `1.3.0 → 1.4.0` 升级与回滚验证。`1.5.0` 已于 2026-11-24 范围冻结但**未发布**：只收口 G1–G6、定位 HA-ready，不宣称生产 HA，不包含 Windows 客户端；H1–H4、G2-03 与 V5-01 真实双主机验收移到 `1.5.1`。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，1.4.0 构建已于 2026-11-22 发布后补跑 PASS（1437/1437、fail=0、max_restarts=0）。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
 ## 当前版本摘要
 

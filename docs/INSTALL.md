@@ -2,7 +2,7 @@
 
 V1 交付**完全开源（Apache-2.0）自托管版**：一台公网 server + 若干内网 client，单二进制、零数据库、零 Redis。本文覆盖 Linux systemd、Docker Compose、纯 `docker run` 和手工安装四种方式。
 
-> `1.4.0` 已于 2026-11-22 发布，当前线上正式版本为 `1.4.0`；四平台包、SBOM、ACR 多架构镜像与 Gitee Release 均已提供。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，1.4.0 构建已于 2026-11-22 发布后补跑 PASS（1437/1437、fail=0、max_restarts=0）。Windows 暂不提供。
+> `1.4.0` 已于 2026-11-22 发布，当前线上正式版本为 `1.4.0`；四平台包、SBOM、ACR 多架构镜像与 Gitee Release 均已提供。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，1.4.0 构建已于 2026-11-22 发布后补跑 PASS（1437/1437、fail=0、max_restarts=0）。`1.5.0` 范围冻结但未发布：只收口 G1–G6、定位 HA-ready，Windows 与真实双主机 HA 移到 `1.5.1`。Windows 暂不提供；第 9 节为 `1.5.1` 预览，未做 Windows 真机验收。
 
 ## 1. 产物与平台
 
