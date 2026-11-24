@@ -1,0 +1,14 @@
+[client]
+server_addr = "43.173.105.47:22000"
+server_name = "localhost"
+server_ca_cert = "planning/benchmarks/g6-03/attempt-08/server.crt"
+transport = "quic"
+client_id = "g6gate"
+tenant = "default"
+token = "g6-gate-secret"
+
+[[proxy]]
+name = "echo"
+type = "tcp"
+local_addr = "127.0.0.1:61305"
+remote_port = 22001

@@ -1,0 +1,15 @@
+[server]
+bind_addr = "0.0.0.0"
+control_port = 22000
+tls_cert = "/home/ubuntu/meatus-wan/server.crt"
+tls_key = "/home/ubuntu/meatus-wan/server.key"
+quic = true
+
+[auth]
+clients = [{ id = "g6gate", tenant = "default", token_sha256 = "c53496907f8750677b7823f2d25f9ab8b2895cedf6aa337bdff11ca7a4d0db50" }]
+
+[ports]
+range = [22001, 22001]
+
+[admin]
+bind = "127.0.0.1:12741"
