@@ -239,6 +239,7 @@ pub async fn run(state: ServerState) -> anyhow::Result<()> {
     let run_cancel = cancel.clone();
     let drain = state.drain.clone();
     let metrics = Arc::clone(&state.metrics);
+    let drain_grace = Duration::from_secs(state.config.server.drain_grace_s);
 
     let run = run_until(state, run_cancel);
     tokio::pin!(run);
@@ -246,9 +247,19 @@ pub async fn run(state: ServerState) -> anyhow::Result<()> {
     tokio::select! {
         result = &mut run => result,
         _ = shutdown_signal() => {
+            // 先摘 readiness，给外部 LB 留出摘后端的时间；期间仍接受新连接。
+            drain.pre_drain();
+            metrics.set_drain_phase(3);
+            info!(
+                grace_s = drain_grace.as_secs(),
+                "shutdown requested; readiness withdrawn for load balancer grace period"
+            );
+            if !drain_grace.is_zero() {
+                tokio::time::sleep(drain_grace).await;
+            }
             drain.begin();
             metrics.set_drain_phase(1);
-            info!("shutdown requested; draining existing streams");
+            info!("drain grace elapsed; draining existing streams");
             let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
             while metrics.data_active_total() > 0 && tokio::time::Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -382,6 +393,7 @@ pub async fn run_until(mut state: ServerState, cancel: CancellationToken) -> any
     let state = Arc::new(state);
     let admin_state = admin::AdminState::new(
         Arc::clone(&state.metrics),
+        state.drain.clone(),
         Arc::clone(&state.status),
         Arc::clone(&state.quotas),
         Arc::clone(&state.audit),

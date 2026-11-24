@@ -56,6 +56,7 @@ pub struct AuthSummary {
 #[derive(Clone)]
 pub struct AdminState {
     metrics: Arc<Metrics>,
+    drain: crate::drain::DrainState,
     status: Arc<StatusRegistry>,
     quotas: Arc<crate::quota::MonthlyQuota>,
     audit: Arc<crate::audit::AuditLog>,
@@ -84,6 +85,7 @@ impl AdminState {
     #[allow(clippy::too_many_arguments)] // mirrors the server wiring; grouping would add no clarity
     pub fn new(
         metrics: Arc<Metrics>,
+        drain: crate::drain::DrainState,
         status: Arc<StatusRegistry>,
         quotas: Arc<crate::quota::MonthlyQuota>,
         audit: Arc<crate::audit::AuditLog>,
@@ -97,6 +99,7 @@ impl AdminState {
         let access = AdminAccess::from_config(&config);
         Self {
             metrics,
+            drain,
             status,
             quotas,
             audit,
@@ -836,14 +839,19 @@ async fn route_inner(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState)
         return proxy_probe(request, state, name).await;
     }
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/healthz") => HttpResponse::json(
-            200,
-            json!({
-                "status": "ok",
-                "uptime_s": state.metrics.uptime_secs(),
-                "relay": state.metrics.relay_snapshot(),
-            }),
-        ),
+        ("GET", "/healthz") => {
+            let ready = state.drain.is_ready();
+            let phase = state.drain.phase();
+            HttpResponse::json(
+                if ready { 200 } else { 503 },
+                json!({
+                    "status": if ready { "ok" } else { "draining" },
+                    "drain_phase": phase,
+                    "uptime_s": state.metrics.uptime_secs(),
+                    "relay": state.metrics.relay_snapshot(),
+                }),
+            )
+        }
         ("GET", "/api/v1/session") => session_status(request, state),
         ("POST", "/api/v1/session") => login(request, peer_ip, state),
         ("DELETE", "/api/v1/session") => logout(request, state),

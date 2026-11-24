@@ -566,7 +566,7 @@ impl Metrics {
 
         let _ = writeln!(
             out,
-            "# HELP meatus_server_drain 0=serving 1=draining 2=drained."
+            "# HELP meatus_server_drain 0=serving 1=draining 2=drained 3=preparing(readiness withdrawn)."
         );
         let _ = writeln!(out, "# TYPE meatus_server_drain gauge");
         let _ = writeln!(

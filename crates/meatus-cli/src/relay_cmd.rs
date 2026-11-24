@@ -33,12 +33,24 @@ struct RelayBundleArgs {
 
 #[derive(Subcommand)]
 enum RelayBundleCommand {
+    /// 生成 relay bundle 签名用 Ed25519 私钥（PKCS#8 PEM）
+    Keygen(KeygenArgs),
     /// 对 draft JSON 做 Ed25519 签名，生成可分发 bundle
     Export(ExportArgs),
     /// 按服务端配置验签、校验 group/member/epoch
     Verify(VerifyArgs),
     /// 验签后把 bundle 安装到配置指定的路径
     Import(ImportArgs),
+}
+
+#[derive(Args)]
+struct KeygenArgs {
+    /// 输出的 PKCS#8 PEM 私钥路径
+    #[arg(short, long, default_value = "relay-signing.pem")]
+    out: PathBuf,
+    /// 覆盖已有私钥
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args)]
@@ -80,11 +92,42 @@ struct ImportArgs {
 pub fn run(args: RelayArgs) -> anyhow::Result<()> {
     match args.command {
         RelayCommand::Bundle(bundle) => match bundle.command {
+            RelayBundleCommand::Keygen(args) => keygen(args),
             RelayBundleCommand::Export(args) => export(args),
             RelayBundleCommand::Verify(args) => verify(args),
             RelayBundleCommand::Import(args) => import(args),
         },
     }
+}
+
+fn keygen(args: KeygenArgs) -> anyhow::Result<()> {
+    if args.out.exists() && !args.force {
+        bail!(
+            "{} already exists; pass --force to overwrite",
+            args.out.display()
+        );
+    }
+    let (signing, der) = RelaySigningKey::generate().context("generate Ed25519 signing key")?;
+    let pem = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        base64::engine::general_purpose::STANDARD.encode(der)
+    );
+    if let Some(parent) = args.out.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create key directory {}", parent.display()))?;
+    }
+    fs::write(&args.out, pem).with_context(|| format!("write {}", args.out.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&args.out, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 0600 {}", args.out.display()))?;
+    }
+    println!("private-key {}", args.out.display());
+    println!("pubkey      {}", signing.public_key());
+    println!();
+    println!("把 pubkey 填进 [relay].bundle_pubkey；私钥只留在签名机。");
+    Ok(())
 }
 
 fn export(args: ExportArgs) -> anyhow::Result<()> {

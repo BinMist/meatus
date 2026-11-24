@@ -125,6 +125,9 @@ pub struct ServerSection {
     /// 是否在控制端口同时监听 UDP/QUIC；默认关闭，不改变 1.3 行为。
     #[serde(default)]
     pub quic: bool,
+    /// 收到停止信号后先摘除就绪、等待外部 LB 摘后端的时间；0 表示立即 drain。
+    #[serde(default = "default_drain_grace_s")]
+    pub drain_grace_s: u64,
 }
 
 fn default_bind_addr() -> String {
@@ -135,6 +138,10 @@ fn default_control_port() -> u16 {
     7000
 }
 
+fn default_drain_grace_s() -> u64 {
+    5
+}
+
 impl Default for ServerSection {
     fn default() -> Self {
         Self {
@@ -143,6 +150,7 @@ impl Default for ServerSection {
             tls_cert: None,
             tls_key: None,
             quic: false,
+            drain_grace_s: default_drain_grace_s(),
         }
     }
 }
@@ -892,6 +900,9 @@ impl ServerConfig {
 
         if self.server.control_port < 1024 {
             return Err(invalid("server.control_port must be >= 1024"));
+        }
+        if self.server.drain_grace_s > 60 {
+            return Err(invalid("server.drain_grace_s must be 0..=60"));
         }
         if self.server.tls_cert.is_some() != self.server.tls_key.is_some() {
             return Err(invalid(
@@ -2425,6 +2436,29 @@ release_policy = "hold"
 hold_secs = 0
 "#;
         assert!(parse_server_config(toml).is_err());
+    }
+
+    #[test]
+    fn drain_grace_defaults_to_five_seconds_and_rejects_over_sixty() {
+        let toml = r#"
+[server]
+control_port = 7000
+
+[auth]
+token_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[ports]
+range = [20000, 20100]
+"#;
+        let config = parse_server_config(toml).expect("valid");
+        assert_eq!(config.server.drain_grace_s, 5);
+
+        let invalid = toml.replace(
+            "control_port = 7000",
+            "control_port = 7000\ndrain_grace_s = 61",
+        );
+        let err = parse_server_config(&invalid).expect_err("drain grace too large");
+        assert!(err.to_string().contains("drain_grace_s must be 0..=60"));
     }
 
     #[test]
