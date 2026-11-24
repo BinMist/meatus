@@ -1,0 +1,2 @@
+{"ts_ms":1795500690108,"actor":"client:g6","source_ip":"127.0.0.1","action":"client.online","target":"g6","client_id":"g6","result":"ok","trace_id":"26bb0c1493e82bc57ff54f5133636dfb"}
+{"ts_ms":1795500690410,"actor":"client:g6","source_ip":"","action":"proxy.create","target":"echo","client_id":"g6","result":"ok","trace_id":"000001a20c2e4bea"}

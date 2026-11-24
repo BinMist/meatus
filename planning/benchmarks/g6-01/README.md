@@ -48,3 +48,6 @@ python3 scripts/quic-isolation-spike.py \
 - `client.log` 中的 `no Pong` 是控制面饥饿的直接判据；`ok=false` 也可能仅由数据面
   worker 失败导致，两者需分开看。
 - 公网 10 轮门禁属于 G6-03，本目录数据不能替代。
+- 复跑注意：G6-02 起，QUIC 池关闭时会自动开 1 条独立数据连接，`--variant baseline`
+  不再等于本目录的单连接共享基线。要复跑真正的 baseline，请使用 G6-01 提交
+  `835335f` 构建的二进制。

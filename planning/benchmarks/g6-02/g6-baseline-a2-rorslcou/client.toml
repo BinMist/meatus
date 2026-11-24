@@ -1,0 +1,14 @@
+[client]
+server_addr = "127.0.0.1:53550"
+server_name = "localhost"
+server_ca_cert = "/Users/binsail/workspace/项目/meatus/planning/benchmarks/g6-02/g6-baseline-a2-rorslcou/server.crt"
+transport = "quic"
+client_id = "g6"
+tenant = "default"
+token = "g6-spike-secret"
+
+[[proxy]]
+name = "echo"
+type = "tcp"
+local_addr = "127.0.0.1:52104"
+remote_port = 52106

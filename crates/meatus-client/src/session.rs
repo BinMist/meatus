@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! 客户端会话：握手、注册、心跳、统计、TCP/UDP 转发与热重载。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::relay_registry::RelayRegistry;
-use crate::stats::{ClientStats, ProxyCounter};
+use crate::stats::{ClientStats, ControlHealth, ProxyCounter};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_PING: Duration = Duration::from_secs(10);
@@ -47,8 +47,37 @@ const DEFAULT_TCP_DATA_CONNECTIONS: u32 = 4;
 fn default_tcp_data_connections(pool_size: u32) -> u32 {
     DEFAULT_TCP_DATA_CONNECTIONS.min(pool_size.max(1))
 }
+
+/// 协议 v2 下每条控制连接应另开的数据连接数。
+///
+/// QUIC 控制连接必须保持 `control_only`：即使未启用 `[client.pool]`，也单独拨一条
+/// QUIC 数据连接，避免控制 Ping/Pong 与数据帧共享发送队列（ADR 0006）。TCP 继续沿用
+/// 4 条连接的经验默认值。
+fn data_connection_count(
+    negotiated_version: u32,
+    pool_enabled: bool,
+    pool_size: u32,
+    control_is_quic: bool,
+) -> u32 {
+    if negotiated_version < 2 {
+        return 0;
+    }
+    if pool_enabled {
+        return pool_size.max(1);
+    }
+    if control_is_quic {
+        1
+    } else {
+        default_tcp_data_connections(pool_size)
+    }
+}
 const DNS_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 const STATS_INTERVAL: Duration = Duration::from_secs(10);
+const CONTROL_HEALTH_LOG_INTERVAL: Duration = Duration::from_secs(60);
+/// 20s 无 Pong 只告警，60s 才判失败（ADR 0006）。
+const CONTROL_PONG_WARN: Duration = Duration::from_secs(20);
+/// 控制 Ping 在途窗口：每 10s 一发，60s 超时阈值内最多 6 个，留余量后裁剪。
+const CONTROL_PENDING_PINGS: usize = 8;
 const UDP_MAX_PACKET: usize = 1500;
 const UDP_MAX_SESSIONS: usize = 2048;
 const UDP_IDLE: Duration = Duration::from_secs(60);
@@ -137,9 +166,11 @@ pub async fn run_session(
         mut reader,
         mut writer,
         connection,
-        quic: _quic,
+        quic,
     } = session;
+    let control_is_quic = quic.is_some();
     let stats = Arc::new(ClientStats::new(&config.proxies));
+    let control_health = Arc::new(ControlHealth::default());
     register_proxies(
         config,
         &stats,
@@ -155,20 +186,18 @@ pub async fn run_session(
     let mut pool_tasks = Vec::new();
     // 协议 2 起数据面与控制面分离：即使未启用连接池，也保留独立数据连接，
     // 避免数据帧占满控制连接后把 Ping/Pong 饿到服务端 idle 超时。
-    let data_conns = if negotiated_version >= 2 {
-        if config.client.pool.enabled {
-            config.client.pool.size.max(1)
-        } else if matches!(config.client.transport, TransportMode::Tcp) {
-            // TCP 的控制帧与数据帧共用发送队列；未启用连接池时也要单独开数据连接。
-            // 多条连接让 yamux 流分散到不同 TCP 拥塞窗口，降低高 RTT 下的队头阻塞。
-            // Hello 里声明的 pool_size 是服务端接受上限，默认连接数不能超过它。
-            default_tcp_data_connections(config.client.pool.size)
-        } else {
-            0
-        }
-    } else {
-        0
-    };
+    let data_conns = data_connection_count(
+        negotiated_version,
+        config.client.pool.enabled,
+        config.client.pool.size,
+        control_is_quic,
+    );
+    if data_conns > 0 && control_is_quic && !config.client.pool.enabled {
+        info!(
+            data_connections = data_conns,
+            "QUIC control isolation enabled: dedicated data connection"
+        );
+    }
     if data_conns > 0 {
         let idle = Duration::from_secs(u64::from(config.client.pool.idle_timeout_s));
         for _ in 0..data_conns {
@@ -236,12 +265,27 @@ pub async fn run_session(
         &server_addr,
         &relay_id,
         registry,
+        Arc::clone(&control_health),
     )
     .await;
     dispatcher.abort();
     for task in pool_tasks {
         task.abort();
     }
+    let health = control_health.snapshot();
+    info!(
+        control_pongs = health.pongs,
+        control_timeouts = health.timeouts,
+        control_misses = health.consecutive_misses,
+        control_max_gap_ms = health.max_gap_ms,
+        control_last_pong_ms = health.last_pong_unix_ms,
+        rtt_lt_1s = health.rtt_buckets[0],
+        rtt_1_5s = health.rtt_buckets[1],
+        rtt_5_20s = health.rtt_buckets[2],
+        rtt_20_60s = health.rtt_buckets[3],
+        rtt_ge_60s = health.rtt_buckets[4],
+        "client control health on session exit"
+    );
     result
 }
 
@@ -728,13 +772,21 @@ async fn control_loop(
     server_addr: &str,
     relay_id: &str,
     registry: Option<Arc<RelayRegistry>>,
+    control_health: Arc<ControlHealth>,
 ) -> anyhow::Result<()> {
     let mut ping_timer = interval_at(TokioInstant::now() + CLIENT_PING, CLIENT_PING);
     ping_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut stats_timer = interval_at(TokioInstant::now() + STATS_INTERVAL, STATS_INTERVAL);
     stats_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut health_timer = interval_at(
+        TokioInstant::now() + CONTROL_HEALTH_LOG_INTERVAL,
+        CONTROL_HEALTH_LOG_INTERVAL,
+    );
+    health_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut ping_seq = 0u64;
     let mut last_pong = Instant::now();
+    let mut pong_warned = false;
+    let mut pending_pings: VecDeque<(u64, Instant)> = VecDeque::new();
     let mut pending: HashMap<String, ProxySpec> = HashMap::new();
 
     loop {
@@ -743,14 +795,45 @@ async fn control_loop(
                 debug!("client session cancelled");
                 return Ok(());
             }
+            _ = health_timer.tick() => {
+                let health = control_health.snapshot();
+                info!(
+                    control_pongs = health.pongs,
+                    control_timeouts = health.timeouts,
+                    control_misses = health.consecutive_misses,
+                    control_max_gap_ms = health.max_gap_ms,
+                    control_last_pong_ms = health.last_pong_unix_ms,
+                    rtt_lt_1s = health.rtt_buckets[0],
+                    rtt_1_5s = health.rtt_buckets[1],
+                    rtt_5_20s = health.rtt_buckets[2],
+                    rtt_20_60s = health.rtt_buckets[3],
+                    rtt_ge_60s = health.rtt_buckets[4],
+                    "client control health"
+                );
+            }
             _ = ping_timer.tick() => {
                 ping_seq += 1;
+                pending_pings.push_back((ping_seq, Instant::now()));
+                while pending_pings.len() > CONTROL_PENDING_PINGS {
+                    pending_pings.pop_front();
+                }
+                control_health.record_misses(
+                    u64::try_from(pending_pings.len().saturating_sub(1)).unwrap_or(0),
+                );
                 write_frame(
                     writer,
                     &ControlMsg { kind: Some(control_msg::Kind::Ping(Ping { seq: ping_seq, ts_ms: now_ms() })) },
                 ).await?;
                 if last_pong.elapsed() > PONG_TIMEOUT {
+                    control_health.record_timeout(last_pong.elapsed());
                     bail!("no Pong for {:?}", last_pong.elapsed());
+                }
+                if last_pong.elapsed() > CONTROL_PONG_WARN && !pong_warned {
+                    pong_warned = true;
+                    warn!(
+                        gap_ms = u64::try_from(last_pong.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        "control pong delayed beyond 20s"
+                    );
                 }
             }
             _ = stats_timer.tick() => {
@@ -788,8 +871,27 @@ async fn control_loop(
                             &ControlMsg { kind: Some(control_msg::Kind::Pong(Pong { seq: ping.seq, ts_ms: now_ms() })) },
                         ).await?;
                     }
-                    Some(control_msg::Kind::Pong(_)) => {
-                        last_pong = Instant::now();
+                    Some(control_msg::Kind::Pong(pong)) => {
+                        let received_at = Instant::now();
+                        let rtt = pending_pings
+                            .iter()
+                            .position(|(seq, _)| *seq == pong.seq)
+                            .and_then(|index| pending_pings.remove(index))
+                            .map(|(_, sent_at)| received_at.saturating_duration_since(sent_at));
+                        // 迟到的旧 Pong 会让更早的 Ping 失去意义，一并从在途窗口移除。
+                        pending_pings.retain(|(seq, _)| *seq > pong.seq);
+                        if let Some(rtt) = rtt {
+                            control_health.record_pong(rtt, u64::try_from(now_ms()).unwrap_or(0));
+                            info!(
+                                seq = pong.seq,
+                                rtt_ms = u64::try_from(rtt.as_millis()).unwrap_or(u64::MAX),
+                                "control pong"
+                            );
+                        } else {
+                            debug!(seq = pong.seq, "control pong without matching ping");
+                        }
+                        last_pong = received_at;
+                        pong_warned = false;
                     }
                     Some(control_msg::Kind::ProxyOk(ok)) => {
                         if let Some(spec) = pending.remove(&ok.name) {
@@ -1564,6 +1666,28 @@ mod tests {
             default_tcp_data_connections(16),
             DEFAULT_TCP_DATA_CONNECTIONS
         );
+    }
+
+    #[test]
+    fn protocol_v1_never_opens_data_connections() {
+        assert_eq!(data_connection_count(1, false, 4, true), 0);
+        assert_eq!(data_connection_count(1, true, 4, false), 0);
+    }
+
+    #[test]
+    fn quic_control_always_gets_a_dedicated_data_connection() {
+        // ADR 0006：QUIC 控制连接必须 control_only，未启用池也要独立数据连接。
+        assert_eq!(data_connection_count(2, false, 4, true), 1);
+        assert_eq!(data_connection_count(2, false, 1, true), 1);
+        assert_eq!(data_connection_count(2, true, 4, true), 4);
+        assert_eq!(data_connection_count(2, true, 2, true), 2);
+    }
+
+    #[test]
+    fn tcp_keeps_existing_default_data_connection_count() {
+        assert_eq!(data_connection_count(2, false, 4, false), 4);
+        assert_eq!(data_connection_count(2, false, 1, false), 1);
+        assert_eq!(data_connection_count(2, true, 3, false), 3);
     }
 
     #[test]

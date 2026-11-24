@@ -1,0 +1,204 @@
+{
+  "schema": "meatus-g6-spike/v1",
+  "timestamp": "2026-11-24T06:10:48Z",
+  "binary": "/Users/binsail/workspace/项目/meatus/target/release/meatus",
+  "version": "meatus 1.4.0",
+  "params": {
+    "duration_s": 10.0,
+    "concurrency": 32,
+    "payload_bytes": 16384,
+    "pipeline": 1,
+    "hog_mb": 0.0,
+    "delay_ms": 150.0,
+    "loss": 0.01,
+    "rate_mbps": 2.0,
+    "attempts": 3
+  },
+  "variants": {
+    "baseline": {
+      "attempts": 3,
+      "ok": 3,
+      "failed": 0,
+      "success_rate": 1.0,
+      "results": [
+        {
+          "variant": "baseline",
+          "attempt": 1,
+          "ok": true,
+          "load": {
+            "requests": 106,
+            "bytes": 3473408,
+            "throughput_mbps": 2.779,
+            "p50_ms": 3999.313,
+            "p99_ms": 5355.648,
+            "worker_errors": [],
+            "workers_ok": 32,
+            "workers_total": 32
+          },
+          "hog": [
+            {
+              "idx": 0,
+              "sent": 0,
+              "error": null
+            }
+          ],
+          "wan_egress_bytes": {
+            "client_to_server": 2384843,
+            "server_to_client": 2382625
+          },
+          "control_pong_failures": 0,
+          "client_reconnects": 0,
+          "client_alive": true,
+          "server_alive": true,
+          "log_dir": "/Users/binsail/workspace/项目/meatus/planning/benchmarks/g6-02/g6-baseline-a1-co3c0bu4",
+          "client_log_tail": [
+            "\u001b[2m2026-11-24T06:10:51.179643Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001b \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m7e3d295ef61012a1499d0ebe2bb6680c \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:10:51.180253Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001c \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0mc9157281521b116600fc6be1e2e4c5b9 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:10:51.180877Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001d \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m9f6431632d3c11b238c5122ac3be7cfe \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:10:51.181499Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001e \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m04b919820d2a44133137eb0d8d90a5fe \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:10:51.182100Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001f \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0ma7a4fd0573e5ceb756e4eec84e49c46e \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:10:51.182702Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000020 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0me65edb6181a360fad9ecd81ae2701946 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:10:51.183360Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000021 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m44f32d56cebed993a8abbed2f913bf5e \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:10:51.183976Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000022 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0me1cf93c2036cd3c5a73cf0425b03e6fb \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:10:53.635236Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m tunnel established \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0mb245d2f3d7d57b9ada6c9f7a39e61d30 \u001b[3mserver\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:54255 \u001b[3mtenant\u001b[0m\u001b[2m=\u001b[0mdefault \u001b[3mclient\u001b[0m\u001b[2m=\u001b[0mg6 \u001b[3mrun_id\u001b[0m\u001b[2m=\u001b[0mbb7d2bcf34b29499b89a926ddfae2cc5 \u001b[3mheartbeat_secs\u001b[0m\u001b[2m=\u001b[0m10 \u001b[3mserver_protocol\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mserver_caps\u001b[0m\u001b[2m=\u001b[0m[\"tcp\", \"udp\", \"http\", \"https\", \"socks5\", \"probe\"] \u001b[3mrelay_group\u001b[0m\u001b[2m=\u001b[0m \u001b[3mrelay_id\u001b[0m\u001b[2m=\u001b[0m \u001b[3mrelay_role\u001b[0m\u001b[2m=\u001b[0m \u001b[3mgroup_epoch\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:10:53.635275Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m data connection established \u001b[3msession_id\u001b[0m\u001b[2m=\u001b[0mbb7d2bcf34b29499b89a926ddfae2cc5",
+            "\u001b[2m2026-11-24T06:11:03.348241Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m control pong \u001b[3mseq\u001b[0m\u001b[2m=\u001b[0m1 \u001b[3mrtt_ms\u001b[0m\u001b[2m=\u001b[0m2538",
+            "\u001b[2m2026-11-24T06:11:11.113525Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m control pong \u001b[3mseq\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mrtt_ms\u001b[0m\u001b[2m=\u001b[0m303"
+          ],
+          "server_log_tail": [
+            "\u001b[2m2026-11-24T06:10:51.015851Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001d \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m9f6431632d3c11b238c5122ac3be7cfe \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:10:51.015864Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001e \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m04b919820d2a44133137eb0d8d90a5fe \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:10:51.016057Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001f \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0ma7a4fd0573e5ceb756e4eec84e49c46e \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:10:51.016082Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000020 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0me65edb6181a360fad9ecd81ae2701946 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:10:51.016104Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000021 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m44f32d56cebed993a8abbed2f913bf5e \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:10:51.016156Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000022 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0me1cf93c2036cd3c5a73cf0425b03e6fb \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:10:51.267927Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::quic\u001b[0m\u001b[2m:\u001b[0m QUIC connection established \u001b[3mpeer\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:63009",
+            "\u001b[2m2026-11-24T06:10:51.279788Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server\u001b[0m\u001b[2m:\u001b[0m control stream accepted \u001b[3mpeer\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:63009",
+            "\u001b[2m2026-11-24T06:10:51.279852Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m protocol negotiated \u001b[3mclient_protocol\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mprotocol\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mclient_id\u001b[0m\u001b[2m=\u001b[0mg6 \u001b[3mcaps\u001b[0m\u001b[2m=\u001b[0m[\"tcp\", \"udp\", \"http\", \"https\", \"socks5\", \"probe\"] \u001b[3mignored_caps\u001b[0m\u001b[2m=\u001b[0m[]",
+            "\u001b[2m2026-11-24T06:10:52.179523Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mmeatus_server\u001b[0m\u001b[2m:\u001b[0m control connection ended \u001b[3mpeer\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:51892 \u001b[3merror\u001b[0m\u001b[2m=\u001b[0mTLS handshake failed",
+            "\u001b[2m2026-11-24T06:10:52.392613Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m client authenticated \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0mb245d2f3d7d57b9ada6c9f7a39e61d30 \u001b[3mtenant\u001b[0m\u001b[2m=\u001b[0mdefault \u001b[3mclient\u001b[0m\u001b[2m=\u001b[0mg6",
+            "\u001b[2m2026-11-24T06:10:52.392673Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data connection registered \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0mb245d2f3d7d57b9ada6c9f7a39e61d30 \u001b[3mclient_id\u001b[0m\u001b[2m=\u001b[0mg6 \u001b[3msession_id\u001b[0m\u001b[2m=\u001b[0mbb7d2bcf34b29499b89a926ddfae2cc5 \u001b[3mpool_size\u001b[0m\u001b[2m=\u001b[0m2"
+          ]
+        },
+        {
+          "variant": "baseline",
+          "attempt": 2,
+          "ok": true,
+          "load": {
+            "requests": 122,
+            "bytes": 3997696,
+            "throughput_mbps": 3.198,
+            "p50_ms": 2752.944,
+            "p99_ms": 4874.978,
+            "worker_errors": [],
+            "workers_ok": 32,
+            "workers_total": 32
+          },
+          "hog": [
+            {
+              "idx": 0,
+              "sent": 0,
+              "error": null
+            }
+          ],
+          "wan_egress_bytes": {
+            "client_to_server": 2758296,
+            "server_to_client": 2756246
+          },
+          "control_pong_failures": 0,
+          "client_reconnects": 0,
+          "client_alive": true,
+          "server_alive": true,
+          "log_dir": "/Users/binsail/workspace/项目/meatus/planning/benchmarks/g6-02/g6-baseline-a2-rorslcou",
+          "client_log_tail": [
+            "\u001b[2m2026-11-24T06:11:31.019342Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001b \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m9242c5660f0154fcb768d727c9fe3d38 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:11:31.019951Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001c \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m0e885577ab3b19389b95a8ec963797d8 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:11:31.020586Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001d \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m7f540214b2644b8bd74595bf39e7a3d2 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:11:31.021370Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001e \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m1e49b29cfa21879e7097d7b089a7b92c \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:11:31.021916Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000020 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0mbe7b6ddadf06d980d72dbc902b541c2f \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:11:31.022593Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001f \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m3ca48576a5f25b67d1eb88a35aa4ee50 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:11:31.023177Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000021 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0ma5a2e9d355442457c69d5af85e8c2d81 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:11:31.023827Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000022 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0mebc99a2c6b4933c6caf47565173008a2 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:11:33.889203Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m tunnel established \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0mf85c8487bec4d9d21a2e223989c39389 \u001b[3mserver\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:53550 \u001b[3mtenant\u001b[0m\u001b[2m=\u001b[0mdefault \u001b[3mclient\u001b[0m\u001b[2m=\u001b[0mg6 \u001b[3mrun_id\u001b[0m\u001b[2m=\u001b[0ma1657e170d946d862965c2de91b07735 \u001b[3mheartbeat_secs\u001b[0m\u001b[2m=\u001b[0m10 \u001b[3mserver_protocol\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mserver_caps\u001b[0m\u001b[2m=\u001b[0m[\"tcp\", \"udp\", \"http\", \"https\", \"socks5\", \"probe\"] \u001b[3mrelay_group\u001b[0m\u001b[2m=\u001b[0m \u001b[3mrelay_id\u001b[0m\u001b[2m=\u001b[0m \u001b[3mrelay_role\u001b[0m\u001b[2m=\u001b[0m \u001b[3mgroup_epoch\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:11:33.889265Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m data connection established \u001b[3msession_id\u001b[0m\u001b[2m=\u001b[0ma1657e170d946d862965c2de91b07735",
+            "\u001b[2m2026-11-24T06:11:43.395298Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m control pong \u001b[3mseq\u001b[0m\u001b[2m=\u001b[0m1 \u001b[3mrtt_ms\u001b[0m\u001b[2m=\u001b[0m2832",
+            "\u001b[2m2026-11-24T06:11:53.098586Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m control pong \u001b[3mseq\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mrtt_ms\u001b[0m\u001b[2m=\u001b[0m2535"
+          ],
+          "server_log_tail": [
+            "\u001b[2m2026-11-24T06:11:30.856051Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001d \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m7f540214b2644b8bd74595bf39e7a3d2 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:11:30.856575Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001e \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m1e49b29cfa21879e7097d7b089a7b92c \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:11:30.856610Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000020 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0mbe7b6ddadf06d980d72dbc902b541c2f \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:11:30.856610Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001f \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m3ca48576a5f25b67d1eb88a35aa4ee50 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:11:30.856730Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000021 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0ma5a2e9d355442457c69d5af85e8c2d81 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:11:30.856762Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000022 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0mebc99a2c6b4933c6caf47565173008a2 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:11:31.015216Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::quic\u001b[0m\u001b[2m:\u001b[0m QUIC connection established \u001b[3mpeer\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:62997",
+            "\u001b[2m2026-11-24T06:11:31.026338Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server\u001b[0m\u001b[2m:\u001b[0m control stream accepted \u001b[3mpeer\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:62997",
+            "\u001b[2m2026-11-24T06:11:31.026363Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m protocol negotiated \u001b[3mclient_protocol\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mprotocol\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mclient_id\u001b[0m\u001b[2m=\u001b[0mg6 \u001b[3mcaps\u001b[0m\u001b[2m=\u001b[0m[\"tcp\", \"udp\", \"http\", \"https\", \"socks5\", \"probe\"] \u001b[3mignored_caps\u001b[0m\u001b[2m=\u001b[0m[]",
+            "\u001b[2m2026-11-24T06:11:31.808202Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m client authenticated \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0mf85c8487bec4d9d21a2e223989c39389 \u001b[3mtenant\u001b[0m\u001b[2m=\u001b[0mdefault \u001b[3mclient\u001b[0m\u001b[2m=\u001b[0mg6",
+            "\u001b[2m2026-11-24T06:11:31.808251Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data connection registered \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0mf85c8487bec4d9d21a2e223989c39389 \u001b[3mclient_id\u001b[0m\u001b[2m=\u001b[0mg6 \u001b[3msession_id\u001b[0m\u001b[2m=\u001b[0ma1657e170d946d862965c2de91b07735 \u001b[3mpool_size\u001b[0m\u001b[2m=\u001b[0m2",
+            "\u001b[2m2026-11-24T06:11:32.328891Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mmeatus_server\u001b[0m\u001b[2m:\u001b[0m control connection ended \u001b[3mpeer\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:52109 \u001b[3merror\u001b[0m\u001b[2m=\u001b[0mTLS handshake failed"
+          ]
+        },
+        {
+          "variant": "baseline",
+          "attempt": 3,
+          "ok": true,
+          "load": {
+            "requests": 114,
+            "bytes": 3735552,
+            "throughput_mbps": 2.988,
+            "p50_ms": 3616.862,
+            "p99_ms": 5614.814,
+            "worker_errors": [],
+            "workers_ok": 32,
+            "workers_total": 32
+          },
+          "hog": [
+            {
+              "idx": 0,
+              "sent": 0,
+              "error": null
+            }
+          ],
+          "wan_egress_bytes": {
+            "client_to_server": 2520521,
+            "server_to_client": 2521123
+          },
+          "control_pong_failures": 0,
+          "client_reconnects": 0,
+          "client_alive": true,
+          "server_alive": true,
+          "log_dir": "/Users/binsail/workspace/项目/meatus/planning/benchmarks/g6-02/g6-baseline-a3-ghhlv9rw",
+          "client_log_tail": [
+            "\u001b[2m2026-11-24T06:12:12.190403Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001b \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m35d9ad2a4b5d1d0e741c8b25e91d0c4e \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:12:12.190981Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001c \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0mc82c209886e9a310373bddf2d8a1df47 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:12:12.191622Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001d \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m575394b0960aa166f08679dc5440578b \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:12:12.192207Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001e \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m77d21c875b773de59c0e57539ac9270b \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:12:12.192856Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001f \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0ma63682c81fd62f65b00b768e49b1ccfa \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:12:12.193465Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000020 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m4452732f6e5dcc6682aac0326c00d7c9 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:12:12.194057Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000021 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m39c8b96e23302a440945c6beb5f5d171 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:12:12.194688Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m client data stream accepted \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000022 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m5cec8dacd7d644ebff8fd2fb485d4785 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho \u001b[3mkind\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:12:14.626275Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m tunnel established \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m9c25a9b42684b8a661a1b448a0d52b68 \u001b[3mserver\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:51999 \u001b[3mtenant\u001b[0m\u001b[2m=\u001b[0mdefault \u001b[3mclient\u001b[0m\u001b[2m=\u001b[0mg6 \u001b[3mrun_id\u001b[0m\u001b[2m=\u001b[0m7e015c3b5fc4a4cc9f86a4b0baa7ef61 \u001b[3mheartbeat_secs\u001b[0m\u001b[2m=\u001b[0m10 \u001b[3mserver_protocol\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mserver_caps\u001b[0m\u001b[2m=\u001b[0m[\"tcp\", \"udp\", \"http\", \"https\", \"socks5\", \"probe\"] \u001b[3mrelay_group\u001b[0m\u001b[2m=\u001b[0m \u001b[3mrelay_id\u001b[0m\u001b[2m=\u001b[0m \u001b[3mrelay_role\u001b[0m\u001b[2m=\u001b[0m \u001b[3mgroup_epoch\u001b[0m\u001b[2m=\u001b[0m0",
+            "\u001b[2m2026-11-24T06:12:14.626335Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m data connection established \u001b[3msession_id\u001b[0m\u001b[2m=\u001b[0m7e015c3b5fc4a4cc9f86a4b0baa7ef61",
+            "\u001b[2m2026-11-24T06:12:22.292402Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m control pong \u001b[3mseq\u001b[0m\u001b[2m=\u001b[0m1 \u001b[3mrtt_ms\u001b[0m\u001b[2m=\u001b[0m550",
+            "\u001b[2m2026-11-24T06:12:32.045175Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_client::session\u001b[0m\u001b[2m:\u001b[0m control pong \u001b[3mseq\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mrtt_ms\u001b[0m\u001b[2m=\u001b[0m303"
+          ],
+          "server_log_tail": [
+            "\u001b[2m2026-11-24T06:12:12.027002Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001d \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m575394b0960aa166f08679dc5440578b \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:12:12.027157Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001e \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m77d21c875b773de59c0e57539ac9270b \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:12:12.027249Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m000000000000001f \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0ma63682c81fd62f65b00b768e49b1ccfa \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:12:12.027251Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000020 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m4452732f6e5dcc6682aac0326c00d7c9 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:12:12.027472Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000021 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m39c8b96e23302a440945c6beb5f5d171 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:12:12.027510Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data tunnel opened \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m0000000000000022 \u001b[3mconnection_id\u001b[0m\u001b[2m=\u001b[0m5cec8dacd7d644ebff8fd2fb485d4785 \u001b[3mproxy\u001b[0m\u001b[2m=\u001b[0mecho",
+            "\u001b[2m2026-11-24T06:12:12.193686Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::quic\u001b[0m\u001b[2m:\u001b[0m QUIC connection established \u001b[3mpeer\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:65254",
+            "\u001b[2m2026-11-24T06:12:12.205361Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server\u001b[0m\u001b[2m:\u001b[0m control stream accepted \u001b[3mpeer\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:65254",
+            "\u001b[2m2026-11-24T06:12:12.205407Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m protocol negotiated \u001b[3mclient_protocol\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mprotocol\u001b[0m\u001b[2m=\u001b[0m2 \u001b[3mclient_id\u001b[0m\u001b[2m=\u001b[0mg6 \u001b[3mcaps\u001b[0m\u001b[2m=\u001b[0m[\"tcp\", \"udp\", \"http\", \"https\", \"socks5\", \"probe\"] \u001b[3mignored_caps\u001b[0m\u001b[2m=\u001b[0m[]",
+            "\u001b[2m2026-11-24T06:12:13.021672Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m client authenticated \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m9c25a9b42684b8a661a1b448a0d52b68 \u001b[3mtenant\u001b[0m\u001b[2m=\u001b[0mdefault \u001b[3mclient\u001b[0m\u001b[2m=\u001b[0mg6",
+            "\u001b[2m2026-11-24T06:12:13.021732Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mmeatus_server::control\u001b[0m\u001b[2m:\u001b[0m data connection registered \u001b[3mtrace_id\u001b[0m\u001b[2m=\u001b[0m9c25a9b42684b8a661a1b448a0d52b68 \u001b[3mclient_id\u001b[0m\u001b[2m=\u001b[0mg6 \u001b[3msession_id\u001b[0m\u001b[2m=\u001b[0m7e015c3b5fc4a4cc9f86a4b0baa7ef61 \u001b[3mpool_size\u001b[0m\u001b[2m=\u001b[0m2",
+            "\u001b[2m2026-11-24T06:12:13.507121Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mmeatus_server\u001b[0m\u001b[2m:\u001b[0m control connection ended \u001b[3mpeer\u001b[0m\u001b[2m=\u001b[0m127.0.0.1:52269 \u001b[3merror\u001b[0m\u001b[2m=\u001b[0mTLS handshake failed"
+          ]
+        }
+      ]
+    }
+  }
+}

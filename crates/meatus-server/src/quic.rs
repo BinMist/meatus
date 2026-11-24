@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use meatus_core::{ServerConfig, quic as core_quic};
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::sync::CancellationToken;
@@ -55,10 +56,12 @@ pub async fn serve(
     }
     let _close_guard = EndpointCloseGuard(endpoint.clone());
     let active = Arc::new(AtomicUsize::new(0));
+    let mut connections = JoinSet::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = state.drain.stopped_accepting() => break,
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break };
                 let peer = incoming.remote_address();
@@ -70,7 +73,7 @@ pub async fn serve(
                 let guard = ActiveConnection(Arc::clone(&active));
                 let state = Arc::clone(&state);
                 let session_cancel = cancel.child_token();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     let _guard = guard;
                     match timeout(QUIC_HANDSHAKE_TIMEOUT, incoming).await {
                         Ok(Ok(connection)) => {
@@ -103,6 +106,10 @@ pub async fn serve(
         }
     }
     endpoint.close(0u32.into(), b"server shutdown");
+    // 关闭端点不会自动回收已握手的连接；必须 abort 并等任务释放 `Connection`，
+    // 否则旧 UDP socket 仍被引用，测试/滚动重启时新端点会绑定失败。
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
     Err(anyhow!("QUIC listener stopped"))
 }
 

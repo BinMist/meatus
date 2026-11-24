@@ -1,6 +1,6 @@
 # ADR 0006：QUIC 控制面隔离方案
 
-- 状态：提议接受（G6-01，待 G6-02 实现与 G6-03 公网门禁确认）
+- 状态：已实现（G6-02，待 G6-03 公网门禁确认）
 - 日期：2026-11-24
 - 决策者：项目负责人
 - 关联：ADR 0004（传输抽象与池键）、ADR 0005（QUIC 选型与单连接单会话）
@@ -95,6 +95,36 @@ FIFO 速率限制；每个 attempt 独立临时目录、独立证书、独立服
 5. **G6-03 必须以公网复测为主**：实验室 5 轮 100% 不能替代 E5-08 口径；若公网仍
    出现控制饥饿，按本 ADR 第 2 条继续加控制面预算，而不是回头选多流。
 
+## G6-02 实现记录（2026-11-24）
+
+- 数据连接选择：`crates/meatus-client/src/session.rs` 新增 `data_connection_count()`：
+  - 协议 v1：`0`；
+  - 协议 v2、池启用：`pool.size.max(1)`；
+  - 协议 v2、池关闭、控制连接为 QUIC：`1`（新增行为，落地 ADR 第 1 条）；
+  - 协议 v2、控制连接为 TCP（含 `transport=auto` 回落 TCP）：沿用
+    `default_tcp_data_connections(pool_size)`。
+  控制传输是否为 QUIC 由 `EstablishedSession.quic.is_some()` 判定，不靠配置猜测，
+  因此 `auto` 回落 TCP 时不会误开 QUIC 数据连接。
+- 控制连接保持 `control_only`：独立数据连接建立后，服务端会话池只从非控制连接分配
+  `StreamHeader`；控制连接上的 dispatcher 仅作为旧服务端/数据连接失败时的回退路径保留。
+- 可观测性：新增 `ControlHealth`，记录 Pong RTT 直方图（`<1s / 1–5s / 5–20s /
+  20–60s / >=60s`）、连续 Pong 丢失次数、最近 Pong 时间、最大 Pong 间隔与超时次数。
+  每个 Pong 打 INFO（`rtt_ms`、`seq`），每 60s 与会话退出时打聚合快照。
+- WARN/失败阈值：沿用客户端 10s Ping；超过 20s 无 Pong 打 WARN（每次连续丢失只打一次），
+  超过 60s 才 `no Pong` 判失败，保留原重连语义。
+- QUIC 端生命周期：`crates/meatus-server/src/quic.rs` 用 `JoinSet` 持有每条已握手连接
+  的任务，端点关闭时 `abort_all()` 并等待任务释放 `Connection`。否则独立数据连接会让旧
+  UDP socket 被连接引用，重启/滚动升级时新端点绑定失败；回归用例
+  `quic_client_reconnects_after_server_restart` 覆盖该路径。
+- 任务边界：控制读循环本来就是独立 Tokio 任务，数据连接每条一个转发任务；本轮未引入
+  独立 runtime 或线程优先级（Tokio 无稳定优先级 API，强行拆 runtime 会扩大 G6-02 改动面）。
+  因此独立连接消除的是发送队列/拥塞控制共享，不能消除 CPU/运行时饱和；128 并发深流水线
+  仍可能控制超时，G6-03 若公网复现饥饿，再按 ADR 第 2 条评估控制面预算。
+- 验证：`cargo test --workspace --all-targets --locked` **291 passed / 0 failed /
+  1 ignored**；`cargo clippy -p meatus-client -p meatus-server --all-targets -- -D warnings`
+  通过；本地 32×16KB×10s、300ms RTT、1% 丢包、2Mbps 3/3 成功，控制 Pong 最大 2.83s、
+  无 `no Pong`、无重连。证据见 `planning/benchmarks/g6-02/`。
+
 ## 后果
 
 - 正面：控制面与数据面在 QUIC 层彻底分连接；实现复用现有池路径，改动面小，符合
@@ -107,8 +137,11 @@ FIFO 速率限制；每个 attempt 独立临时目录、独立证书、独立服
 ## 验证
 
 - Spike 脚本：`scripts/quic-isolation-spike.py`
-- 计划口径数据：`planning/benchmarks/g6-01/g6-01-both.json`
-- 故障注入数据：`planning/benchmarks/g6-01/fault-128/g6-01-both.json`
+- G6-01 计划口径数据：`planning/benchmarks/g6-01/g6-01-both.json`
+- G6-01 故障注入数据：`planning/benchmarks/g6-01/fault-128/g6-01-both.json`
+- G6-02 实现验收数据：`planning/benchmarks/g6-02/g6-02-baseline.json`
+- 复跑 G6-01 数据需使用 G6-01 提交（`835335f`）的二进制；G6-02 之后的二进制在
+  `--variant baseline` 下也会自动开独立数据连接，不能再代表单连接共享基线。
 - 复跑命令：
 
 ```bash
