@@ -16,6 +16,7 @@ mod quic;
 pub mod quota;
 mod relay;
 mod relay_cert;
+mod relay_health;
 mod relay_peer;
 mod routes;
 mod runtime;
@@ -106,6 +107,27 @@ impl ServerState {
 
         let runtime = RuntimeConfig::new(config.clone(), Arc::clone(&auth), "startup");
         let metrics = Arc::new(Metrics::new());
+        if let Some(context) = relay.as_ref() {
+            let cert_sync = config
+                .relay
+                .as_ref()
+                .map_or("off", |section| section.cert_sync.as_str());
+            metrics.configure_relay(
+                context.id(),
+                context.group(),
+                context.role().as_str(),
+                context.epoch(),
+                cert_sync,
+                context
+                    .peers()
+                    .map(|peer| metrics::RelayPeerSeed {
+                        id: peer.id.clone(),
+                        role: peer.role.as_str().to_string(),
+                        peer_addr: peer.peer_addr.clone(),
+                    })
+                    .collect(),
+            );
+        }
         let pools = Arc::new(SessionPools::with_stats(metrics.pool_stats()));
 
         Ok(Self {
@@ -200,6 +222,9 @@ impl ServerState {
             "metrics  {scheme}://{}/metrics",
             self.config.admin.bind
         ));
+        if let Some(relay) = self.config.relay.as_ref() {
+            listeners.push(format!("relay health tcp://{}", relay.health_bind));
+        }
 
         listeners
     }
@@ -299,20 +324,20 @@ pub async fn run_until(mut state: ServerState, cancel: CancellationToken) -> any
                     .peer_secret_file,
             )?;
             state.peer_auth = Some(auth);
-            let health_bind = state
-                .config
-                .relay
-                .as_ref()
-                .expect("relay config exists")
-                .health_bind
-                .clone();
-            let listener = TcpListener::bind(&health_bind)
-                .await
-                .with_context(|| format!("bind relay health listener {health_bind}"))?;
-            let local = listener.local_addr().context("relay health local_addr")?;
-            info!(%local, "relay peer listener ready: health + cert sync");
-            peer_listener = Some(listener);
         }
+        let health_bind = state
+            .config
+            .relay
+            .as_ref()
+            .expect("relay config exists")
+            .health_bind
+            .clone();
+        let listener = TcpListener::bind(&health_bind)
+            .await
+            .with_context(|| format!("bind relay health listener {health_bind}"))?;
+        let local = listener.local_addr().context("relay health local_addr")?;
+        info!(%local, "relay peer listener ready: health");
+        peer_listener = Some(listener);
     }
 
     let bind = meatus_core::config::host_port(
@@ -385,6 +410,13 @@ pub async fn run_until(mut state: ServerState, cancel: CancellationToken) -> any
         data_tasks.push(tokio::spawn(async move {
             if let Err(err) = relay_peer::run_sync(sync_state, sync_cancel).await {
                 warn!(error = %err, "relay cert sync stopped");
+            }
+        }));
+        let health_state = Arc::clone(&state);
+        let health_cancel = cancel.child_token();
+        data_tasks.push(tokio::spawn(async move {
+            if let Err(err) = relay_health::run(health_state, health_cancel).await {
+                warn!(error = %err, "relay health probe stopped");
             }
         }));
     }

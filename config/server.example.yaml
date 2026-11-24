@@ -22,8 +22,9 @@ server:
 #   advertise_addr: "relay-a.example.com:7000"
 #   bundle: "/etc/meatus/relay-bundle.json"
 #   bundle_pubkey: "ed25519:REPLACE_WITH_BASE64_PUBLIC_KEY"
-#   health_bind: "127.0.0.1:7401"
-#   peer_timeout_s: 5
+#   health_bind: "127.0.0.1:7401"      # peer 健康/证书同步端点，只绑 loopback 或私网
+#   health_interval_s: 5            # peer 健康探测间隔，1..=300 秒
+#   peer_timeout_s: 5               # 单次探测超时，1..=300 秒
 #   peer_secret_file: "/etc/meatus/relay-peer.key"
 #   cert_sync: "push"             # off | push | pull；primary 下单，secondary 只读同步证书
 #                                  # push: primary→secondary；pull: secondary←primary；成员 peer_addr 必填

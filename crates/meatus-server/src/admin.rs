@@ -838,7 +838,11 @@ async fn route_inner(request: &HttpRequest, peer_ip: IpAddr, state: &AdminState)
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/healthz") => HttpResponse::json(
             200,
-            json!({"status": "ok", "uptime_s": state.metrics.uptime_secs()}),
+            json!({
+                "status": "ok",
+                "uptime_s": state.metrics.uptime_secs(),
+                "relay": state.metrics.relay_snapshot(),
+            }),
         ),
         ("GET", "/api/v1/session") => session_status(request, state),
         ("POST", "/api/v1/session") => login(request, peer_ip, state),

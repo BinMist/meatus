@@ -1501,6 +1501,29 @@ async fn status_json(port: u16) -> Result<serde_json::Value, String> {
     serde_json::from_str(body).map_err(|err| format!("json: {err}"))
 }
 
+async fn admin_json(port: u16, path: &str) -> Result<serde_json::Value, String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .map_err(|err| format!("connect admin: {err}"))?;
+    stream
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .map_err(|err| format!("write: {err}"))?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .await
+        .map_err(|err| format!("read: {err}"))?;
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .ok_or_else(|| "missing response body".to_string())?;
+    serde_json::from_str(body).map_err(|err| format!("json: {err}"))
+}
+
 async fn probe(proxy_port: u16) -> Result<(), String> {
     probe_addr("127.0.0.1", proxy_port).await
 }
@@ -1822,6 +1845,21 @@ token = "secret"
             _ => sleep(Duration::from_millis(200)).await,
         }
     }
+
+    let (health_code, health_raw) = admin_get(admin_port, None, "/healthz")
+        .await
+        .expect("standalone healthz");
+    assert_eq!(health_code, 200);
+    let health_body = health_raw
+        .split_once("\r\n\r\n")
+        .map_or(health_raw.as_str(), |(_, body)| body);
+    let health: serde_json::Value = serde_json::from_str(health_body).expect("health json");
+    assert_eq!(health["status"], "ok");
+    assert_eq!(health["relay"], serde_json::Value::Null);
+    assert!(
+        !metrics_body.contains("meatus_relay_info"),
+        "standalone metrics must not expose relay identity: {metrics_body}"
+    );
 
     client_cancel.cancel();
     server_cancel.cancel();
@@ -3289,7 +3327,7 @@ async fn client_multi_home_registers_same_proxies_and_secondary_takes_over() {
                 role: RelayRole::Primary,
                 control_addr: format!("127.0.0.1:{control_a}"),
                 http_domains: Vec::new(),
-                peer_addr: None,
+                peer_addr: Some(format!("127.0.0.1:{health_a}")),
                 ports: [proxy_a, proxy_a_end],
             },
             RelayMember {
@@ -3297,7 +3335,7 @@ async fn client_multi_home_registers_same_proxies_and_secondary_takes_over() {
                 role: RelayRole::Secondary,
                 control_addr: format!("127.0.0.1:{control_b}"),
                 http_domains: Vec::new(),
-                peer_addr: None,
+                peer_addr: Some(format!("127.0.0.1:{health_b}")),
                 ports: [proxy_b, proxy_b_end],
             },
         ],
@@ -3343,6 +3381,8 @@ group = "prod"
 role = "{role}"
 advertise_addr = "127.0.0.1:{control}"
 health_bind = "127.0.0.1:{health}"
+health_interval_s = 1
+peer_timeout_s = 1
 bundle = "{bundle}"
 bundle_pubkey = "{public}"
 peer_secret_file = "{peer}"
@@ -3481,6 +3521,50 @@ local_addr = "127.0.0.1:{udp_echo_port}"
         .await
         .expect("relay-b udp route");
 
+    let mut health_a = serde_json::Value::Null;
+    for _ in 0..40 {
+        sleep(Duration::from_millis(100)).await;
+        health_a = admin_json(admin_a, "/healthz")
+            .await
+            .expect("relay-a healthz");
+        if health_a["relay"]["state"] == "healthy" {
+            break;
+        }
+    }
+    assert_eq!(
+        health_a["relay"]["state"], "healthy",
+        "relay-a should report healthy peers: {health_a}"
+    );
+    assert_eq!(health_a["status"], "ok");
+    assert_eq!(health_a["relay"]["id"], "relay-a");
+    assert_eq!(health_a["relay"]["group"], "prod");
+    assert_eq!(health_a["relay"]["role"], "primary");
+    assert_eq!(health_a["relay"]["epoch"], 2);
+    assert_eq!(health_a["relay"]["cert_sync"], "off");
+    assert_eq!(health_a["relay"]["peers_total"], 1);
+    assert_eq!(health_a["relay"]["peers_up"], 1);
+    assert_eq!(health_a["relay"]["peers"][0]["id"], "relay-b");
+    assert_eq!(health_a["relay"]["peers"][0]["up"], serde_json::json!(true));
+    assert_eq!(health_a["relay"]["peers"][0]["peer_epoch"], 2);
+
+    let (metrics_code, metrics_raw) = admin_get(admin_a, None, "/metrics")
+        .await
+        .expect("relay-a metrics");
+    assert_eq!(metrics_code, 200);
+    let metrics = metrics_raw
+        .split_once("\r\n\r\n")
+        .map_or(metrics_raw.as_str(), |(_, body)| body);
+    assert!(
+        metrics.contains("meatus_relay_info{relay_id=\"relay-a\",group=\"prod\",role=\"primary\",epoch=\"2\",cert_sync=\"off\"} 1"),
+        "metrics missing relay identity: {metrics}"
+    );
+    assert!(
+        metrics.contains(
+            "meatus_relay_peer_up{relay_id=\"relay-a\",peer=\"relay-b\",role=\"secondary\"} 1"
+        ),
+        "metrics missing peer_up: {metrics}"
+    );
+
     // 停掉 relay-a；在途连接允许失败，不做迁移，只验证新 TCP/UDP 连接从 relay-b 进入。
     server_cancel_a.cancel();
     let _ = timeout(Duration::from_secs(5), server_task_a).await;
@@ -3513,6 +3597,48 @@ local_addr = "127.0.0.1:{udp_echo_port}"
         registry.port_for("echo", "relay-b").is_some(),
         "relay-b binding should survive relay-a stop"
     );
+
+    let mut health_b = serde_json::Value::Null;
+    for _ in 0..60 {
+        sleep(Duration::from_millis(100)).await;
+        health_b = admin_json(admin_b, "/healthz")
+            .await
+            .expect("relay-b healthz");
+        if health_b["relay"]["peers"][0]["up"] == serde_json::json!(false) {
+            break;
+        }
+    }
+    assert_eq!(
+        health_b["relay"]["state"], "degraded",
+        "relay-b should report the stopped peer: {health_b}"
+    );
+    assert_eq!(health_b["relay"]["role"], "secondary");
+    assert_eq!(health_b["relay"]["peers"][0]["id"], "relay-a");
+    assert_eq!(
+        health_b["relay"]["peers"][0]["up"],
+        serde_json::json!(false)
+    );
+    assert!(
+        health_b["relay"]["peers"][0]["last_error"]
+            .as_str()
+            .is_some_and(|err| !err.is_empty()),
+        "peer failure should keep an error: {health_b}"
+    );
+
+    let (metrics_code, metrics_raw) = admin_get(admin_b, None, "/metrics")
+        .await
+        .expect("relay-b metrics");
+    assert_eq!(metrics_code, 200);
+    let metrics = metrics_raw
+        .split_once("\r\n\r\n")
+        .map_or(metrics_raw.as_str(), |(_, body)| body);
+    assert!(
+        metrics.contains(
+            "meatus_relay_peer_up{relay_id=\"relay-b\",peer=\"relay-a\",role=\"primary\"} 0"
+        ),
+        "metrics should drop peer_up after stop: {metrics}"
+    );
+
     client_cancel.cancel();
     server_cancel_b.cancel();
     let _ = timeout(Duration::from_secs(5), client_task).await;

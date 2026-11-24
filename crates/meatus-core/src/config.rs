@@ -166,6 +166,9 @@ pub struct RelaySection {
     /// peer 健康/状态监听地址；默认只绑 loopback。
     #[serde(default = "default_relay_health_bind")]
     pub health_bind: String,
+    /// peer 健康探测间隔，秒。
+    #[serde(default = "default_relay_health_interval_s")]
+    pub health_interval_s: u64,
     /// peer 健康探测超时，秒。
     #[serde(default = "default_relay_peer_timeout_s")]
     pub peer_timeout_s: u64,
@@ -220,6 +223,10 @@ fn default_relay_health_bind() -> String {
     "127.0.0.1:7401".to_string()
 }
 
+const fn default_relay_health_interval_s() -> u64 {
+    5
+}
+
 const fn default_relay_peer_timeout_s() -> u64 {
     5
 }
@@ -264,6 +271,9 @@ impl RelaySection {
             return Err(invalid(
                 "relay.health_bind must bind loopback or a private/link-local address",
             ));
+        }
+        if !(1..=300).contains(&self.health_interval_s) {
+            return Err(invalid("relay.health_interval_s must be 1..=300"));
         }
         if !(1..=300).contains(&self.peer_timeout_s) {
             return Err(invalid("relay.peer_timeout_s must be 1..=300"));
@@ -1976,6 +1986,7 @@ peer_secret_file = "/etc/meatus/relay-peer.key"
         assert_eq!(relay.group, "prod");
         assert_eq!(relay.role, RelayRole::Primary);
         assert_eq!(relay.health_bind, "127.0.0.1:7401");
+        assert_eq!(relay.health_interval_s, 5);
         assert_eq!(relay.peer_timeout_s, 5);
         assert_eq!(relay.cert_sync, RelayCertSync::Off);
     }
@@ -2039,6 +2050,7 @@ relay:
         let relay = config.relay.expect("relay section");
         assert_eq!(relay.role, RelayRole::Primary);
         assert_eq!(relay.health_bind, "127.0.0.1:7401");
+        assert_eq!(relay.health_interval_s, 5);
         assert_eq!(relay.peer_timeout_s, 5);
     }
 
@@ -2060,6 +2072,24 @@ relay:
         );
         let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
         assert!(err.to_string().contains("relay.peer_timeout_s"), "{err}");
+    }
+
+    #[test]
+    fn relay_health_interval_is_bounded() {
+        let bad = RELAY_TOML.replace(
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"",
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"\nhealth_interval_s = 0",
+        );
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(err.to_string().contains("relay.health_interval_s"), "{err}");
+
+        let good = RELAY_TOML.replace(
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"",
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"\nhealth_interval_s = 1",
+        );
+        let config =
+            parse_server_config(&server_with_relay(&good, "")).expect("interval 1 should be valid");
+        assert_eq!(config.relay.expect("relay").health_interval_s, 1);
     }
 
     #[cfg(unix)]

@@ -30,7 +30,7 @@ use crate::ServerState;
 use crate::relay_cert::{RelayCertError, RelayCertSnapshot};
 
 const PEER_PATH_CERT: &str = "/relay/v1/cert";
-const PEER_PATH_HEALTH: &str = "/relay/v1/health";
+pub(crate) const PEER_PATH_HEALTH: &str = "/relay/v1/health";
 const PEER_TIMESTAMP_WINDOW_S: i64 = 300;
 const PEER_NONCE_RETENTION_S: i64 = 900;
 const PEER_HEADER_GROUP: &str = "x-meatus-relay-group";
