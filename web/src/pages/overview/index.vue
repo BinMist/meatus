@@ -5,14 +5,23 @@
         <PageActionsBar :meta="updatedAt ? `采样于 ${updatedAt}` : '等待采样'" @refresh="refresh">
           <template #prefix>
             <sl-status-tag
-              :status="error ? 'error' : 'success'"
-              :label="error ? '连接异常' : '运行中'"
+              :status="error ? 'error' : relayWarning ? 'warning' : 'success'"
+              :label="error ? '连接异常' : relayWarning ? '组降级' : '运行中'"
               :pulse="!error"
             />
           </template>
         </PageActionsBar>
       </template>
     </sl-page-header>
+
+    <sl-alert
+      v-if="relayWarning"
+      type="warning"
+      title="relay 组配置漂移 / 轮转摘除"
+      :description="relayWarning"
+      variant="subtle"
+      show-icon
+    />
 
     <div class="dash-grid">
       <OverviewTrafficChart
@@ -43,6 +52,7 @@
 import './styles.scss'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { SlPageHeader } from '@sailonix/ui/page-header'
+import { SlAlert } from '@sailonix/ui/alert'
 import { SlStatusTag } from '@sailonix/ui/status-tag'
 import PageActionsBar from '../../components/PageActionsBar.vue'
 import OverviewClientsPanel from './components/OverviewClientsPanel.vue'
@@ -60,6 +70,32 @@ const history = ref<number[]>([0])
 const historyOut = ref<number[]>([0])
 const historyLabels = ref<string[]>(['—'])
 let timer: number | undefined
+
+const relay = computed(() => snapshot.value?.relay ?? null)
+
+const relayWarning = computed(() => {
+  const current = relay.value
+  if (!current) return ''
+  const probed = current.peers.some((peer) => peer.last_checked_age_s !== null)
+  if (!probed) return ''
+  if (current.state === 'healthy' && current.rotation.state === 'complete') return ''
+  const parts: string[] = []
+  if (current.state !== 'healthy') {
+    parts.push(`健康 peer ${current.peers_up}/${current.peers_total}`)
+  }
+  if (current.rotation.excluded.length) {
+    const reasons: Record<string, string> = {
+      config_hash: '配置 hash 不一致',
+      epoch: 'epoch 不一致',
+      identity: '身份字段不一致',
+    }
+    const excluded = current.rotation.excluded
+      .map((item) => `${item.id}（${reasons[item.reason] ?? item.reason}）`)
+      .join('、')
+    parts.push(`轮转池已摘除 ${excluded}`)
+  }
+  return parts.join('；')
+})
 
 const totalBytesIn = computed(() => snapshot.value?.totals.bytes_in ?? 0)
 const totalBytesOut = computed(() => snapshot.value?.totals.bytes_out ?? 0)
@@ -123,6 +159,13 @@ const dashFacts = computed(() => [
   { key: 'clients', label: '在线客户端', value: snapshot.value?.totals.clients ?? 0 },
   { key: 'proxies', label: '活跃 proxy', value: snapshot.value?.totals.proxies ?? 0 },
   { key: 'uptime', label: '运行时长', value: uptimeText.value },
+  {
+    key: 'relay',
+    label: 'relay 轮转',
+    value: relay.value
+      ? `${relay.value.rotation.eligible.length}/${relay.value.peers_total}`
+      : 'standalone',
+  },
 ])
 
 const clientRows = computed(() =>

@@ -3546,6 +3546,22 @@ local_addr = "127.0.0.1:{udp_echo_port}"
     assert_eq!(health_a["relay"]["peers"][0]["id"], "relay-b");
     assert_eq!(health_a["relay"]["peers"][0]["up"], serde_json::json!(true));
     assert_eq!(health_a["relay"]["peers"][0]["peer_epoch"], 2);
+    assert_eq!(
+        health_a["relay"]["peers"][0]["config_hash"],
+        health_a["relay"]["config_hash"]
+    );
+    assert!(health_a["relay"]["peers"][0]["drift"].is_null());
+    assert_eq!(
+        health_a["relay"]["peers"][0]["rotation_eligible"],
+        serde_json::json!(true)
+    );
+    assert_eq!(health_a["relay"]["rotation"]["state"], "complete");
+
+    let status_a = admin_json(admin_a, "/api/v1/status")
+        .await
+        .expect("relay-a status");
+    assert_eq!(status_a["relay"]["state"], "healthy");
+    assert_eq!(status_a["relay"]["rotation"]["state"], "complete");
 
     let (metrics_code, metrics_raw) = admin_get(admin_a, None, "/metrics")
         .await
@@ -3563,6 +3579,12 @@ local_addr = "127.0.0.1:{udp_echo_port}"
             "meatus_relay_peer_up{relay_id=\"relay-a\",peer=\"relay-b\",role=\"secondary\"} 1"
         ),
         "metrics missing peer_up: {metrics}"
+    );
+    assert!(
+        metrics.contains(
+            "meatus_relay_peer_rotation_eligible{relay_id=\"relay-a\",peer=\"relay-b\"} 1"
+        ),
+        "metrics missing rotation eligibility: {metrics}"
     );
 
     // 停掉 relay-a；在途连接允许失败，不做迁移，只验证新 TCP/UDP 连接从 relay-b 进入。
@@ -3604,7 +3626,9 @@ local_addr = "127.0.0.1:{udp_echo_port}"
         health_b = admin_json(admin_b, "/healthz")
             .await
             .expect("relay-b healthz");
-        if health_b["relay"]["peers"][0]["up"] == serde_json::json!(false) {
+        if health_b["relay"]["peers"][0]["up"] == serde_json::json!(false)
+            && health_b["relay"]["peers"][0]["rotation_eligible"] == serde_json::json!(false)
+        {
             break;
         }
     }
@@ -3624,6 +3648,26 @@ local_addr = "127.0.0.1:{udp_echo_port}"
             .is_some_and(|err| !err.is_empty()),
         "peer failure should keep an error: {health_b}"
     );
+    assert_eq!(
+        health_b["relay"]["peers"][0]["rotation_eligible"],
+        serde_json::json!(false)
+    );
+    assert_eq!(health_b["relay"]["rotation"]["state"], "empty");
+    assert_eq!(
+        health_b["relay"]["rotation"]["excluded"][0]["id"],
+        "relay-a"
+    );
+    assert!(
+        health_b["relay"]["rotation"]["excluded"][0]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty())
+    );
+
+    let status_b = admin_json(admin_b, "/api/v1/status")
+        .await
+        .expect("relay-b status");
+    assert_eq!(status_b["relay"]["state"], "degraded");
+    assert_eq!(status_b["relay"]["rotation"]["state"], "empty");
 
     let (metrics_code, metrics_raw) = admin_get(admin_b, None, "/metrics")
         .await
@@ -3637,6 +3681,12 @@ local_addr = "127.0.0.1:{udp_echo_port}"
             "meatus_relay_peer_up{relay_id=\"relay-b\",peer=\"relay-a\",role=\"primary\"} 0"
         ),
         "metrics should drop peer_up after stop: {metrics}"
+    );
+    assert!(
+        metrics.contains(
+            "meatus_relay_peer_rotation_eligible{relay_id=\"relay-b\",peer=\"relay-a\"} 0"
+        ),
+        "metrics should evict peer from rotation after stop: {metrics}"
     );
 
     client_cancel.cancel();

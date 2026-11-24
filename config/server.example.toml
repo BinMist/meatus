@@ -30,6 +30,8 @@ quic = false
 # health_bind = "127.0.0.1:7401"      # peer 健康/证书同步端点，只绑 loopback 或私网
 # health_interval_s = 5           # peer 健康探测间隔，1..=300 秒
 # peer_timeout_s = 5              # 单次探测超时，1..=300 秒
+# rotation_fail_threshold = 2     # 连续失败达到该次数后从轮转池摘除，1..=10
+# rotation_recover_threshold = 1  # 连续成功达到该次数后恢复回轮转池，1..=10
 # peer_secret_file = "/etc/meatus/relay-peer.key"
 # cert_sync = "push"             # off | push | pull；primary 下单，secondary 只读同步证书
 #                                  # push: primary→secondary；pull: secondary←primary；成员 peer_addr 必填

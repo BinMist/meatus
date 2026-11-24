@@ -108,16 +108,19 @@ impl ServerState {
         let runtime = RuntimeConfig::new(config.clone(), Arc::clone(&auth), "startup");
         let metrics = Arc::new(Metrics::new());
         if let Some(context) = relay.as_ref() {
-            let cert_sync = config
+            let section = config
                 .relay
                 .as_ref()
-                .map_or("off", |section| section.cert_sync.as_str());
+                .expect("relay context requires [relay]");
             metrics.configure_relay(
                 context.id(),
                 context.group(),
                 context.role().as_str(),
                 context.epoch(),
-                cert_sync,
+                section.cert_sync.as_str(),
+                context.config_hash(),
+                section.rotation_fail_threshold,
+                section.rotation_recover_threshold,
                 context
                     .peers()
                     .map(|peer| metrics::RelayPeerSeed {

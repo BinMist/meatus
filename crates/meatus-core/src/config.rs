@@ -172,6 +172,12 @@ pub struct RelaySection {
     /// peer 健康探测超时，秒。
     #[serde(default = "default_relay_peer_timeout_s")]
     pub peer_timeout_s: u64,
+    /// 连续探测失败达到该次数后，将 peer 从轮转池摘除。
+    #[serde(default = "default_relay_rotation_fail_threshold")]
+    pub rotation_fail_threshold: u32,
+    /// 摘除后连续成功达到该次数，将 peer 恢复回轮转池。
+    #[serde(default = "default_relay_rotation_recover_threshold")]
+    pub rotation_recover_threshold: u32,
     /// group peer 鉴权密钥文件，32B，权限 0600。
     pub peer_secret_file: PathBuf,
     /// 证书同步模式；G1-02 实现前默认关闭。
@@ -231,6 +237,14 @@ const fn default_relay_peer_timeout_s() -> u64 {
     5
 }
 
+const fn default_relay_rotation_fail_threshold() -> u32 {
+    2
+}
+
+const fn default_relay_rotation_recover_threshold() -> u32 {
+    1
+}
+
 impl RelaySection {
     fn validate(&self) -> Result<(), ConfigError> {
         let id = self.id.trim();
@@ -277,6 +291,12 @@ impl RelaySection {
         }
         if !(1..=300).contains(&self.peer_timeout_s) {
             return Err(invalid("relay.peer_timeout_s must be 1..=300"));
+        }
+        if !(1..=10).contains(&self.rotation_fail_threshold) {
+            return Err(invalid("relay.rotation_fail_threshold must be 1..=10"));
+        }
+        if !(1..=10).contains(&self.rotation_recover_threshold) {
+            return Err(invalid("relay.rotation_recover_threshold must be 1..=10"));
         }
         if self.peer_secret_file.as_os_str().is_empty() {
             return Err(invalid("relay.peer_secret_file must not be empty"));
@@ -1988,6 +2008,8 @@ peer_secret_file = "/etc/meatus/relay-peer.key"
         assert_eq!(relay.health_bind, "127.0.0.1:7401");
         assert_eq!(relay.health_interval_s, 5);
         assert_eq!(relay.peer_timeout_s, 5);
+        assert_eq!(relay.rotation_fail_threshold, 2);
+        assert_eq!(relay.rotation_recover_threshold, 1);
         assert_eq!(relay.cert_sync, RelayCertSync::Off);
     }
 
@@ -2052,6 +2074,8 @@ relay:
         assert_eq!(relay.health_bind, "127.0.0.1:7401");
         assert_eq!(relay.health_interval_s, 5);
         assert_eq!(relay.peer_timeout_s, 5);
+        assert_eq!(relay.rotation_fail_threshold, 2);
+        assert_eq!(relay.rotation_recover_threshold, 1);
     }
 
     #[test]
@@ -2090,6 +2114,38 @@ relay:
         let config =
             parse_server_config(&server_with_relay(&good, "")).expect("interval 1 should be valid");
         assert_eq!(config.relay.expect("relay").health_interval_s, 1);
+    }
+
+    #[test]
+    fn relay_rotation_thresholds_are_bounded() {
+        let bad = RELAY_TOML.replace(
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"",
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"\nrotation_fail_threshold = 0",
+        );
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(
+            err.to_string().contains("relay.rotation_fail_threshold"),
+            "{err}"
+        );
+
+        let bad = RELAY_TOML.replace(
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"",
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"\nrotation_recover_threshold = 11",
+        );
+        let err = parse_server_config(&server_with_relay(&bad, "")).expect_err("must fail");
+        assert!(
+            err.to_string().contains("relay.rotation_recover_threshold"),
+            "{err}"
+        );
+
+        let good = RELAY_TOML.replace(
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"",
+            "peer_secret_file = \"/etc/meatus/relay-peer.key\"\nrotation_fail_threshold = 1\nrotation_recover_threshold = 1",
+        );
+        let config = parse_server_config(&server_with_relay(&good, "")).expect("thresholds");
+        let relay = config.relay.expect("relay");
+        assert_eq!(relay.rotation_fail_threshold, 1);
+        assert_eq!(relay.rotation_recover_threshold, 1);
     }
 
     #[cfg(unix)]

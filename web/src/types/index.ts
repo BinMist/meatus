@@ -50,9 +50,50 @@ export interface StatusTotals {
   bytes_out: number
 }
 
+export interface RelayPeerExclusion {
+  id: string
+  reason: string
+}
+
+export interface RelayRotationSnapshot {
+  state: string
+  eligible: string[]
+  excluded: RelayPeerExclusion[]
+}
+
+export interface RelayPeerSnapshot {
+  id: string
+  role: string
+  peer_addr: string | null
+  up: boolean
+  peer_epoch: number | null
+  config_hash: string | null
+  drift: string | null
+  rotation_eligible: boolean
+  latency_ms: number | null
+  last_checked_age_s: number | null
+  last_ok_age_s: number | null
+  last_error: string | null
+}
+
+export interface RelaySnapshot {
+  id: string
+  group: string
+  role: string
+  epoch: number
+  cert_sync: string
+  config_hash: string
+  state: string
+  peers_up: number
+  peers_total: number
+  rotation: RelayRotationSnapshot
+  peers: RelayPeerSnapshot[]
+}
+
 export interface StatusSnapshot {
   status: string
   uptime_s: number
+  relay: RelaySnapshot | null
   clients: ClientRow[]
   proxies: ProxyRow[]
   totals: StatusTotals

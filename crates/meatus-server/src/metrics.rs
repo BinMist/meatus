@@ -51,6 +51,11 @@ struct RelayPeerState {
     last_ok: Option<Instant>,
     last_error: Option<String>,
     peer_epoch: Option<u64>,
+    config_hash: Option<String>,
+    drift: Option<String>,
+    rotation_eligible: bool,
+    fail_streak: u32,
+    success_streak: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +65,9 @@ struct RelayState {
     role: String,
     epoch: u64,
     cert_sync: String,
+    config_hash: String,
+    fail_threshold: u32,
+    recover_threshold: u32,
     peers: Vec<RelayPeerState>,
 }
 
@@ -71,11 +79,29 @@ pub struct RelaySnapshot {
     pub role: String,
     pub epoch: u64,
     pub cert_sync: String,
-    /// `healthy` 表示所有 peer 可探测且身份/epoch 一致。
+    /// 本节点签名 bundle 的 config hash；peer 必须完全一致。
+    pub config_hash: String,
+    /// `healthy` 表示所有 peer 可探测且身份/epoch/config hash 一致。
     pub state: &'static str,
     pub peers_up: usize,
     pub peers_total: usize,
+    /// 可供外部 LB/DNS 轮转使用的资格快照。
+    pub rotation: RelayRotationSnapshot,
     pub peers: Vec<RelayPeerSnapshot>,
+}
+
+/// 轮转池状态；`complete` 表示所有 peer 都在池内。
+#[derive(Debug, Clone, Serialize)]
+pub struct RelayRotationSnapshot {
+    pub state: &'static str,
+    pub eligible: Vec<String>,
+    pub excluded: Vec<RelayPeerExclusion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RelayPeerExclusion {
+    pub id: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,18 +111,24 @@ pub struct RelayPeerSnapshot {
     pub peer_addr: Option<String>,
     pub up: bool,
     pub peer_epoch: Option<u64>,
+    pub config_hash: Option<String>,
+    /// `config_hash` / `epoch` / `identity`；网络故障不是漂移。
+    pub drift: Option<String>,
+    pub rotation_eligible: bool,
     pub latency_ms: Option<u64>,
     pub last_checked_age_s: Option<u64>,
     pub last_ok_age_s: Option<u64>,
     pub last_error: Option<String>,
 }
 
-/// 单次 peer 探测结果；失败时也保留对端 epoch，便于识别配置漂移。
+/// 单次 peer 探测结果；失败时也保留对端 epoch/config hash，便于识别配置漂移。
 #[derive(Debug, Clone)]
 pub struct PeerProbeOutcome {
     pub up: bool,
     pub latency_ms: u64,
     pub peer_epoch: Option<u64>,
+    pub peer_config_hash: Option<String>,
+    pub drift: Option<String>,
     pub error: Option<String>,
 }
 
@@ -107,6 +139,8 @@ impl PeerProbeOutcome {
             up: true,
             latency_ms,
             peer_epoch: Some(peer_epoch),
+            peer_config_hash: None,
+            drift: None,
             error: None,
         }
     }
@@ -117,8 +151,35 @@ impl PeerProbeOutcome {
             up: false,
             latency_ms,
             peer_epoch,
+            peer_config_hash: None,
+            drift: None,
             error: Some(error.into()),
         }
+    }
+
+    /// 身份、epoch 或 config hash 不一致；不计入普通网络失败，立即摘除。
+    #[must_use]
+    pub fn drift(
+        latency_ms: u64,
+        peer_epoch: Option<u64>,
+        peer_config_hash: Option<String>,
+        kind: &'static str,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            up: false,
+            latency_ms,
+            peer_epoch,
+            peer_config_hash,
+            drift: Some(kind.to_string()),
+            error: Some(error.into()),
+        }
+    }
+
+    #[must_use]
+    pub fn with_config_hash(mut self, hash: impl Into<String>) -> Self {
+        self.peer_config_hash = Some(hash.into());
+        self
     }
 }
 
@@ -311,7 +372,8 @@ impl Metrics {
         self.started.elapsed().as_secs()
     }
 
-    /// 启动时写入本节点 relay 身份与 peer 列表；standalone 不调用。
+    /// 启动时写入本节点 relay 身份、bundle hash 与 peer 列表；standalone 不调用。
+    #[allow(clippy::too_many_arguments)]
     pub fn configure_relay(
         &self,
         id: &str,
@@ -319,6 +381,9 @@ impl Metrics {
         role: &str,
         epoch: u64,
         cert_sync: &str,
+        config_hash: &str,
+        fail_threshold: u32,
+        recover_threshold: u32,
         peers: Vec<RelayPeerSeed>,
     ) {
         let state = RelayState {
@@ -327,6 +392,9 @@ impl Metrics {
             role: role.to_string(),
             epoch,
             cert_sync: cert_sync.to_string(),
+            config_hash: config_hash.to_string(),
+            fail_threshold: fail_threshold.max(1),
+            recover_threshold: recover_threshold.max(1),
             peers: peers
                 .into_iter()
                 .map(|seed| RelayPeerState {
@@ -337,6 +405,12 @@ impl Metrics {
                     last_ok: None,
                     last_error: None,
                     peer_epoch: None,
+                    config_hash: None,
+                    drift: None,
+                    // 未知成员先不进轮转池，首次成功探测后才加入。
+                    rotation_eligible: false,
+                    fail_streak: 0,
+                    success_streak: 0,
                 })
                 .collect(),
         };
@@ -356,6 +430,7 @@ impl Metrics {
         let Some(relay) = relay.as_mut() else {
             return;
         };
+        let (fail_threshold, recover_threshold) = (relay.fail_threshold, relay.recover_threshold);
         let Some(peer) = relay.peers.iter_mut().find(|peer| peer.seed.id == peer_id) else {
             return;
         };
@@ -363,11 +438,26 @@ impl Metrics {
         peer.latency_ms = Some(outcome.latency_ms);
         peer.last_checked = Some(now);
         peer.peer_epoch = outcome.peer_epoch;
+        if outcome.peer_config_hash.is_some() {
+            peer.config_hash = outcome.peer_config_hash;
+        }
+        peer.drift = outcome.drift.clone();
         if outcome.up {
             peer.last_ok = Some(now);
             peer.last_error = None;
+            peer.fail_streak = 0;
+            peer.success_streak = peer.success_streak.saturating_add(1);
+            if peer.success_streak >= recover_threshold {
+                peer.rotation_eligible = true;
+            }
         } else {
             peer.last_error = outcome.error;
+            peer.success_streak = 0;
+            peer.fail_streak = peer.fail_streak.saturating_add(1);
+            // 配置漂移比网络抖动严重，立即摘除；普通故障达到阈值才摘除。
+            if outcome.drift.is_some() || peer.fail_streak >= fail_threshold {
+                peer.rotation_eligible = false;
+            }
         }
     }
 
@@ -389,6 +479,9 @@ impl Metrics {
                 peer_addr: peer.seed.peer_addr.clone(),
                 up: peer.up,
                 peer_epoch: peer.peer_epoch,
+                config_hash: peer.config_hash.clone(),
+                drift: peer.drift.clone(),
+                rotation_eligible: peer.rotation_eligible,
                 latency_ms: peer.latency_ms,
                 last_checked_age_s: peer.last_checked.map(|at| now.duration_since(at).as_secs()),
                 last_ok_age_s: peer.last_ok.map(|at| now.duration_since(at).as_secs()),
@@ -401,15 +494,45 @@ impl Metrics {
         } else {
             "degraded"
         };
+        let eligible: Vec<String> = peers
+            .iter()
+            .filter(|peer| peer.rotation_eligible)
+            .map(|peer| peer.id.clone())
+            .collect();
+        let excluded: Vec<RelayPeerExclusion> = peers
+            .iter()
+            .filter(|peer| !peer.rotation_eligible)
+            .map(|peer| RelayPeerExclusion {
+                id: peer.id.clone(),
+                reason: peer.drift.clone().unwrap_or_else(|| {
+                    peer.last_error
+                        .clone()
+                        .unwrap_or_else(|| "probing".to_string())
+                }),
+            })
+            .collect();
+        let rotation_state = if excluded.is_empty() {
+            "complete"
+        } else if eligible.is_empty() {
+            "empty"
+        } else {
+            "partial"
+        };
         Some(RelaySnapshot {
             id: relay.id.clone(),
             group: relay.group.clone(),
             role: relay.role.clone(),
             epoch: relay.epoch,
             cert_sync: relay.cert_sync.clone(),
+            config_hash: relay.config_hash.clone(),
             state,
             peers_up,
             peers_total: peers.len(),
+            rotation: RelayRotationSnapshot {
+                state: rotation_state,
+                eligible,
+                excluded,
+            },
             peers,
         })
     }
@@ -652,6 +775,17 @@ impl Metrics {
             );
             let _ = writeln!(
                 out,
+                "# HELP meatus_relay_config_hash Signed bundle config hash pinned by this node."
+            );
+            let _ = writeln!(out, "# TYPE meatus_relay_config_hash gauge");
+            let _ = writeln!(
+                out,
+                "meatus_relay_config_hash{{relay_id=\"{}\",config_hash=\"{}\"}} 1",
+                escape(&relay.id),
+                escape(&relay.config_hash)
+            );
+            let _ = writeln!(
+                out,
                 "# HELP meatus_relay_epoch Current signed bundle epoch."
             );
             let _ = writeln!(out, "# TYPE meatus_relay_epoch gauge");
@@ -663,9 +797,14 @@ impl Metrics {
             );
             let _ = writeln!(
                 out,
-                "# HELP meatus_relay_peer_up Peer reachable with matching id/group/role/epoch."
+                "# HELP meatus_relay_peer_up Peer reachable with matching id/group/role/epoch/config hash."
             );
             let _ = writeln!(out, "# TYPE meatus_relay_peer_up gauge");
+            let _ = writeln!(
+                out,
+                "# HELP meatus_relay_peer_rotation_eligible Peer currently eligible for edge rotation."
+            );
+            let _ = writeln!(out, "# TYPE meatus_relay_peer_rotation_eligible gauge");
             for peer in &relay.peers {
                 let _ = writeln!(
                     out,
@@ -675,6 +814,27 @@ impl Metrics {
                     escape(&peer.role),
                     u8::from(peer.up)
                 );
+                let _ = writeln!(
+                    out,
+                    "meatus_relay_peer_rotation_eligible{{relay_id=\"{}\",peer=\"{}\"}} {}",
+                    escape(&relay.id),
+                    escape(&peer.id),
+                    u8::from(peer.rotation_eligible)
+                );
+                if let Some(kind) = &peer.drift {
+                    let _ = writeln!(
+                        out,
+                        "# HELP meatus_relay_peer_drift Peer drift flag by kind."
+                    );
+                    let _ = writeln!(out, "# TYPE meatus_relay_peer_drift gauge");
+                    let _ = writeln!(
+                        out,
+                        "meatus_relay_peer_drift{{relay_id=\"{}\",peer=\"{}\",kind=\"{}\"}} 1",
+                        escape(&relay.id),
+                        escape(&peer.id),
+                        escape(kind)
+                    );
+                }
             }
         }
 
@@ -757,6 +917,8 @@ mod tests {
 
     #[test]
     fn relay_status_is_degraded_until_every_peer_is_compatible() {
+        const HASH: &str =
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let metrics = Metrics::new();
         metrics.configure_relay(
             "relay-a",
@@ -764,6 +926,9 @@ mod tests {
             "primary",
             3,
             "push",
+            HASH,
+            2,
+            1,
             vec![RelayPeerSeed {
                 id: "relay-b".to_string(),
                 role: "secondary".to_string(),
@@ -775,10 +940,18 @@ mod tests {
         assert_eq!(snapshot.peers_up, 0);
         assert_eq!(snapshot.peers_total, 1);
         assert!(snapshot.peers[0].last_checked_age_s.is_none());
+        assert_eq!(snapshot.rotation.state, "empty");
+        assert!(!snapshot.peers[0].rotation_eligible);
 
         metrics.record_peer_probe(
             "relay-b",
-            PeerProbeOutcome::down(4, Some(2), "epoch mismatch"),
+            PeerProbeOutcome::drift(
+                4,
+                Some(2),
+                Some(HASH.to_string()),
+                "epoch",
+                "epoch mismatch",
+            ),
         );
         let snapshot = metrics.relay_snapshot().expect("relay snapshot");
         assert_eq!(snapshot.state, "degraded");
@@ -787,13 +960,18 @@ mod tests {
             snapshot.peers[0].last_error.as_deref(),
             Some("epoch mismatch")
         );
+        assert_eq!(snapshot.peers[0].drift.as_deref(), Some("epoch"));
+        assert!(!snapshot.peers[0].rotation_eligible);
 
-        metrics.record_peer_probe("relay-b", PeerProbeOutcome::up(4, 3));
+        metrics.record_peer_probe("relay-b", PeerProbeOutcome::up(4, 3).with_config_hash(HASH));
         let snapshot = metrics.relay_snapshot().expect("relay snapshot");
         assert_eq!(snapshot.state, "healthy");
         assert_eq!(snapshot.peers_up, 1);
         assert_eq!(snapshot.peers[0].last_error, None);
         assert_eq!(snapshot.peers[0].last_ok_age_s, Some(0));
+        assert!(snapshot.peers[0].rotation_eligible);
+        assert_eq!(snapshot.rotation.state, "complete");
+        assert_eq!(snapshot.rotation.eligible, vec!["relay-b".to_string()]);
 
         let text = metrics.render();
         assert!(
@@ -812,5 +990,73 @@ mod tests {
             ),
             "{text}"
         );
+        assert!(
+            text.contains(&format!(
+                "meatus_relay_config_hash{{relay_id=\"relay-a\",config_hash=\"{HASH}\"}} 1"
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "meatus_relay_peer_rotation_eligible{relay_id=\"relay-a\",peer=\"relay-b\"} 1"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("meatus_relay_peer_drift"), "{text}");
+    }
+
+    #[test]
+    fn peer_config_hash_drift_evicts_immediately_and_recovers() {
+        const HASH: &str =
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const OTHER: &str =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let metrics = Metrics::new();
+        metrics.configure_relay(
+            "relay-a",
+            "prod",
+            "primary",
+            3,
+            "push",
+            HASH,
+            2,
+            1,
+            vec![RelayPeerSeed {
+                id: "relay-b".to_string(),
+                role: "secondary".to_string(),
+                peer_addr: Some("127.0.0.1:7402".to_string()),
+            }],
+        );
+        metrics.record_peer_probe("relay-b", PeerProbeOutcome::up(3, 3).with_config_hash(HASH));
+        metrics.record_peer_probe(
+            "relay-b",
+            PeerProbeOutcome::drift(
+                3,
+                Some(3),
+                Some(OTHER.to_string()),
+                "config_hash",
+                "peer config hash mismatch",
+            ),
+        );
+        let snapshot = metrics.relay_snapshot().expect("relay snapshot");
+        assert_eq!(snapshot.state, "degraded");
+        assert_eq!(snapshot.peers[0].drift.as_deref(), Some("config_hash"));
+        assert!(!snapshot.peers[0].rotation_eligible);
+        assert_eq!(snapshot.rotation.state, "empty");
+        assert_eq!(snapshot.rotation.excluded[0].reason, "config_hash");
+
+        let text = metrics.render();
+        assert!(
+            text.contains(
+                "meatus_relay_peer_drift{relay_id=\"relay-a\",peer=\"relay-b\",kind=\"config_hash\"} 1"
+            ),
+            "{text}"
+        );
+
+        metrics.record_peer_probe("relay-b", PeerProbeOutcome::up(3, 3).with_config_hash(HASH));
+        let snapshot = metrics.relay_snapshot().expect("relay snapshot");
+        assert_eq!(snapshot.state, "healthy");
+        assert!(snapshot.peers[0].rotation_eligible);
+        assert_eq!(snapshot.rotation.state, "complete");
     }
 }

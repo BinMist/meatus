@@ -282,6 +282,7 @@ struct PeerHealth<'a> {
     role: &'static str,
     epoch: u64,
     cert_sync: &'static str,
+    config_hash: &'a str,
 }
 
 /// 启动 relay peer 端点：健康与证书同步共用 `health_bind`。
@@ -330,6 +331,7 @@ async fn handle(mut stream: TcpStream, state: Arc<ServerState>) -> anyhow::Resul
                 .relay
                 .as_ref()
                 .map_or("off", |relay| relay.cert_sync.as_str()),
+            config_hash: relay.config_hash(),
         };
         return respond_json(&mut stream, 200, &body).await;
     }

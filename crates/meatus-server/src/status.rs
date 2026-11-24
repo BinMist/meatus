@@ -374,6 +374,7 @@ impl StatusRegistry {
         json!({
             "status": "ok",
             "uptime_s": metrics.uptime_secs(),
+            "relay": metrics.relay_snapshot(),
             "clients": clients,
             "proxies": proxies,
             "totals": totals,
@@ -456,6 +457,7 @@ mod tests {
         let snapshot = status.render(&metrics, &quotas, &config);
         assert_eq!(snapshot["totals"]["clients"], 10);
         assert_eq!(snapshot["totals"]["proxies"], 10);
+        assert!(snapshot["relay"].is_null());
         for client in snapshot["clients"].as_array().expect("clients") {
             assert_eq!(client["proxy_count"], 1);
         }

@@ -65,6 +65,12 @@ impl RelayContext {
         self.bundle.epoch
     }
 
+    /// 签名 bundle 的 config hash；G4-02 用它识别 peer 配置漂移。
+    #[must_use]
+    pub fn config_hash(&self) -> &str {
+        &self.bundle.config_hash
+    }
+
     /// 组内对端成员；用于后续 peer 健康、证书同步和路由镜像。
     pub fn peers(&self) -> impl Iterator<Item = &RelayMember> {
         self.bundle
@@ -263,6 +269,46 @@ peer_secret_file = "{}"
         };
         assert!(err.to_string().contains("http.domain"), "{err}");
         fixture.cleanup();
+    }
+
+    #[test]
+    fn startup_rejects_tampered_config_hash_and_epoch_rollback() {
+        let fixture = Fixture::new("startup-reject");
+        let config = fixture.config(
+            "relay-a",
+            "primary",
+            "relay-a.example.com:7000",
+            [20_000, 20_999],
+        );
+        crate::ServerState::new(config.clone()).expect("valid bundle starts");
+
+        let mut bundle = load_bundle(&fixture.bundle).expect("load bundle");
+        bundle.config_hash = format!("sha256:{}", "ff".repeat(32));
+        write_bundle(&fixture.bundle, &bundle).expect("tampered bundle");
+        let err = match crate::ServerState::new(config.clone()) {
+            Ok(_) => panic!("tampered config hash must be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("config_hash mismatch"), "{err}");
+
+        // 恢复旧 bundle，并把本地 epoch 进度推到更高版本，模拟 epoch 回退。
+        let fixture_valid = Fixture::new("startup-rollback");
+        let config = fixture_valid.config(
+            "relay-a",
+            "primary",
+            "relay-a.example.com:7000",
+            [20_000, 20_999],
+        );
+        meatus_core::relay_bundle::write_epoch_state(&fixture_valid.bundle, 5)
+            .expect("epoch sidecar");
+        let err = match crate::ServerState::new(config) {
+            Ok(_) => panic!("epoch rollback must be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("epoch rollback"), "{err}");
+
+        fixture.cleanup();
+        fixture_valid.cleanup();
     }
 
     #[test]

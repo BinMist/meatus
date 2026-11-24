@@ -23,6 +23,7 @@ struct PeerHealthResponse {
     group: String,
     role: String,
     epoch: u64,
+    config_hash: String,
 }
 
 pub(crate) async fn run(state: Arc<ServerState>, cancel: CancellationToken) -> anyhow::Result<()> {
@@ -101,18 +102,33 @@ async fn probe_peer(
             );
         }
     };
+    evaluate_health(relay, peer, &health, latency(started))
+}
+
+/// 纯函数校验 peer 上报；配置 hash 不一致视为漂移，立即失去轮转资格。
+fn evaluate_health(
+    relay: &crate::relay::RelayContext,
+    peer: &meatus_core::RelayMember,
+    health: &PeerHealthResponse,
+    latency_ms: u64,
+) -> PeerProbeOutcome {
     let peer_epoch = Some(health.epoch);
+    let peer_hash = Some(health.config_hash.clone());
     if health.id != peer.id {
-        return PeerProbeOutcome::down(
-            latency(started),
+        return PeerProbeOutcome::drift(
+            latency_ms,
             peer_epoch,
+            peer_hash,
+            "identity",
             format!("peer id mismatch: expected {}, got {}", peer.id, health.id),
         );
     }
     if health.group != relay.group() {
-        return PeerProbeOutcome::down(
-            latency(started),
+        return PeerProbeOutcome::drift(
+            latency_ms,
             peer_epoch,
+            peer_hash,
+            "identity",
             format!(
                 "peer group mismatch: expected {}, got {}",
                 relay.group(),
@@ -121,9 +137,11 @@ async fn probe_peer(
         );
     }
     if health.role != peer.role.as_str() {
-        return PeerProbeOutcome::down(
-            latency(started),
+        return PeerProbeOutcome::drift(
+            latency_ms,
             peer_epoch,
+            peer_hash,
+            "identity",
             format!(
                 "peer role mismatch: expected {}, got {}",
                 peer.role.as_str(),
@@ -132,9 +150,11 @@ async fn probe_peer(
         );
     }
     if health.epoch != relay.epoch() {
-        return PeerProbeOutcome::down(
-            latency(started),
+        return PeerProbeOutcome::drift(
+            latency_ms,
             peer_epoch,
+            peer_hash,
+            "epoch",
             format!(
                 "peer epoch mismatch: expected {}, got {}",
                 relay.epoch(),
@@ -142,7 +162,20 @@ async fn probe_peer(
             ),
         );
     }
-    PeerProbeOutcome::up(latency(started), health.epoch)
+    if health.config_hash != relay.config_hash() {
+        return PeerProbeOutcome::drift(
+            latency_ms,
+            peer_epoch,
+            peer_hash,
+            "config_hash",
+            format!(
+                "peer config hash mismatch: expected {}, got {}",
+                relay.config_hash(),
+                health.config_hash
+            ),
+        );
+    }
+    PeerProbeOutcome::up(latency_ms, health.epoch).with_config_hash(health.config_hash.clone())
 }
 
 #[cfg(test)]
@@ -150,14 +183,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn peer_health_response_requires_identity_and_epoch() {
-        let text =
-            br#"{"id":"relay-b","group":"prod","role":"secondary","epoch":7,"cert_sync":"off"}"#;
+    fn peer_health_response_requires_identity_epoch_and_hash() {
+        let text = br#"{"id":"relay-b","group":"prod","role":"secondary","epoch":7,"cert_sync":"off","config_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
         let health: PeerHealthResponse = serde_json::from_slice(text).expect("decode");
         assert_eq!(health.id, "relay-b");
         assert_eq!(health.group, "prod");
         assert_eq!(health.role, "secondary");
         assert_eq!(health.epoch, 7);
+        assert!(health.config_hash.starts_with("sha256:"));
     }
 
     #[test]
@@ -166,5 +199,68 @@ mod tests {
         assert!(!outcome.up);
         assert_eq!(outcome.peer_epoch, Some(8));
         assert_eq!(outcome.error.as_deref(), Some("peer epoch mismatch"));
+    }
+
+    #[test]
+    fn config_hash_mismatch_is_an_immediate_drift() {
+        use meatus_core::{RelayBundle, RelayMember, RelayRole};
+
+        const HASH: &str =
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let main = RelayMember {
+            id: "relay-a".to_string(),
+            role: RelayRole::Primary,
+            control_addr: "127.0.0.1:7000".to_string(),
+            http_domains: Vec::new(),
+            peer_addr: Some("127.0.0.1:7401".to_string()),
+            ports: [20_000, 20_999],
+        };
+        let peer = RelayMember {
+            id: "relay-b".to_string(),
+            role: RelayRole::Secondary,
+            control_addr: "127.0.0.1:7001".to_string(),
+            http_domains: Vec::new(),
+            peer_addr: Some("127.0.0.1:7402".to_string()),
+            ports: [21_000, 21_999],
+        };
+        let relay = crate::relay::RelayContext {
+            bundle: RelayBundle {
+                version: 1,
+                group: "prod".to_string(),
+                epoch: 3,
+                generated_at: "2026-11-24T00:00:00Z".to_string(),
+                relays: vec![main.clone(), peer.clone()],
+                config_hash: HASH.to_string(),
+                signature: String::new(),
+            },
+            member: main,
+        };
+        let good = PeerHealthResponse {
+            id: "relay-b".to_string(),
+            group: "prod".to_string(),
+            role: "secondary".to_string(),
+            epoch: 3,
+            config_hash: HASH.to_string(),
+        };
+        let outcome = evaluate_health(&relay, &peer, &good, 2);
+        assert!(outcome.up);
+        assert_eq!(outcome.drift, None);
+        assert_eq!(outcome.peer_config_hash.as_deref(), Some(HASH));
+
+        let drifted = PeerHealthResponse {
+            config_hash: format!("sha256:{}", "bb".repeat(32)),
+            ..good
+        };
+        let outcome = evaluate_health(&relay, &peer, &drifted, 2);
+        assert!(!outcome.up);
+        assert_eq!(outcome.drift.as_deref(), Some("config_hash"));
+        assert!(
+            outcome
+                .error
+                .as_deref()
+                .is_some_and(|err| err.contains("config hash mismatch")),
+            "{}",
+            outcome.error.as_deref().unwrap_or("")
+        );
     }
 }
