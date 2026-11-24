@@ -424,3 +424,52 @@ systemctl is-active meatus-server
 - 不要把 `server.toml`、token、证书私钥提交到仓库。
 - 公网只开放 7000 与业务端口；7400 不要暴露。
 - V1 不接 PostgreSQL / Redis；发现配置里出现 `[ctrl]` 或数据库地址，说明误用了 Post-V1 设计。
+
+## 9. Windows 客户端服务（1.5.1 预览）
+
+> 状态（2026-11-24）：服务命令与安装/卸载/日志路径代码已完成，Windows GNU target 交叉编译通过；**尚未在 Windows 11 真机做 SCM 验收**，不能把本节当作已验收能力。
+
+管理员 PowerShell 中执行：
+
+```powershell
+# 安装：复制配置到 %ProgramData%\Meatus\client.toml，注册为自动启动服务并立即启动
+meatus.exe service install --config .\client.toml
+
+# 只安装、不启动
+meatus.exe service install --config .\client.toml --no-start
+
+meatus.exe service status
+meatus.exe service stop
+meatus.exe service start
+
+# 卸载；默认保留配置与日志
+meatus.exe service uninstall
+
+# 卸载并清理 %ProgramData%\Meatus
+meatus.exe service uninstall --purge
+```
+
+固定路径：
+
+| 内容 | 路径 |
+|---|---|
+| 配置 | `%ProgramData%\Meatus\client.toml` |
+| 日志 | `%ProgramData%\Meatus\logs\client.log.YYYY-MM-DD` |
+| 启动失败兜底 | `%ProgramData%\Meatus\logs\service-error.log` |
+
+服务名 `meatus-client`，显示名 `Meatus Client`，以 `LocalSystem` 运行；服务启动后工作目录切到 `%ProgramData%\Meatus`，配置里的相对证书路径按该目录解析。安装后收紧目录 ACL：
+
+```powershell
+icacls "$env:ProgramData\Meatus" /inheritance:r `
+  /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F"
+```
+
+排障时可用 `meatus.exe service run --console --config <path>` 前台运行；服务由 SCM 调用时使用 `meatus service run`，不要手工常驻该命令。
+
+Windows 11 真机验收清单（当前待执行）：
+
+1. `service install` 后 `sc query meatus-client` 为 `RUNNING`，`binPath` 指向当前 `meatus.exe service run`；
+2. 重启主机后服务自动为 `RUNNING`，`%ProgramData%\Meatus\logs` 有新日志；
+3. `service stop` 后进程退出、日志停止；`service start` 后客户端重新连上 relay；
+4. `service uninstall --purge` 后 `sc query` 返回 1060，`%ProgramData%\Meatus` 不存在；
+5. 非管理员执行 `service install` 明确失败，不留下半装服务。

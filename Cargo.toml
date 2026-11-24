@@ -65,6 +65,7 @@ tokio-util = { version = "0.7", features = ["compat", "rt"] }
 toml = "1.2"
 toml_edit = "0.19"
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 webpki-roots = "1.0"
 x509-parser = "0.18"
