@@ -24,6 +24,25 @@ fn free_port() -> u16 {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
     listener.local_addr().expect("local addr").port()
 }
+fn free_port_pair() -> (u16, u16) {
+    for _ in 0..100 {
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let start = listener.local_addr().expect("local addr").port();
+        drop(listener);
+        if start == u16::MAX {
+            continue;
+        }
+        let end = start + 1;
+        let tcp_ok = StdTcpListener::bind(("127.0.0.1", start)).is_ok()
+            && StdTcpListener::bind(("127.0.0.1", end)).is_ok();
+        let udp_ok = std::net::UdpSocket::bind(("127.0.0.1", start)).is_ok()
+            && std::net::UdpSocket::bind(("127.0.0.1", end)).is_ok();
+        if tcp_ok && udp_ok {
+            return (start, end);
+        }
+    }
+    panic!("no consecutive free tcp/udp port pair");
+}
 
 fn distinct_ports() -> (u16, u16, u16) {
     loop {
@@ -1484,6 +1503,24 @@ async fn status_json(port: u16) -> Result<serde_json::Value, String> {
 
 async fn probe(proxy_port: u16) -> Result<(), String> {
     probe_addr("127.0.0.1", proxy_port).await
+}
+async fn probe_udp_addr(ip: &str, proxy_port: u16, payload: &[u8]) -> Result<(), String> {
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .map_err(|err| format!("bind: {err}"))?;
+    socket
+        .send_to(payload, (ip, proxy_port))
+        .await
+        .map_err(|err| format!("send: {err}"))?;
+    let mut buffer = [0u8; 1500];
+    let (len, _) = timeout(Duration::from_secs(2), socket.recv_from(&mut buffer))
+        .await
+        .map_err(|_| "udp reply timeout".to_string())?
+        .map_err(|err| format!("recv: {err}"))?;
+    if &buffer[..len] != payload {
+        return Err(format!("unexpected udp echo: {:?}", &buffer[..len]));
+    }
+    Ok(())
 }
 
 async fn probe_addr(ip: &str, proxy_port: u16) -> Result<(), String> {
@@ -3205,18 +3242,30 @@ remote_port = {proxy_port}
 }
 
 #[tokio::test]
-async fn client_multi_home_registers_same_proxy_on_both_relays() {
+async fn client_multi_home_registers_same_proxies_and_secondary_takes_over() {
     let _guard = TEST_MUTEX.lock().await;
     let echo_port = free_port();
+    let udp_echo_port = free_udp_port();
     let control_a = free_port();
     let control_b = free_port();
-    let proxy_a = free_port();
-    let proxy_b = free_port();
+    let (proxy_a, proxy_a_end) = free_port_pair();
+    let (proxy_b, proxy_b_end) = {
+        let mut chosen = None;
+        for _ in 0..100 {
+            let pair = free_port_pair();
+            if pair.1 < proxy_a.saturating_sub(2) || pair.0 > proxy_a_end.saturating_add(2) {
+                chosen = Some(pair);
+                break;
+            }
+        }
+        chosen.expect("disjoint relay port range")
+    };
     let admin_a = free_port();
     let admin_b = free_port();
     let health_a = free_port();
     let health_b = free_port();
     spawn_echo(echo_port).await;
+    spawn_udp_echo(udp_echo_port).await;
 
     let dir = std::env::temp_dir().join(format!("meatus-multi-home-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -3241,7 +3290,7 @@ async fn client_multi_home_registers_same_proxy_on_both_relays() {
                 control_addr: format!("127.0.0.1:{control_a}"),
                 http_domains: Vec::new(),
                 peer_addr: None,
-                ports: [proxy_a, proxy_a],
+                ports: [proxy_a, proxy_a_end],
             },
             RelayMember {
                 id: "relay-b".to_string(),
@@ -3249,7 +3298,7 @@ async fn client_multi_home_registers_same_proxy_on_both_relays() {
                 control_addr: format!("127.0.0.1:{control_b}"),
                 http_domains: Vec::new(),
                 peer_addr: None,
-                ports: [proxy_b, proxy_b],
+                ports: [proxy_b, proxy_b_end],
             },
         ],
     };
@@ -3280,7 +3329,7 @@ clients = [
 ]
 
 [ports]
-range = [{proxy}, {proxy}]
+range = [{proxy_start}, {proxy_end}]
 
 [acme]
 cert_dir = "{dir}/acme-{id}"
@@ -3303,7 +3352,12 @@ peer_secret_file = "{peer}"
             bundle = bundle_path.display(),
             public = signing.public_key(),
             peer = peer_path.display(),
-            proxy = if id == "relay-a" { proxy_a } else { proxy_b },
+            proxy_start = if id == "relay-a" { proxy_a } else { proxy_b },
+            proxy_end = if id == "relay-a" {
+                proxy_a_end
+            } else {
+                proxy_b_end
+            },
             dir = dir.display(),
         )
     };
@@ -3346,6 +3400,11 @@ health_interval_s = 1
 name = "echo"
 type = "tcp"
 local_addr = "127.0.0.1:{echo_port}"
+
+[[proxy]]
+name = "udp-echo"
+type = "udp"
+local_addr = "127.0.0.1:{udp_echo_port}"
 "#,
         cert = cert_path.display(),
     );
@@ -3373,24 +3432,37 @@ local_addr = "127.0.0.1:{echo_port}"
     for _ in 0..100 {
         sleep(Duration::from_millis(100)).await;
         let snapshot = registry.snapshot();
-        let a = snapshot
+        let tcp_a = snapshot
             .ports
             .get("echo")
             .and_then(|relays| relays.get("relay-a"))
             .copied();
-        let b = snapshot
+        let tcp_b = snapshot
             .ports
             .get("echo")
             .and_then(|relays| relays.get("relay-b"))
             .copied();
-        if let (Some(a), Some(b)) = (a, b) {
-            ports = Some((a, b));
+        let udp_a = snapshot
+            .ports
+            .get("udp-echo")
+            .and_then(|relays| relays.get("relay-a"))
+            .copied();
+        let udp_b = snapshot
+            .ports
+            .get("udp-echo")
+            .and_then(|relays| relays.get("relay-b"))
+            .copied();
+        if let (Some(tcp_a), Some(tcp_b), Some(udp_a), Some(udp_b)) = (tcp_a, tcp_b, udp_a, udp_b) {
+            ports = Some((tcp_a, tcp_b, udp_a, udp_b));
             break;
         }
     }
-    let (port_a, port_b) = ports.expect("proxy should register on both relays");
+    let (port_a, port_b, udp_port_a, udp_port_b) =
+        ports.expect("proxies should register on both relays");
     assert_eq!(port_a, proxy_a);
     assert_eq!(port_b, proxy_b);
+    assert_eq!(udp_port_a, proxy_a_end);
+    assert_eq!(udp_port_b, proxy_b_end);
     let snapshot = registry.snapshot();
     assert_eq!(snapshot.group, "prod");
     assert_eq!(snapshot.members.len(), 2);
@@ -3398,14 +3470,36 @@ local_addr = "127.0.0.1:{echo_port}"
 
     probe_addr("127.0.0.1", port_a)
         .await
-        .expect("relay-a shadow route");
+        .expect("relay-a tcp route");
     probe_addr("127.0.0.1", port_b)
         .await
-        .expect("relay-b shadow route");
+        .expect("relay-b tcp route");
+    probe_udp_addr("127.0.0.1", udp_port_a, b"relay-a-udp")
+        .await
+        .expect("relay-a udp route");
+    probe_udp_addr("127.0.0.1", udp_port_b, b"relay-b-udp")
+        .await
+        .expect("relay-b udp route");
 
-    // 停掉 relay-a：只掉该成员的控制会话，relay-b 的影子注册与转发必须保持。
+    // 停掉 relay-a；在途连接允许失败，不做迁移，只验证新 TCP/UDP 连接从 relay-b 进入。
     server_cancel_a.cancel();
     let _ = timeout(Duration::from_secs(5), server_task_a).await;
+    assert!(
+        probe_addr("127.0.0.1", port_a).await.is_err(),
+        "relay-a tcp port should be closed"
+    );
+    let failover_started = std::time::Instant::now();
+    probe_addr("127.0.0.1", port_b)
+        .await
+        .expect("new tcp connection should enter relay-b");
+    probe_udp_addr("127.0.0.1", udp_port_b, b"relay-b-takeover-udp")
+        .await
+        .expect("new udp session should enter relay-b");
+    assert!(
+        failover_started.elapsed() < Duration::from_secs(5),
+        "relay-b should accept new tcp/udp connections within 5s, elapsed={:?}",
+        failover_started.elapsed()
+    );
     let mut relay_a_gone = false;
     for _ in 0..50 {
         sleep(Duration::from_millis(100)).await;
@@ -3419,10 +3513,6 @@ local_addr = "127.0.0.1:{echo_port}"
         registry.port_for("echo", "relay-b").is_some(),
         "relay-b binding should survive relay-a stop"
     );
-    probe_addr("127.0.0.1", port_b)
-        .await
-        .expect("relay-b route after relay-a stop");
-
     client_cancel.cancel();
     server_cancel_b.cancel();
     let _ = timeout(Duration::from_secs(5), client_task).await;
