@@ -3203,3 +3203,228 @@ remote_port = {proxy_port}
     let _ = timeout(Duration::from_secs(5), server_task).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn client_multi_home_registers_same_proxy_on_both_relays() {
+    let _guard = TEST_MUTEX.lock().await;
+    let echo_port = free_port();
+    let control_a = free_port();
+    let control_b = free_port();
+    let proxy_a = free_port();
+    let proxy_b = free_port();
+    let admin_a = free_port();
+    let admin_b = free_port();
+    let health_a = free_port();
+    let health_b = free_port();
+    spawn_echo(echo_port).await;
+
+    let dir = std::env::temp_dir().join(format!("meatus-multi-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate cert");
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
+
+    let (signing, _) = RelaySigningKey::generate().expect("relay key");
+    let body = RelayBundleBody {
+        version: 1,
+        group: "prod".to_string(),
+        epoch: 2,
+        generated_at: "2026-11-24T00:00:00Z".to_string(),
+        relays: vec![
+            RelayMember {
+                id: "relay-a".to_string(),
+                role: RelayRole::Primary,
+                control_addr: format!("127.0.0.1:{control_a}"),
+                http_domains: Vec::new(),
+                peer_addr: None,
+                ports: [proxy_a, proxy_a],
+            },
+            RelayMember {
+                id: "relay-b".to_string(),
+                role: RelayRole::Secondary,
+                control_addr: format!("127.0.0.1:{control_b}"),
+                http_domains: Vec::new(),
+                peer_addr: None,
+                ports: [proxy_b, proxy_b],
+            },
+        ],
+    };
+    let bundle = signing.sign(&body).expect("sign bundle");
+    let bundle_path = dir.join("relay-bundle.json");
+    write_bundle(&bundle_path, &bundle).expect("write bundle");
+    let peer_path = dir.join("relay-peer.key");
+    std::fs::write(&peer_path, b"0123456789abcdef0123456789abcdef").expect("write peer");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&peer_path, std::fs::Permissions::from_mode(0o600))
+            .expect("peer mode");
+    }
+
+    let server_config = |id: &str, control: u16, admin: u16, health: u16, role: &str| {
+        format!(
+            r#"
+[server]
+bind_addr = "127.0.0.1"
+control_port = {control}
+tls_cert = "{cert}"
+tls_key = "{key}"
+
+[auth]
+clients = [
+  {{ id = "nas", tenant = "default", token_sha256 = "{TOKEN_HASH}" }},
+]
+
+[ports]
+range = [{proxy}, {proxy}]
+
+[acme]
+cert_dir = "{dir}/acme-{id}"
+
+[admin]
+bind = "127.0.0.1:{admin}"
+
+[relay]
+id = "{id}"
+group = "prod"
+role = "{role}"
+advertise_addr = "127.0.0.1:{control}"
+health_bind = "127.0.0.1:{health}"
+bundle = "{bundle}"
+bundle_pubkey = "{public}"
+peer_secret_file = "{peer}"
+"#,
+            cert = cert_path.display(),
+            key = key_path.display(),
+            bundle = bundle_path.display(),
+            public = signing.public_key(),
+            peer = peer_path.display(),
+            proxy = if id == "relay-a" { proxy_a } else { proxy_b },
+            dir = dir.display(),
+        )
+    };
+
+    let server_a = ServerState::new(
+        parse_server_config(&server_config(
+            "relay-a", control_a, admin_a, health_a, "primary",
+        ))
+        .expect("server a cfg"),
+    )
+    .expect("server a state");
+    let server_b = ServerState::new(
+        parse_server_config(&server_config(
+            "relay-b",
+            control_b,
+            admin_b,
+            health_b,
+            "secondary",
+        ))
+        .expect("server b cfg"),
+    )
+    .expect("server b state");
+
+    let client_config = format!(
+        r#"
+[client]
+server_addrs = ["127.0.0.1:{control_a}", "127.0.0.1:{control_b}"]
+server_name = "localhost"
+server_ca_cert = "{cert}"
+client_id = "nas"
+tenant = "default"
+token = "secret"
+
+[client.relay]
+group = "prod"
+multi_home = true
+health_interval_s = 1
+
+[[proxy]]
+name = "echo"
+type = "tcp"
+local_addr = "127.0.0.1:{echo_port}"
+"#,
+        cert = cert_path.display(),
+    );
+    let client_state = ClientState::new(parse_client_config(&client_config).expect("client cfg"))
+        .expect("client state");
+    let registry = client_state.relay_registry();
+
+    let server_cancel_a = CancellationToken::new();
+    let server_cancel_b = CancellationToken::new();
+    let client_cancel = CancellationToken::new();
+    let server_task_a = {
+        let cancel = server_cancel_a.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_a, cancel).await })
+    };
+    let server_task_b = {
+        let cancel = server_cancel_b.clone();
+        tokio::spawn(async move { meatus_server::run_until(server_b, cancel).await })
+    };
+    let client_task = {
+        let cancel = client_cancel.clone();
+        tokio::spawn(async move { meatus_client::run_until(client_state, cancel).await })
+    };
+
+    let mut ports = None;
+    for _ in 0..100 {
+        sleep(Duration::from_millis(100)).await;
+        let snapshot = registry.snapshot();
+        let a = snapshot
+            .ports
+            .get("echo")
+            .and_then(|relays| relays.get("relay-a"))
+            .copied();
+        let b = snapshot
+            .ports
+            .get("echo")
+            .and_then(|relays| relays.get("relay-b"))
+            .copied();
+        if let (Some(a), Some(b)) = (a, b) {
+            ports = Some((a, b));
+            break;
+        }
+    }
+    let (port_a, port_b) = ports.expect("proxy should register on both relays");
+    assert_eq!(port_a, proxy_a);
+    assert_eq!(port_b, proxy_b);
+    let snapshot = registry.snapshot();
+    assert_eq!(snapshot.group, "prod");
+    assert_eq!(snapshot.members.len(), 2);
+    assert_eq!(snapshot.conflicts.len(), 0);
+
+    probe_addr("127.0.0.1", port_a)
+        .await
+        .expect("relay-a shadow route");
+    probe_addr("127.0.0.1", port_b)
+        .await
+        .expect("relay-b shadow route");
+
+    // 停掉 relay-a：只掉该成员的控制会话，relay-b 的影子注册与转发必须保持。
+    server_cancel_a.cancel();
+    let _ = timeout(Duration::from_secs(5), server_task_a).await;
+    let mut relay_a_gone = false;
+    for _ in 0..50 {
+        sleep(Duration::from_millis(100)).await;
+        if registry.port_for("echo", "relay-a").is_none() {
+            relay_a_gone = true;
+            break;
+        }
+    }
+    assert!(relay_a_gone, "relay-a binding should be removed after stop");
+    assert!(
+        registry.port_for("echo", "relay-b").is_some(),
+        "relay-b binding should survive relay-a stop"
+    );
+    probe_addr("127.0.0.1", port_b)
+        .await
+        .expect("relay-b route after relay-a stop");
+
+    client_cancel.cancel();
+    server_cancel_b.cancel();
+    let _ = timeout(Duration::from_secs(5), client_task).await;
+    let _ = timeout(Duration::from_secs(5), server_task_b).await;
+}

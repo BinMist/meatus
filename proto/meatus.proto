@@ -20,6 +20,9 @@ message Hello {
   // V1.4 可观测性：控制会话 trace_id，由客户端生成，服务端在 Welcome 回显。
   // 旧客户端不填、旧服务端不回显时双方都按空值处理。
   string trace_id          = 11;
+  // V1.5 relay 组多宿主：客户端声明所属组与当前拨号成员；空表示 standalone。
+  string relay_group       = 12;
+  string relay_id          = 13;
 }
 
 message Challenge {
@@ -40,6 +43,11 @@ message Welcome {
   repeated string caps    = 5;
   // 回显 Hello.trace_id；空表示对端未提供。
   string trace_id = 6;
+  // V1.5 relay 组身份回显；standalone 服务端保持空值。
+  string relay_group = 7;
+  string relay_id    = 8;
+  string relay_role  = 9;
+  uint64 group_epoch = 10;
 }
 
 enum ProxyType {

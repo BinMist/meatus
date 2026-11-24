@@ -3,9 +3,14 @@
 
 mod probe;
 pub mod quic;
+mod relay_registry;
 mod session;
 mod stats;
 mod tls;
+
+pub use relay_registry::{
+    RelayMemberState, RelayMemberStatus, RelayPortConflict, RelayRegistry, RelaySnapshot,
+};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -14,15 +19,16 @@ use std::time::{Duration, Instant};
 
 use meatus_core::{ClientConfig, ConfigError, ProxySpec, load_client_config};
 use tokio::sync::mpsc;
-use tokio::time::sleep;
+use tokio::time::{interval, sleep, timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub struct ClientState {
     pub config: ClientConfig,
     /// 配置文件路径；存在时监听 SIGHUP 做代理差量热重载。
     pub config_path: Option<PathBuf>,
     dial: Arc<DialStatus>,
+    relay: Arc<RelayRegistry>,
 }
 
 /// 客户端入口切换状态；只保留脱敏后的地址，不含 token。
@@ -104,10 +110,12 @@ fn redact_addr(addr: &str) -> String {
 impl ClientState {
     pub fn new(config: ClientConfig) -> Result<Self, ConfigError> {
         config.validate()?;
+        let relay = Arc::new(RelayRegistry::new(config.client.relay.group.clone()));
         Ok(Self {
             config,
             config_path: None,
             dial: Arc::new(DialStatus::default()),
+            relay,
         })
     }
 
@@ -115,6 +123,18 @@ impl ClientState {
     #[must_use]
     pub fn dial_snapshot(&self) -> DialSnapshot {
         self.dial.snapshot()
+    }
+
+    /// 影子注册表；可在运行期间读取 proxy 到各 relay 的端口映射。
+    #[must_use]
+    pub fn relay_registry(&self) -> Arc<RelayRegistry> {
+        Arc::clone(&self.relay)
+    }
+
+    /// 注册表快照，供测试与外部状态展示。
+    #[must_use]
+    pub fn relay_snapshot(&self) -> RelaySnapshot {
+        self.relay.snapshot()
     }
 
     #[must_use]
@@ -184,6 +204,7 @@ async fn shutdown_signal() {
 pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow::Result<()> {
     let config_path = state.config_path.clone();
     let dial = Arc::clone(&state.dial);
+    let registry = Arc::clone(&state.relay);
     let mut config = Arc::new(state.config);
     let (reload_tx, mut reload_rx) = mpsc::channel::<Vec<ProxySpec>>(4);
     let reload_task = config_path.as_ref().map(|path| {
@@ -200,8 +221,30 @@ pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow:
         server = %dial_addrs.join(","),
         proxies = config.proxies.len(),
         config = ?config_path,
+        multi_home = config.client.relay.multi_home,
         "client starting"
     );
+
+    if config.client.relay.multi_home {
+        info!(
+            group = %config.client.relay.group,
+            members = dial_addrs.len(),
+            health_interval_s = config.client.relay.health_interval_s,
+            "client multi-home enabled"
+        );
+        let result = run_multi_home(
+            Arc::clone(&config),
+            config_path.clone(),
+            Arc::clone(&registry),
+            reload_rx,
+            cancel.clone(),
+        )
+        .await;
+        if let Some(task) = &reload_task {
+            task.abort();
+        }
+        return result;
+    }
 
     let mut backoff_secs = 1u64;
     let mut dial_index = 0usize;
@@ -233,6 +276,7 @@ pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow:
                 &cancel,
                 &mut reload_rx,
                 config_path.as_deref(),
+                Some(Arc::clone(&registry)),
             ) => result,
         };
         let stable = started.elapsed() >= Duration::from_secs(30);
@@ -304,6 +348,130 @@ pub async fn run_until(state: ClientState, cancel: CancellationToken) -> anyhow:
     }
 }
 
+/// G3-01：每个成员各自维持控制会话；任一成员重连不影响其他成员。
+async fn run_multi_home(
+    config: Arc<ClientConfig>,
+    config_path: Option<PathBuf>,
+    registry: Arc<RelayRegistry>,
+    mut reload_rx: mpsc::Receiver<Vec<ProxySpec>>,
+    cancel: CancellationToken,
+) -> anyhow::Result<()> {
+    let addrs = config.dial_addrs();
+    let mut member_txs = Vec::with_capacity(addrs.len());
+    let mut member_tasks = Vec::with_capacity(addrs.len());
+
+    for addr in addrs.iter().cloned() {
+        let (tx, rx) = mpsc::channel::<Vec<ProxySpec>>(8);
+        member_txs.push(tx);
+        registry.member_connecting(&addr);
+        let config = Arc::clone(&config);
+        let registry = Arc::clone(&registry);
+        let cancel = cancel.clone();
+        let path = config_path.clone();
+        member_tasks.push(tokio::spawn(async move {
+            run_member(addr, config, path, registry, rx, cancel).await;
+        }));
+    }
+
+    let health_interval = Duration::from_secs(config.client.relay.health_interval_s.max(1));
+    let mut health_timer = interval(health_interval);
+    health_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = health_timer.tick() => {
+                let snapshot = registry.snapshot();
+                debug!(
+                    group = %snapshot.group,
+                    members = snapshot.members.len(),
+                    bindings = snapshot.ports.len(),
+                    conflicts = snapshot.conflicts.len(),
+                    members_state = ?snapshot.members,
+                    "multi-home status"
+                );
+            }
+            Some(desired) = reload_rx.recv() => {
+                for (index, tx) in member_txs.iter().enumerate() {
+                    match timeout(Duration::from_secs(1), tx.send(desired.clone())).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) | Err(_) => warn!(
+                            entry_index = index,
+                            "member reload skipped; receiver busy or closed"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    for task in &member_tasks {
+        task.abort();
+    }
+    Ok(())
+}
+
+/// 单个成员的控制会话循环：短期失败指数退避，稳定 30s 后重置。
+async fn run_member(
+    addr: String,
+    config: Arc<ClientConfig>,
+    config_path: Option<PathBuf>,
+    registry: Arc<RelayRegistry>,
+    mut reload_rx: mpsc::Receiver<Vec<ProxySpec>>,
+    cancel: CancellationToken,
+) {
+    let mut backoff_secs = 1u64;
+    loop {
+        if cancel.is_cancelled() {
+            return;
+        }
+        registry.member_connecting(&addr);
+        let started = Instant::now();
+        let result = tokio::select! {
+            _ = cancel.cancelled() => return,
+            result = session::run_session(
+                &config,
+                &addr,
+                &cancel,
+                &mut reload_rx,
+                config_path.as_deref(),
+                Some(Arc::clone(&registry)),
+            ) => result,
+        };
+        let stable = started.elapsed() >= Duration::from_secs(30);
+        let error = result.err().map(|err| err.to_string());
+        registry.member_session_end(&addr, error.clone());
+        if cancel.is_cancelled() {
+            return;
+        }
+
+        match &error {
+            Some(error) => warn!(
+                server = %addr,
+                stable,
+                error = %error,
+                "multi-home member session failed, reconnecting"
+            ),
+            None => info!(
+                server = %addr,
+                stable,
+                "multi-home member session closed, reconnecting"
+            ),
+        }
+
+        backoff_secs = if stable {
+            1
+        } else {
+            (backoff_secs * 2).min(30)
+        };
+        let delay = jittered(backoff_secs);
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = sleep(delay) => {}
+        }
+    }
+}
+
 async fn reload_loop(
     path: PathBuf,
     tx: mpsc::Sender<Vec<ProxySpec>>,
@@ -335,6 +503,7 @@ async fn reload_loop(
                         || next.client.token != initial.client.token
                         || next.client.client_id != initial.client.client_id
                         || next.client.tenant != initial.client.tenant
+                        || next.client.relay != initial.client.relay
                     {
                         warn!(
                             path = %path.display(),

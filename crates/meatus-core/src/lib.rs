@@ -21,11 +21,11 @@ pub mod wire;
 pub use auth::{proof, token_key, verify_proof_with_key};
 pub use config::{
     AcmeChallenge, AcmeSection, AdminApiToken, AdminSection, AdminTlsSection, ApiTokenScope,
-    AuthMode, AuthSection, ClientConfig, ClientEntry, ClientLimits, ClientPolicy, ClientSection,
-    ConfigError, ConfigFormat, ConfigKind, CtrlSection, HttpSection, LogFormat, LogSection,
-    PortReleasePolicy, PortsSection, ProxyOptions, ProxySpec, ProxyType, QuotaAction,
-    RelayCertSync, RelayRole, RelaySection, ServerConfig, ServerSection, Socks5Section,
-    TransportMode, detect_kind, detect_kind_with_format, load_client_config,
+    AuthMode, AuthSection, ClientConfig, ClientEntry, ClientLimits, ClientPolicy,
+    ClientRelaySection, ClientSection, ConfigError, ConfigFormat, ConfigKind, CtrlSection,
+    HttpSection, LogFormat, LogSection, PortReleasePolicy, PortsSection, ProxyOptions, ProxySpec,
+    ProxyType, QuotaAction, RelayCertSync, RelayRole, RelaySection, ServerConfig, ServerSection,
+    Socks5Section, TransportMode, detect_kind, detect_kind_with_format, load_client_config,
     load_client_config_with_format, load_server_config, load_server_config_with_format,
     parse_client_config, parse_client_config_with_format, parse_server_config,
     parse_server_config_with_format, resolve_config_format,

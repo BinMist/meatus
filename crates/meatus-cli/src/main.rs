@@ -694,6 +694,21 @@ fn client_summary(config: &ClientConfig) -> String {
         let _ = writeln!(out, "pool     disabled");
     }
     let _ = writeln!(out, "proxies  {}", config.proxies.len());
+    if config.client.relay.multi_home {
+        let _ = writeln!(
+            out,
+            "relay    group={} multi_home=true health_interval_s={} members={}",
+            config.client.relay.group,
+            config.client.relay.health_interval_s,
+            config.dial_addrs().len()
+        );
+    } else if !config.client.relay.group.trim().is_empty() {
+        let _ = writeln!(
+            out,
+            "relay    group={} multi_home=false health_interval_s={}",
+            config.client.relay.group, config.client.relay.health_interval_s
+        );
+    }
     for proxy in &config.proxies {
         let remote_port = proxy
             .remote_port
@@ -739,6 +754,33 @@ local_addr = "127.0.0.1:22"
         let summary = client_summary(&config);
         assert!(!summary.contains("secret-token"));
         assert!(summary.contains("<redacted>"));
+    }
+
+    #[test]
+    fn client_summary_reports_multi_home_relay() {
+        let config = parse_client_config(
+            r#"
+[client]
+server_addrs = ["relay-a.example.com:7000", "relay-b.example.com:7000"]
+token = "secret-token"
+
+[client.relay]
+group = "prod"
+multi_home = true
+health_interval_s = 5
+
+[[proxy]]
+name = "ssh"
+type = "tcp"
+local_addr = "127.0.0.1:22"
+"#,
+        )
+        .expect("valid config");
+
+        let summary = client_summary(&config);
+        assert!(summary.contains("group=prod multi_home=true"), "{summary}");
+        assert!(summary.contains("members=2"), "{summary}");
+        assert!(!summary.contains("secret-token"));
     }
 
     #[test]

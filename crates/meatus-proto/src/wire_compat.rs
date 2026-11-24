@@ -25,6 +25,10 @@ fn v2_welcome() -> Welcome {
         protocol_version: 2,
         caps: vec!["tcp".to_string(), "probe".to_string()],
         trace_id: "trace-v2".to_string(),
+        relay_group: "prod".to_string(),
+        relay_id: "relay-a".to_string(),
+        relay_role: "primary".to_string(),
+        group_epoch: 3,
     }
 }
 
@@ -58,6 +62,10 @@ fn v2_decoder_accepts_v1_welcome_and_defaults_new_fields() {
         decoded.trace_id.is_empty(),
         "absent trace_id defaults to empty"
     );
+    assert!(decoded.relay_group.is_empty());
+    assert!(decoded.relay_id.is_empty());
+    assert!(decoded.relay_role.is_empty());
+    assert_eq!(decoded.group_epoch, 0);
 }
 
 #[test]

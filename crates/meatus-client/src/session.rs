@@ -29,6 +29,7 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::relay_registry::RelayRegistry;
 use crate::stats::{ClientStats, ProxyCounter};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -62,6 +63,20 @@ struct EstablishedSession {
     writer: Writer,
     connection: Connection,
     quic: Option<crate::quic::QuicClient>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RelayIdentity {
+    pub group: String,
+    pub id: String,
+    pub role: String,
+    pub epoch: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct HandshakeResult {
+    run_id: String,
+    relay: RelayIdentity,
 }
 
 struct EstablishedData {
@@ -99,15 +114,25 @@ pub async fn run_session(
     cancel: &CancellationToken,
     reload_rx: &mut mpsc::Receiver<Vec<ProxySpec>>,
     config_path: Option<&Path>,
+    registry: Option<Arc<RelayRegistry>>,
 ) -> anyhow::Result<()> {
     let server_addr = server_addr.to_string();
     info!(server = %server_addr, "client session dialing selected entry");
-    let (negotiated_version, session, run_id) =
+    let (negotiated_version, session, handshake) =
         establish_with_fallback(config, &server_addr).await?;
     info!(
         client_protocol = negotiated_version,
+        relay_group = %handshake.relay.group,
+        relay_id = %handshake.relay.id,
+        relay_role = %handshake.relay.role,
+        group_epoch = handshake.relay.epoch,
         "client session transport selected"
     );
+    let run_id = handshake.run_id.clone();
+    let relay_id = handshake.relay.id.clone();
+    if let Some(registry) = &registry {
+        registry.member_online(&server_addr, &relay_id);
+    }
     let EstablishedSession {
         mut reader,
         mut writer,
@@ -115,7 +140,16 @@ pub async fn run_session(
         quic: _quic,
     } = session;
     let stats = Arc::new(ClientStats::new(&config.proxies));
-    register_proxies(config, &stats, &mut reader, &mut writer).await?;
+    register_proxies(
+        config,
+        &stats,
+        &mut reader,
+        &mut writer,
+        registry.as_deref(),
+        &server_addr,
+        &relay_id,
+    )
+    .await?;
 
     let proxies = Arc::new(RwLock::new(config.proxy_map()));
     let mut pool_tasks = Vec::new();
@@ -140,13 +174,23 @@ pub async fn run_session(
         for _ in 0..data_conns {
             let config = config.clone();
             let run_id = run_id.clone();
+            let relay_id = relay_id.clone();
             let proxies = Arc::clone(&proxies);
             let stats = Arc::clone(&stats);
             let cancel = cancel.clone();
             let server_addr = server_addr.clone();
             pool_tasks.push(tokio::spawn(async move {
-                run_pool_data_connection(config, server_addr, run_id, proxies, stats, cancel, idle)
-                    .await;
+                run_pool_data_connection(
+                    config,
+                    server_addr,
+                    run_id,
+                    relay_id,
+                    proxies,
+                    stats,
+                    cancel,
+                    idle,
+                )
+                .await;
             }));
         }
     }
@@ -189,6 +233,9 @@ pub async fn run_session(
         proxies,
         stats,
         config_path,
+        &server_addr,
+        &relay_id,
+        registry,
     )
     .await;
     dispatcher.abort();
@@ -202,9 +249,9 @@ pub async fn run_session(
 async fn establish_with_fallback(
     config: &ClientConfig,
     server_addr: &str,
-) -> anyhow::Result<(u32, EstablishedSession, String)> {
+) -> anyhow::Result<(u32, EstablishedSession, HandshakeResult)> {
     match establish(config, server_addr, PROTOCOL_VERSION).await {
-        Ok((session, run_id)) => Ok((PROTOCOL_VERSION, session, run_id)),
+        Ok((session, handshake)) => Ok((PROTOCOL_VERSION, session, handshake)),
         Err(err) if is_unsupported_version(&err) => {
             let rejected = err
                 .downcast_ref::<UnsupportedProtocol>()
@@ -219,10 +266,10 @@ async fn establish_with_fallback(
                 reason = %rejected.message,
                 "server rejected protocol version; retrying with protocol 1"
             );
-            let (session, run_id) = establish(config, server_addr, 1)
+            let (session, handshake) = establish(config, server_addr, 1)
                 .await
                 .context("fallback to protocol 1 after UnsupportedVersion")?;
-            Ok((1, session, run_id))
+            Ok((1, session, handshake))
         }
         Err(err) => Err(err),
     }
@@ -232,7 +279,7 @@ async fn establish(
     config: &ClientConfig,
     server_addr: &str,
     protocol_version: u32,
-) -> anyhow::Result<(EstablishedSession, String)> {
+) -> anyhow::Result<(EstablishedSession, HandshakeResult)> {
     let (connection, quic) = connect_control(config, server_addr).await?;
 
     let control = timeout(HANDSHAKE_TIMEOUT, connection.open())
@@ -241,13 +288,14 @@ async fn establish(
         .context("open control stream")?;
     let (mut reader, mut writer) = tokio::io::split(control);
 
-    let run_id = handshake(
+    let handshake = handshake(
         config,
         &mut reader,
         &mut writer,
         protocol_version,
         "",
         false,
+        "",
     )
     .await?;
     Ok((
@@ -257,7 +305,7 @@ async fn establish(
             connection,
             quic,
         },
-        run_id,
+        handshake,
     ))
 }
 
@@ -326,7 +374,8 @@ async fn handshake(
     protocol_version: u32,
     session_id: &str,
     data_connection: bool,
-) -> anyhow::Result<String> {
+    relay_id: &str,
+) -> anyhow::Result<HandshakeResult> {
     let pool = &config.client.pool;
     let trace_id = meatus_core::ids::new_id();
     write_frame(
@@ -344,6 +393,8 @@ async fn handshake(
                 pool_size: pool.size,
                 max_streams_per_conn: pool.max_streams_per_conn,
                 trace_id: trace_id.clone(),
+                relay_group: config.client.relay.group.clone(),
+                relay_id: relay_id.to_string(),
             })),
         },
     )
@@ -378,6 +429,10 @@ async fn handshake(
             protocol_version,
             caps,
             trace_id: echoed_trace,
+            relay_group: welcome_group,
+            relay_id: welcome_id,
+            relay_role,
+            group_epoch,
             ..
         })) => {
             let trace_id = if echoed_trace.is_empty() {
@@ -393,6 +448,13 @@ async fn handshake(
                     "server negotiated a lower protocol version"
                 );
             }
+            validate_welcome_relay_group(config.client.relay.group.trim(), &welcome_group)?;
+            let relay = RelayIdentity {
+                group: welcome_group,
+                id: welcome_id,
+                role: relay_role,
+                epoch: group_epoch,
+            };
             info!(
                 %trace_id,
                 server = %config.client.server_addr,
@@ -402,13 +464,31 @@ async fn handshake(
                 heartbeat_secs,
                 server_protocol,
                 server_caps = ?caps,
+                relay_group = %relay.group,
+                relay_id = %relay.id,
+                relay_role = %relay.role,
+                group_epoch = relay.epoch,
                 "tunnel established"
             );
-            Ok(run_id)
+            Ok(HandshakeResult { run_id, relay })
         }
         Some(control_msg::Kind::Error(err)) => Err(handshake_error(protocol_version, err)),
         _ => bail!("expected Welcome"),
     }
+}
+
+/// 客户端配置声明了 relay 组时，服务端必须回显同一组；空组保持 standalone 兼容。
+fn validate_welcome_relay_group(expected: &str, welcome: &str) -> anyhow::Result<()> {
+    if expected.is_empty() {
+        return Ok(());
+    }
+    if welcome.is_empty() {
+        bail!("server did not advertise relay group {expected}; refusing relay registration");
+    }
+    if welcome != expected {
+        bail!("relay group mismatch: client={expected} server={welcome}");
+    }
+    Ok(())
 }
 
 /// 只把 `1002` 包装成可回落错误；认证失败等仍按普通致命错误处理。
@@ -430,6 +510,9 @@ async fn register_proxies(
     stats: &ClientStats,
     reader: &mut Reader,
     writer: &mut Writer,
+    registry: Option<&RelayRegistry>,
+    server_addr: &str,
+    relay_id: &str,
 ) -> anyhow::Result<()> {
     for proxy in &config.proxies {
         if !supports(proxy.kind) {
@@ -445,8 +528,42 @@ async fn register_proxies(
         match wait_proxy_reply(reader, writer, &proxy.name).await? {
             Some(ProxyOk {
                 name, remote_port, ..
-            }) => info!(proxy = %name, remote_port, "proxy registered"),
-            None => warn!(proxy = %proxy.name, "proxy registration rejected"),
+            }) => {
+                let port = u16::try_from(remote_port).unwrap_or(0);
+                if let Some(registry) = registry
+                    && let Err(conflict) = registry.record_binding(relay_id, &name, port)
+                {
+                    warn!(
+                        relay_id,
+                        proxy = %name,
+                        port = conflict.port,
+                        existing_proxy = %conflict.existing_proxy,
+                        "relay port conflict; rejecting shadow binding"
+                    );
+                    registry.member_degraded(
+                        server_addr,
+                        format!(
+                            "port {} on {relay_id} already bound to {}",
+                            conflict.port, conflict.existing_proxy
+                        ),
+                    );
+                    write_frame(
+                        writer,
+                        &ControlMsg {
+                            kind: Some(control_msg::Kind::RemoveProxy(
+                                meatus_proto::v1::RemoveProxy { name },
+                            )),
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
+                info!(proxy = %name, remote_port, relay_id, "proxy registered");
+            }
+            None => warn!(
+                proxy = %proxy.name,
+                relay_id, "proxy registration rejected"
+            ),
         }
     }
     let _ = stats;
@@ -599,6 +716,7 @@ async fn wait_proxy_reply(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn control_loop(
     reader: &mut Reader,
     writer: &mut Writer,
@@ -607,6 +725,9 @@ async fn control_loop(
     proxies: Arc<RwLock<HashMap<String, ProxySpec>>>,
     stats: Arc<ClientStats>,
     config_path: Option<&Path>,
+    server_addr: &str,
+    relay_id: &str,
+    registry: Option<Arc<RelayRegistry>>,
 ) -> anyhow::Result<()> {
     let mut ping_timer = interval_at(TokioInstant::now() + CLIENT_PING, CLIENT_PING);
     ping_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -641,7 +762,16 @@ async fn control_loop(
                 }
             }
             Some(desired) = reload_rx.recv() => {
-                apply_reload(writer, &proxies, &stats, &mut pending, desired).await?;
+                apply_reload(
+                    writer,
+                    &proxies,
+                    &stats,
+                    &mut pending,
+                    desired,
+                    registry.as_deref(),
+                    relay_id,
+                )
+                .await?;
             }
             frame = timeout(READ_SLICE, read_frame::<_, ControlMsg>(reader)) => {
                 let msg = match frame {
@@ -663,11 +793,44 @@ async fn control_loop(
                     }
                     Some(control_msg::Kind::ProxyOk(ok)) => {
                         if let Some(spec) = pending.remove(&ok.name) {
+                            if let Some(registry) = &registry {
+                                let port = u16::try_from(ok.remote_port).unwrap_or(0);
+                                if let Err(conflict) =
+                                    registry.record_binding(relay_id, &ok.name, port)
+                                {
+                                    warn!(
+                                        relay_id,
+                                        proxy = %ok.name,
+                                        port = conflict.port,
+                                        existing_proxy = %conflict.existing_proxy,
+                                        "relay port conflict; rejecting hot-added shadow binding"
+                                    );
+                                    registry.member_degraded(
+                                        server_addr,
+                                        format!(
+                                            "port {} on {relay_id} already bound to {}",
+                                            conflict.port, conflict.existing_proxy
+                                        ),
+                                    );
+                                    write_frame(
+                                        writer,
+                                        &ControlMsg {
+                                            kind: Some(control_msg::Kind::RemoveProxy(
+                                                meatus_proto::v1::RemoveProxy {
+                                                    name: ok.name,
+                                                },
+                                            )),
+                                        },
+                                    )
+                                    .await?;
+                                    continue;
+                                }
+                            }
                             proxies
                                 .write()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .insert(ok.name.clone(), spec);
-                            info!(proxy = %ok.name, remote_port = ok.remote_port, "proxy hot-added");
+                            info!(proxy = %ok.name, remote_port = ok.remote_port, relay_id, "proxy hot-added");
                         }
                     }
                     Some(control_msg::Kind::Error(err)) => {
@@ -819,6 +982,8 @@ async fn apply_reload<W>(
     stats: &ClientStats,
     pending: &mut HashMap<String, ProxySpec>,
     desired: Vec<ProxySpec>,
+    registry: Option<&RelayRegistry>,
+    relay_id: &str,
 ) -> anyhow::Result<()>
 where
     W: AsyncWrite + Unpin,
@@ -866,6 +1031,9 @@ where
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&name);
+            if let Some(registry) = registry {
+                registry.remove_binding(relay_id, &name);
+            }
             info!(proxy = %name, "proxy hot-removed");
         }
     }
@@ -900,10 +1068,12 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_pool_data_connection(
     config: ClientConfig,
     server_addr: String,
     run_id: String,
+    relay_id: String,
     proxies: Arc<RwLock<HashMap<String, ProxySpec>>>,
     stats: Arc<ClientStats>,
     cancel: CancellationToken,
@@ -914,7 +1084,7 @@ async fn run_pool_data_connection(
         if cancel.is_cancelled() {
             return;
         }
-        match establish_data(&config, &server_addr, &run_id).await {
+        match establish_data(&config, &server_addr, &run_id, &relay_id).await {
             Ok(EstablishedData {
                 mut connection,
                 quic: _quic,
@@ -959,6 +1129,7 @@ async fn establish_data(
     config: &ClientConfig,
     server_addr: &str,
     run_id: &str,
+    relay_id: &str,
 ) -> anyhow::Result<EstablishedData> {
     let (connection, quic) = match config.client.transport {
         TransportMode::Tcp => {
@@ -1006,6 +1177,7 @@ async fn establish_data(
         PROTOCOL_VERSION,
         run_id,
         true,
+        relay_id,
     )
     .await?;
     drop(reader);
@@ -1395,6 +1567,20 @@ mod tests {
     }
 
     #[test]
+    fn relay_group_must_match_when_configured() {
+        assert!(validate_welcome_relay_group("", "").is_ok());
+        assert!(validate_welcome_relay_group("prod", "prod").is_ok());
+        let missing = validate_welcome_relay_group("prod", "").expect_err("missing group");
+        assert!(
+            missing.to_string().contains("did not advertise"),
+            "{missing}"
+        );
+        let mismatch =
+            validate_welcome_relay_group("prod", "staging").expect_err("mismatched group");
+        assert!(mismatch.to_string().contains("mismatch"), "{mismatch}");
+    }
+
+    #[test]
     fn welcome_protocol_defaults_to_v1_for_old_server() {
         assert_eq!(welcome_protocol_version(0).expect("legacy welcome"), 1);
     }
@@ -1452,6 +1638,8 @@ mod tests {
             &stats,
             &mut pending,
             vec![p0.clone(), p1.clone()],
+            None,
+            "relay-a",
         )
         .await
         .expect("add p1");
@@ -1475,6 +1663,8 @@ mod tests {
             &stats,
             &mut pending,
             vec![p0.clone()],
+            None,
+            "relay-a",
         )
         .await
         .expect("remove p1");

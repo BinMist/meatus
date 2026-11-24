@@ -1273,6 +1273,38 @@ pub struct ClientSection {
     /// 数据连接池；`[client.pool]`，默认关闭。
     #[serde(default)]
     pub pool: PoolSection,
+    /// relay 组多宿主；`[client.relay]`，默认关闭并保持 1.4 顺序切换。
+    #[serde(default)]
+    pub relay: ClientRelaySection,
+}
+
+/// 客户端 relay 组多宿主配置。[client.relay]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientRelaySection {
+    /// relay 组名；启用 multi_home 时必填，服务端回显必须一致。
+    #[serde(default)]
+    pub group: String,
+    /// true 时对 server_addrs 的每个成员维持独立控制连接。
+    #[serde(default)]
+    pub multi_home: bool,
+    /// 成员状态刷新间隔，秒；只影响状态汇总，不改变控制面心跳。
+    #[serde(default = "default_client_relay_health_interval_s")]
+    pub health_interval_s: u64,
+}
+
+fn default_client_relay_health_interval_s() -> u64 {
+    5
+}
+
+impl Default for ClientRelaySection {
+    fn default() -> Self {
+        Self {
+            group: String::new(),
+            multi_home: false,
+            health_interval_s: default_client_relay_health_interval_s(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -1494,6 +1526,30 @@ impl ClientConfig {
                 "client.pool.idle_timeout_s must be between 1 and 3600, got {}",
                 pool.idle_timeout_s
             )));
+        }
+        let relay = &self.client.relay;
+        if !(1..=300).contains(&relay.health_interval_s) {
+            return Err(invalid(format!(
+                "client.relay.health_interval_s must be between 1 and 300, got {}",
+                relay.health_interval_s
+            )));
+        }
+        let group = relay.group.trim();
+        if !group.is_empty() {
+            if group.len() > 64 || group.chars().any(char::is_whitespace) {
+                return Err(invalid(
+                    "client.relay.group must be <=64 characters and contain no whitespace",
+                ));
+            }
+            if relay.multi_home && targets.len() < 2 {
+                return Err(invalid(
+                    "client.relay.multi_home requires at least two client.server_addrs",
+                ));
+            }
+        } else if relay.multi_home {
+            return Err(invalid(
+                "client.relay.group is required when client.relay.multi_home = true",
+            ));
         }
         if let Some(pin) = &self.client.server_public_key_pin {
             crate::pin::parse_spki_pin(pin)
@@ -2525,6 +2581,68 @@ token = "secret-token"
         )
         .expect_err("invalid should fail");
         assert!(err.to_string().contains("host:port"), "{err}");
+    }
+
+    #[test]
+    fn client_multi_home_requires_group_and_two_members() {
+        let config = parse_client_config(
+            r#"
+[client]
+server_addrs = ["one.example.com:7000", "two.example.com:7001"]
+token = "secret-token"
+
+[client.relay]
+group = "prod"
+multi_home = true
+health_interval_s = 5
+"#,
+        )
+        .expect("valid multi-home");
+        assert!(config.client.relay.multi_home);
+        assert_eq!(config.client.relay.group, "prod");
+        assert_eq!(config.client.relay.health_interval_s, 5);
+
+        let err = parse_client_config(
+            r#"
+[client]
+server_addrs = ["one.example.com:7000"]
+token = "secret-token"
+
+[client.relay]
+group = "prod"
+multi_home = true
+"#,
+        )
+        .expect_err("one member should fail");
+        assert!(err.to_string().contains("at least two"), "{err}");
+
+        let err = parse_client_config(
+            r#"
+[client]
+server_addrs = ["one.example.com:7000", "two.example.com:7001"]
+token = "secret-token"
+
+[client.relay]
+multi_home = true
+"#,
+        )
+        .expect_err("missing group should fail");
+        assert!(err.to_string().contains("group is required"), "{err}");
+    }
+
+    #[test]
+    fn client_relay_defaults_to_legacy_sequential() {
+        let config = parse_client_config(
+            r#"
+[client]
+server_addr = "one.example.com:7000"
+token = "secret-token"
+"#,
+        )
+        .expect("legacy config");
+        assert!(!config.client.relay.multi_home);
+        assert!(config.client.relay.group.is_empty());
+        assert_eq!(config.client.relay.health_interval_s, 5);
     }
 
     #[test]

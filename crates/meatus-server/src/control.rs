@@ -59,6 +59,39 @@ pub struct SessionContext {
     pub peer: std::net::IpAddr,
 }
 
+/// 回显给客户端的 relay 身份；standalone 服务端返回空组与 0 epoch。
+fn relay_welcome_fields(state: &ServerState) -> (String, String, String, u64) {
+    state.relay.as_ref().map_or_else(
+        || (String::new(), String::new(), String::new(), 0),
+        |relay| {
+            (
+                relay.group().to_string(),
+                relay.id().to_string(),
+                relay.role().as_str().to_string(),
+                relay.epoch(),
+            )
+        },
+    )
+}
+
+/// 客户端声明了 relay 组时，必须与服务端组一致；空组保持 1.4 standalone 兼容。
+fn validate_relay_group(state: &ServerState, hello: &Hello) -> anyhow::Result<()> {
+    if hello.relay_group.trim().is_empty() {
+        return Ok(());
+    }
+    let Some(relay) = &state.relay else {
+        bail!("client declared relay group but this server is standalone");
+    };
+    if hello.relay_group != relay.group() {
+        bail!(
+            "relay group mismatch: client={} server={}",
+            hello.relay_group,
+            relay.group()
+        );
+    }
+    Ok(())
+}
+
 struct ProxyRuntime {
     name: String,
     port: Option<u16>,
@@ -171,6 +204,10 @@ async fn serve_data_connection(
     ctx: &SessionContext,
     negotiated: &meatus_proto::Negotiated,
 ) -> anyhow::Result<()> {
+    if let Err(err) = validate_relay_group(&ctx.state, hello) {
+        let _ = write_frame(writer, &ErrorCode::AuthFailed.to_wire(err.to_string())).await;
+        bail!("{err}");
+    }
     if hello.session_id.trim().is_empty() {
         let _ = write_frame(
             writer,
@@ -189,6 +226,7 @@ async fn serve_data_connection(
             ctx.open.clone(),
         )
         .map_err(|err| anyhow!("register data connection: {err}"))?;
+    let (relay_group, relay_id, relay_role, group_epoch) = relay_welcome_fields(&ctx.state);
     write_frame(
         writer,
         &ControlMsg {
@@ -199,6 +237,10 @@ async fn serve_data_connection(
                 protocol_version: negotiated.version,
                 caps: negotiated.caps.clone(),
                 trace_id: hello.trace_id.clone(),
+                relay_group,
+                relay_id,
+                relay_role,
+                group_epoch,
             })),
         },
     )
@@ -277,6 +319,12 @@ async fn run_session(
         bail!("hello missing identity");
     }
 
+    if let Err(err) = validate_relay_group(&ctx.state, &hello) {
+        ctx.state.metrics.handshake_failed("relay_group");
+        let _ = write_frame(&mut writer, &ErrorCode::AuthFailed.to_wire(err.to_string())).await;
+        bail!("{err}");
+    }
+
     if !hello.data_connection && !ctx.state.handshake_limiter.allow(ctx.peer) {
         ctx.state.metrics.handshake_failed("rate_limit");
         warn!(peer = %ctx.peer, "control handshake rate limited");
@@ -348,6 +396,7 @@ async fn run_session(
     let client_policy = auth_provider.client_policy(&hello.tenant_id, &hello.client_id);
 
     let run_id = hex::encode(random_bytes(16)?);
+    let (relay_group, relay_id, relay_role, group_epoch) = relay_welcome_fields(&ctx.state);
     write_frame(
         &mut writer,
         &ControlMsg {
@@ -358,6 +407,10 @@ async fn run_session(
                 protocol_version: negotiated.version,
                 caps: negotiated.caps.clone(),
                 trace_id: hello.trace_id.clone(),
+                relay_group,
+                relay_id,
+                relay_role,
+                group_epoch,
             })),
         },
     )
