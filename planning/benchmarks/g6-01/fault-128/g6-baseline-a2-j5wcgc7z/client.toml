@@ -1,0 +1,14 @@
+[client]
+server_addr = "127.0.0.1:49810"
+server_name = "localhost"
+server_ca_cert = "/home/user/meatus-v15-g6/planning/benchmarks/g6-01/fault-128/g6-baseline-a2-j5wcgc7z/server.crt"
+transport = "quic"
+client_id = "g6"
+tenant = "default"
+token = "g6-spike-secret"
+
+[[proxy]]
+name = "echo"
+type = "tcp"
+local_addr = "127.0.0.1:43705"
+remote_port = 44639

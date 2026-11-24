@@ -1,0 +1,7 @@
+{"ts_ms":1795498025882,"actor":"client:g6","source_ip":"127.0.0.1","action":"client.online","target":"g6","client_id":"g6","result":"ok","trace_id":"4d8ca24d03399125143121d82bd009b4"}
+{"ts_ms":1795498026185,"actor":"client:g6","source_ip":"","action":"proxy.create","target":"echo","client_id":"g6","result":"ok","trace_id":"000001a20c05a4c9"}
+{"ts_ms":1795498094763,"actor":"client:g6","source_ip":"127.0.0.1","action":"client.online","target":"g6","client_id":"g6","result":"ok","trace_id":"5ec431987c3b1237be28346bb3f83e67"}
+{"ts_ms":1795498095066,"actor":"client:g6","source_ip":"","action":"proxy.create","target":"echo","client_id":"g6","result":"error","trace_id":"000001a20c04b1da"}
+{"ts_ms":1795498117428,"actor":"client:g6","source_ip":"","action":"proxy.unregister","target":"echo","client_id":"g6","result":"ok","trace_id":"000001a20c030934"}
+{"ts_ms":1795498117438,"actor":"client:g6","source_ip":"","action":"client.offline","target":"g6","client_id":"g6","result":"ok","trace_id":"000001a20c01093e"}
+{"ts_ms":1795498127601,"actor":"client:g6","source_ip":"","action":"client.offline","target":"g6","client_id":"g6","result":"ok","trace_id":"000001a20c0f30f1"}

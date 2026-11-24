@@ -1,0 +1,20 @@
+[client]
+server_addr = "127.0.0.1:47284"
+server_name = "localhost"
+server_ca_cert = "/home/user/meatus-v15-g6/planning/benchmarks/g6-01/g6-isolated-a5-dx84jyh2/server.crt"
+transport = "quic"
+client_id = "g6"
+tenant = "default"
+token = "g6-spike-secret"
+
+[client.pool]
+enabled = true
+size = 1
+max_streams_per_conn = 1024
+idle_timeout_s = 300
+
+[[proxy]]
+name = "echo"
+type = "tcp"
+local_addr = "127.0.0.1:46387"
+remote_port = 43551

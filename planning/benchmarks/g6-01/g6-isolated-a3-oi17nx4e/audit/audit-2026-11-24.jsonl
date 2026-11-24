@@ -1,0 +1,4 @@
+{"ts_ms":1795497759256,"actor":"client:g6","source_ip":"127.0.0.1","action":"client.online","target":"g6","client_id":"g6","result":"ok","trace_id":"9b8fe90fd8c3d6a088ff3cf327c8d59c"}
+{"ts_ms":1795497759559,"actor":"client:g6","source_ip":"","action":"proxy.create","target":"echo","client_id":"g6","result":"ok","trace_id":"000001a20c019347"}
+{"ts_ms":1795497784381,"actor":"client:g6","source_ip":"","action":"proxy.unregister","target":"echo","client_id":"g6","result":"ok","trace_id":"000001a20c03f43d"}
+{"ts_ms":1795497784385,"actor":"client:g6","source_ip":"","action":"client.offline","target":"g6","client_id":"g6","result":"ok","trace_id":"000001a20c05f441"}

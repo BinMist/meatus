@@ -1,0 +1,15 @@
+[server]
+bind_addr = "127.0.0.1"
+control_port = 50055
+tls_cert = "/home/user/meatus-v15-g6/planning/benchmarks/g6-01/g6-baseline-a4-gunv1npr/server.crt"
+tls_key = "/home/user/meatus-v15-g6/planning/benchmarks/g6-01/g6-baseline-a4-gunv1npr/server.key"
+quic = true
+
+[auth]
+clients = [{ id = "g6", tenant = "default", token_sha256 = "b07fe09b241d44a228e434ad286db73620fd73d1e99d8934349c96bcca15995e" }]
+
+[ports]
+range = [50289, 50289]
+
+[admin]
+bind = "127.0.0.1:43579"
