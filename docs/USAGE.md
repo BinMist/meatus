@@ -1,7 +1,7 @@
 # Meatus 完整使用教程（V1.5）
 
 > 适用版本：Meatus `1.5.0`（完全开源、Apache-2.0、自托管；2026-11-25 发布）
-> 发布状态：`1.5.0` 已发布；四平台包、`.sha256`、源码 SBOM 与镜像 SBOM 已上传 Gitee Release；`v1.5.0` tag 已推 Gitee / Codeup；ACR `1.5.0` / `1.5` / `latest` 多架构镜像已推送；生产 `1.4.0 → 1.5.0` 升级/回滚待执行，当前线上正式版本仍为 `1.4.0`。24h soak PASS（1440/1440、failed=0），快速门禁 `291 passed / 1 ignored`。Windows 暂不提供；GHCR / GitHub Release 暂缓。
+> 发布状态：`1.5.0` 已发布；四平台包、`.sha256`、源码 SBOM 与镜像 SBOM 已上传 Gitee Release；`v1.5.0` tag 已推 Gitee / Codeup；ACR `1.5.0` / `1.5` / `latest` 多架构镜像已推送；生产已于 2026-11-25 从 `1.4.0` 升级到 `1.5.0`，并完成 `1.5.0 → 1.4.0 → 1.5.0` 回滚验证；当前线上 `1.5.0` 为 `healthy`、`Restarts=0`。24h soak PASS（1440/1440、failed=0），快速门禁 `291 passed / 1 ignored`。Windows 暂不提供；GHCR / GitHub Release 暂缓。
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
 > 依赖：单二进制 + TOML（默认）/ YAML（管理面可写，规范化重写）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 > 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
@@ -23,7 +23,7 @@ V1.5.0 以 relay 组、签名配置包、客户端 multi-home、证书同步、�
 | Drain / 蓝绿 | `drain_grace_s`、`/healthz` 503、`scripts/relay-roll.sh` 逐台升级/回滚 |
 | QUIC 控制隔离 | 协议 v2 + QUIC 时另拨独立数据连接，控制连接 `control_only`；`ControlHealth` 记录 Pong 指标 |
 
-发布门禁：master 快速门禁 fmt / clippy `-D warnings` / `291 passed / 1 ignored`；standalone 24h soak `1440/1440`、`failed=0`、`RESULT: PASS`；四平台包 + `.sha256` + 源码 SBOM。Gitee Release 12 资产、ACR `1.5.0` 多架构镜像与 `v1.5.0` tag 已完成；生产升级/回滚待执行。
+发布门禁：master 快速门禁 fmt / clippy `-D warnings` / `291 passed / 1 ignored`；standalone 24h soak `1440/1440`、`failed=0`、`RESULT: PASS`；四平台包 + `.sha256` + 源码 SBOM。Gitee Release 12 资产、ACR `1.5.0` 多架构镜像与 `v1.5.0` tag 已完成；生产已于 2026-11-25 从 `1.4.0` 升级到 `1.5.0`，并完成 `1.5.0 → 1.4.0 → 1.5.0` 回滚验证；当前线上 `1.5.0` 为 `healthy`、`Restarts=0`。
 
 ## V1.4 更新与升级
 
@@ -592,7 +592,7 @@ server /client 使用同一镜像，启动参数同上，只替换镜像名。�
 
 
 
-* `1.5.0` 多架构 index digest：待 ACR `1.5.0` 推送后写入；当前 ACR `latest` 仍为 `1.4.0`。
+* `1.5.0` 多架构 index digest：`sha256:e9b4cff731f416c69a2798cf1d0567b50c3434c7781b5d85bf799081b6c70577`（`1.5.0` / `1.5` / `latest` 同一 index；amd64 `sha256:708426947129a931b807fc586ea66a6c447404aca2f4007a454e7319807b56ba`，arm64 `sha256:47ba04e98c58d1200e0e5871b0c64cbba684eb6e408b535a6b8b93021d974ceb`）。
 
 * `1.4.0` 多架构历史 index digest：`sha256:410ba5a992f3169ccce4c1162fb709c5b88aa773e68529c14469a499747f4e9d`（`1.4.0` / `1.4` / `latest` 同一 index；amd64 `sha256:ff62ab7c21c8326deab71ba43aec5d135039d58703c3af437da3cb3a7e7e8844`，arm64 `sha256:2834d8c1d5007a5d015a69384f460e925b794edbc2936db3c52e0681c974172f`）。
 
@@ -2878,7 +2878,7 @@ A：自签只适合内网 / 测试。公网终端用户访问请用公网 CA 或
 
 
 
-* 版本发布：[https://gitee.com/binsail/meatus/releases/tag/v1.5.0](https://gitee.com/binsail/meatus/releases/tag/v1.4.0)
+* 版本发布：[https://gitee.com/binsail/meatus/releases/tag/v1.5.0](https://gitee.com/binsail/meatus/releases/tag/v1.5.0)
 
 * 安装与长期运行：`docs/INSTALL.md`
 
