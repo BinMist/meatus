@@ -2,7 +2,7 @@
 
 V1 交付**完全开源（Apache-2.0）自托管版**：一台公网 server + 若干内网 client，单二进制、零数据库、零 Redis。本文覆盖 Linux systemd、Docker Compose、纯 `docker run` 和手工安装四种方式。
 
-> `1.5.0` 已于 2026-11-25 定稿，四平台包、`.sha256` 与源码 SBOM 已构建；`v1.5.0` tag、Gitee Release、ACR `1.5.0` 镜像与生产 `1.4.0 → 1.5.0` 升级/回滚待执行，当前线上正式版本仍为 `1.4.0`。`1.5.0` 只收口 G1–G6、定位 HA-ready，不宣称生产 HA，Windows 与真实双主机 HA 移到 `1.5.1`。Windows 暂不提供；第 9 节为 `1.5.1` 预览，未做 Windows 真机验收。
+> `1.5.0` 已于 2026-11-25 发布；四平台包、`.sha256`、源码 SBOM 与镜像 SBOM 已构建并上传 Gitee Release；`v1.5.0` tag 已推 Gitee / Codeup；ACR `1.5.0` / `1.5` / `latest` 多架构镜像已推送；生产 `1.4.0 → 1.5.0` 升级/回滚待执行，当前线上正式版本仍为 `1.4.0`。`1.5.0` 只收口 G1–G6、定位 HA-ready，不宣称生产 HA，Windows 与真实双主机 HA 移到 `1.5.1`。Windows 暂不提供；第 9 节为 `1.5.1` 预览，未做 Windows 真机验收。
 
 ## 1. 产物与平台
 

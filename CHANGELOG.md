@@ -2,9 +2,9 @@
 
 本文件记录 Meatus 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
-## [1.5.0] - 2026-11-25（定稿，待发布）
+## [1.5.0] - 2026-11-25（发布）
 
-> 状态：**已定稿，待发布**。`1.5.0` 只交付 G1–G6 的代码与单机门禁，定位为 HA-ready；不宣称生产 HA，不包含 Windows 客户端。H1–H4、G2-03 双活外部健康检查与 V5-01 真实双主机验收全部移到 `1.5.1`。四平台包、`.sha256` 与源码 SBOM 已构建；`v1.5.0` tag、Gitee Release、ACR `1.5.0` 镜像与生产 `1.4.0 → 1.5.0` 升级/回滚待执行。
+> 状态：**已发布**。`1.5.0` 只交付 G1–G6 的代码与单机门禁，定位为 HA-ready；不宣称生产 HA，不包含 Windows 客户端。H1–H4、G2-03 双活外部健康检查与 V5-01 真实双主机验收全部移到 `1.5.1`。四平台包、`.sha256` 与源码 SBOM 已构建并上传 Gitee Release；`v1.5.0` tag 已推 Gitee / Codeup；ACR `1.5.0` / `1.5` / `latest` 多架构镜像与镜像 SBOM 已推送；生产 `1.4.0 → 1.5.0` 升级/回滚待执行。
 
 V1.5 的高可用能力进入代码与单机验收，但真实双主机 HA 尚未闭环。
 
@@ -27,14 +27,17 @@ V1.5 的高可用能力进入代码与单机验收，但真实双主机 HA 尚�
 
 - **没有真实双主机 HA**：当前只有 `.47` 一台生产机，`.48` 公钥被拒，DNS 无双 A；G2-03 与 V5-01 未执行，单机双进程演练不得写成生产 HA。
 - **Windows 不进 1.5.0**：H1-01 服务命令代码已在仓库，但未做 Windows 11 真机 SCM 安装/卸载/重启自启/日志路径验收；不发布 Windows 包、不宣称可用。H1-02 安装包与托盘移到 `1.5.1`。
-- **发布资产状态**：standalone 24h soak 已 PASS（2026-11-25T12:00:33Z，`1440/1440`、`failed=0`、`success_rate=1.0`）；四平台包、`.sha256` 与源码 SBOM 已构建；Gitee Release、ACR `1.5.0` 镜像、`v1.5.0` tag 与生产升级/回滚仍待执行。
+- **发布资产状态**：standalone 24h soak 已 PASS（2026-11-25T12:00:33Z，`1440/1440`、`failed=0`、`success_rate=1.0`）；四平台包、`.sha256`、源码 SBOM 与镜像 SBOM 已构建并上传；Gitee Release 12 资产；ACR `1.5.0` / `1.5` / `latest` 同一 OCI index `sha256:e9b4cff7…70577`；`v1.5.0` tag 已推 Gitee / Codeup；生产升级/回滚待执行。
 - 双 relay 24h soak、DNS 双 A、外部健康检查与真实故障切换属于 `1.5.1`。
 
 ### 发布记录
 
 - 2026-11-25：`feat/v1.5` ff 合并到 `master`（`1e7bd7d`）；`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --all-targets --locked` 通过，`291 passed / 0 failed / 1 ignored`。
 - standalone 24h soak：2026-11-24T12:00:33Z → 2026-11-25T12:00:33Z，`1440/1440`、`failed=0`、`success_rate=1.0`、`max_consecutive_failures=0`、p95=2.1ms、max=6.4ms，`RESULT: PASS`。
-- 四平台资产：`dist/v1.5.0/`，4 个 `tar.gz` + 4 个 `.sha256` + `sbom-meatus-1.5.0.spdx.json`；镜像 SBOM 在 ACR 推送后生成。
+- 四平台资产：`dist/v1.5.0/`，4 个 `tar.gz` + 4 个 `.sha256` + 源码 SBOM `sbom-meatus-1.5.0.spdx.json`；Gitee Release 下载复验 4 包与 2 SBOM 哈希一致。
+- tag / Release：annotated tag `v1.5.0`（tag object `5085e922…`）→ `c445616`，已推 Gitee / Codeup；Gitee Release `https://gitee.com/binsail/meatus/releases/tag/v1.5.0`，release id `1368317`，12 资产。
+- ACR：`1.5.0` / `1.5` / `latest` 同一 OCI index `sha256:e9b4cff731f416c69a2798cf1d0567b50c3434c7781b5d85bf799081b6c70577`；linux/amd64 `7084269…56ba`、linux/arm64 `47ba04e…74ceb`，两架构均实跑 `meatus 1.5.0`。
+- 镜像 SBOM：`sbom-meatus-1.5.0-image.spdx.json`，SPDX-2.3，20 packages，sha256 `70d0d0b46fdb12df935f6172024e4ed4128ac5696b793d66c907c17a69357813`。
 
 ## [1.4.0] - 2026-11-22
 

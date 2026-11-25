@@ -15,11 +15,11 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，精确域名由 server 用 HTTP-01 自动签发、TLS 终止并缓存/续期，泛域名走 DNS-01（支持 Cloudflare / DNSPod）
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **版本状态**：`1.5.0` 已于 2026-11-25 定稿，四平台包、`.sha256` 与源码 SBOM 已构建；`v1.5.0` tag、Gitee Release、ACR `1.5.0` 镜像与生产 `1.4.0 → 1.5.0` 升级/回滚待执行。当前线上正式版本仍为 `1.4.0`。`1.5.0` 只收口 G1–G6、定位 HA-ready，不宣称生产 HA，不包含 Windows 客户端；H1–H4、G2-03 与 V5-01 真实双主机验收移到 `1.5.1`。24h soak PASS（1440/1440、failed=0），快速门禁 `291 passed / 1 ignored`。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **版本状态**：`1.5.0` 已于 2026-11-25 发布；annotated tag `v1.5.0` → `c445616`；Gitee Release 12 资产；ACR `1.5.0` / `1.5` / `latest` 多架构镜像已推，index `sha256:e9b4cff7…70577`；镜像 SBOM 已生成。生产 `1.4.0 → 1.5.0` 升级/回滚待执行，当前线上正式版本仍为 `1.4.0`。`1.5.0` 只收口 G1–G6、定位 HA-ready，不宣称生产 HA，不包含 Windows 客户端；H1–H4、G2-03 与 V5-01 真实双主机验收移到 `1.5.1`。24h soak PASS（1440/1440、failed=0），快速门禁 `291 passed / 1 ignored`。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
 ## 当前版本摘要
 
-`1.5.0`（2026-11-25 定稿，待发布）：
+`1.5.0`（2026-11-25 发布）：
 
 - **Relay 组与签名配置包**：`[relay]` 可缺省，缺省保持 standalone；`meatus relay bundle export/verify/import` 使用 Ed25519 验签，校验 group / member / 端口段 / epoch，bundle 不含秘密。
 - **客户端 multi-home**：每个 relay 成员独立控制会话，`Hello/Welcome` 携带 relay 身份并拒绝组错配；同一 proxy 注册到所有成员，单成员断开只清理该成员绑定。
