@@ -15,20 +15,21 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 - **HTTP**：`:80` 单入口按 `Host` 精确匹配 → 泛域名匹配 → 404，原始字节流式透传（支持 chunked / gzip / WebSocket）
 - **HTTPS**：两种模式可共存。`type = "https"` 默认 **SNI 透传**（server 不持私钥）；`acme.enabled = true` 时，精确域名由 server 用 HTTP-01 自动签发、TLS 终止并缓存/续期，泛域名走 DNS-01（支持 Cloudflare / DNSPod）
 - **权限**：端口池、域名、限流按 `tenant_id` 命名空间分区，V1 固定 `tenant_id = "default"`；多租户接缝保留为开源扩展点
-- **版本状态**：`1.4.0` 已于 2026-11-22 发布，当前线上正式版本为 `1.4.0`。四平台包、`.sha256`、源码/镜像 SBOM、ACR 多架构镜像 `1.4.0` / `1.4` / `latest` 与 Gitee Release 均已发布；生产完成 `1.3.0 → 1.4.0` 升级与回滚验证。`1.5.0` 已于 2026-11-24 范围冻结但**未发布**：只收口 G1–G6、定位 HA-ready，不宣称生产 HA，不包含 Windows 客户端；H1–H4、G2-03 与 V5-01 真实双主机验收移到 `1.5.1`。Windows 暂不提供；GHCR 与 GitHub Release 暂缓。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，1.4.0 构建已于 2026-11-22 发布后补跑 PASS（1437/1437、fail=0、max_restarts=0）。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
+- **版本状态**：`1.5.0` 已于 2026-11-25 定稿，四平台包、`.sha256` 与源码 SBOM 已构建；`v1.5.0` tag、Gitee Release、ACR `1.5.0` 镜像与生产 `1.4.0 → 1.5.0` 升级/回滚待执行。当前线上正式版本仍为 `1.4.0`。`1.5.0` 只收口 G1–G6、定位 HA-ready，不宣称生产 HA，不包含 Windows 客户端；H1–H4、G2-03 与 V5-01 真实双主机验收移到 `1.5.1`。24h soak PASS（1440/1440、failed=0），快速门禁 `291 passed / 1 ignored`。安装见 `docs/INSTALL.md`，完整教程见 `docs/USAGE.md`，Docker 部署见下方“Docker 快速开始”。
 
 ## 当前版本摘要
 
-`1.4.0`：
+`1.5.0`（2026-11-25 定稿，待发布）：
 
-- **协议 v2 与旧客户端兼容**：`MEATUS/2` 加法协商，1.2.1 / 1.3.0 客户端继续以 v1 接入；1.4 客户端连接 1.3.0 服务端时自动回落 v1 + TCP。
-- **传输升级**：QUIC 可选、`auto` 5 秒回落；默认 TCP 下控制连接与 4 条数据连接分离，消除高并发心跳饥饿。
-- **多入口与 IPv6**：`server_addrs` 顺序切换与指数退避；`::` 双栈、IPv6-only、Host / SNI / ACL 全链路支持。
-- **连接池与流元数据**：`[client.pool]` 默认关闭、可按需开启；`trace_id` / `connection_id` 贯穿日志、指标与审计。
-- **优雅 drain**：`SIGTERM` 停止接收新连接，存量流继续完成。
-- **性能与兼容实验室**：TCP / QUIC 基准、性能门禁、3×2 兼容矩阵与旧客户端 fixture 全部脚本化并接入 CI。
+- **Relay 组与签名配置包**：`[relay]` 可缺省，缺省保持 standalone；`meatus relay bundle export/verify/import` 使用 Ed25519 验签，校验 group / member / 端口段 / epoch，bundle 不含秘密。
+- **客户端 multi-home**：每个 relay 成员独立控制会话，`Hello/Welcome` 携带 relay 身份并拒绝组错配；同一 proxy 注册到所有成员，单成员断开只清理该成员绑定。
+- **证书同步**：primary-only ACME，secondary 只读证书库；60s push/pull 同步，走 HMAC/AEAD peer 通道，HTTPS secondary 接入。
+- **健康与自动摘除**：`/healthz` 输出 relay / peer 状态，metrics 暴露 role、epoch、peer_up；配置 hash / epoch 漂移拒绝启动，运行时按漂移与失败阈值摘除轮转资格。
+- **滚动 drain 与蓝绿**：`drain_grace_s`、`/healthz` 503、`scripts/relay-roll.sh` 逐台升级/回滚、`bundle keygen`。
+- **QUIC 控制面隔离**：协议 v2 + QUIC 时，即使池关闭也另拨 1 条独立数据连接，控制连接 `control_only`；`ControlHealth` 记录 Pong RTT 直方图、连续丢失、最近 Pong 与最大间隔。
+- **默认行为不变**：默认传输仍为 TCP，`[client.pool].enabled` 默认 `false`；`[relay]` 不配置即为单机 standalone。
 
-完整版本历史、升级说明与已知限制见 [CHANGELOG.md](CHANGELOG.md)。
+已知限制：没有真实双主机 HA，当前只有 `.47` 一台生产机，DNS 无双 A；Windows 不进入 `1.5.0`，H1-01 仅代码完成、未做 Windows 11 真机 SCM 验收；G2-03、V5-01、桌面 GUI、GHCR 与 GitHub Release 暂缓。完整版本历史、升级说明与限制见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 目录结构
 
@@ -62,8 +63,8 @@ docker compose exec meatus cat /data/admin.token
 # 不用 Compose 的纯 docker run 命令见 docs/INSTALL.md 4.6
 # 预构建镜像（ACR 当前为私有仓库，先登录）：
 # docker login registry.cn-hangzhou.aliyuncs.com
-# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0
-# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5.0
+# docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5
 ```
 
 ## 快速开始（TCP / UDP / HTTP / HTTPS 隧道）
@@ -206,7 +207,7 @@ Apache License 2.0，见 `LICENSE`。面板依赖的第三方组件声明见 `TH
 - 完整使用教程：`docs/USAGE.md`（含 V1.3 更新、客户端令牌、SOCKS5 域名、管理面 TLS、YAML 与 Docker 示例）
 - 新手教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 - 安装部署：`docs/INSTALL.md`
-- 版本发布：<https://gitee.com/binsail/meatus/releases/tag/v1.4.0>
+- 版本发布：<https://gitee.com/binsail/meatus/releases/tag/v1.5.0>
 - 开发规划与验收记录：已归档到内部资料目录，不随开源仓库发布
 - ADR：`docs/adr/0001-transport-tcp-tls-yamux.md`、`docs/adr/0002-dual-mode-self-host-first.md`
 - 贡献指南：`CONTRIBUTING.md`

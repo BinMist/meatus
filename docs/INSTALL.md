@@ -1,8 +1,8 @@
-# Meatus 1.4 安装与长期运行
+# Meatus 1.5 安装与长期运行
 
 V1 交付**完全开源（Apache-2.0）自托管版**：一台公网 server + 若干内网 client，单二进制、零数据库、零 Redis。本文覆盖 Linux systemd、Docker Compose、纯 `docker run` 和手工安装四种方式。
 
-> `1.4.0` 已于 2026-11-22 发布，当前线上正式版本为 `1.4.0`；四平台包、SBOM、ACR 多架构镜像与 Gitee Release 均已提供。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，1.4.0 构建已于 2026-11-22 发布后补跑 PASS（1437/1437、fail=0、max_restarts=0）。`1.5.0` 范围冻结但未发布：只收口 G1–G6、定位 HA-ready，Windows 与真实双主机 HA 移到 `1.5.1`。Windows 暂不提供；第 9 节为 `1.5.1` 预览，未做 Windows 真机验收。
+> `1.5.0` 已于 2026-11-25 定稿，四平台包、`.sha256` 与源码 SBOM 已构建；`v1.5.0` tag、Gitee Release、ACR `1.5.0` 镜像与生产 `1.4.0 → 1.5.0` 升级/回滚待执行，当前线上正式版本仍为 `1.4.0`。`1.5.0` 只收口 G1–G6、定位 HA-ready，不宣称生产 HA，Windows 与真实双主机 HA 移到 `1.5.1`。Windows 暂不提供；第 9 节为 `1.5.1` 预览，未做 Windows 真机验收。
 
 ## 1. 产物与平台
 
@@ -19,7 +19,7 @@ V1 交付**完全开源（Apache-2.0）自托管版**：一台公网 server + �
 ## 2. 从 release 包安装（推荐）
 
 ```bash
-VERSION=1.4.0
+VERSION=1.5.0
 TARGET=x86_64-unknown-linux-musl
 curl -LO "https://your-release-host/meatus-${VERSION}-${TARGET}.tar.gz"
 sha256sum -c "meatus-${VERSION}-${TARGET}.tar.gz.sha256"
@@ -166,7 +166,7 @@ docker login registry.cn-hangzhou.aliyuncs.com
 docker run -d --name meatus \
   -v "$PWD/server.yaml:/data/server.yaml" \
   -v meatus-data:/data \
-  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0 \
+  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5.0 \
   server --config /data/server.yaml
 ```
 
@@ -235,7 +235,7 @@ docker compose up -d --build
 多架构构建用 Buildx：
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t meatus:1.4.0 .
+docker buildx build --platform linux/amd64,linux/arm64 -t meatus:1.5.0 .
 ```
 
 构建后做一次部署冒烟（首启、面板、Bearer API、SIGTERM）：
@@ -377,7 +377,7 @@ docker start meatus
 docker login registry.cn-hangzhou.aliyuncs.com
 
 # 固定版本 / 次版本 / 最新
-docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5.0
 docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.3
 docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:latest
 ```
@@ -393,6 +393,8 @@ server / client 使用同一镜像，启动参数与 4.6 相同，把镜像名�
 5. `systemctl start meatus-server`，观察 `/healthz` 与面板。
 
 配置不兼容时回滚旧二进制与旧配置；token / 证书不随二进制变化。
+
+`1.5.0` 与 `1.4.0` 配置兼容：不配置 `[relay]` 即保持 standalone；启用 relay 组前先备份配置，并执行 `meatus relay bundle verify`。
 
 ## 6. 端口与防火墙
 

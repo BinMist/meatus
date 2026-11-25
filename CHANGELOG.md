@@ -2,9 +2,9 @@
 
 本文件记录 Meatus 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
-## [1.5.0] - 未发布（范围冻结 2026-11-24）
+## [1.5.0] - 2026-11-25（定稿，待发布）
 
-> 状态：**未发布、未打 tag**。用户决策 B：`1.5.0` 降级收口，只交付 G1–G6 的代码与单机门禁，定位为 HA-ready；不宣称生产 HA，不包含 Windows 客户端。H1–H4、G2-03 双活外部健康检查与 V5-01 真实双主机验收全部移到 `1.5.1`。
+> 状态：**已定稿，待发布**。`1.5.0` 只交付 G1–G6 的代码与单机门禁，定位为 HA-ready；不宣称生产 HA，不包含 Windows 客户端。H1–H4、G2-03 双活外部健康检查与 V5-01 真实双主机验收全部移到 `1.5.1`。四平台包、`.sha256` 与源码 SBOM 已构建；`v1.5.0` tag、Gitee Release、ACR `1.5.0` 镜像与生产 `1.4.0 → 1.5.0` 升级/回滚待执行。
 
 V1.5 的高可用能力进入代码与单机验收，但真实双主机 HA 尚未闭环。
 
@@ -27,8 +27,14 @@ V1.5 的高可用能力进入代码与单机验收，但真实双主机 HA 尚�
 
 - **没有真实双主机 HA**：当前只有 `.47` 一台生产机，`.48` 公钥被拒，DNS 无双 A；G2-03 与 V5-01 未执行，单机双进程演练不得写成生产 HA。
 - **Windows 不进 1.5.0**：H1-01 服务命令代码已在仓库，但未做 Windows 11 真机 SCM 安装/卸载/重启自启/日志路径验收；不发布 Windows 包、不宣称可用。H1-02 安装包与托盘移到 `1.5.1`。
-- **1.5.0 尚未发布**：standalone 24h soak、Linux/macOS 包、SBOM、ACR 与 Gitee Release 资产仍未执行；在这些门禁完成前不创建 `v1.5.0` tag。
+- **发布资产状态**：standalone 24h soak 已 PASS（2026-11-25T12:00:33Z，`1440/1440`、`failed=0`、`success_rate=1.0`）；四平台包、`.sha256` 与源码 SBOM 已构建；Gitee Release、ACR `1.5.0` 镜像、`v1.5.0` tag 与生产升级/回滚仍待执行。
 - 双 relay 24h soak、DNS 双 A、外部健康检查与真实故障切换属于 `1.5.1`。
+
+### 发布记录
+
+- 2026-11-25：`feat/v1.5` ff 合并到 `master`（`1e7bd7d`）；`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --all-targets --locked` 通过，`291 passed / 0 failed / 1 ignored`。
+- standalone 24h soak：2026-11-24T12:00:33Z → 2026-11-25T12:00:33Z，`1440/1440`、`failed=0`、`success_rate=1.0`、`max_consecutive_failures=0`、p95=2.1ms、max=6.4ms，`RESULT: PASS`。
+- 四平台资产：`dist/v1.5.0/`，4 个 `tar.gz` + 4 个 `.sha256` + `sbom-meatus-1.5.0.spdx.json`；镜像 SBOM 在 ACR 推送后生成。
 
 ## [1.4.0] - 2026-11-22
 

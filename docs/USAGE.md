@@ -1,12 +1,29 @@
-# Meatus 完整使用教程（V1.4）
+# Meatus 完整使用教程（V1.5）
 
-> 适用版本：Meatus `1.4.0`（完全开源、Apache-2.0、自托管；2026-11-22 已发布）
-> 发布状态：`1.4.0` 已发布，当前线上正式版本为 `1.4.0`；四平台包、SBOM、ACR 多架构镜像与 Gitee Release 均已提供。`1.4.0` 以全量测试、兼容矩阵、20% 弱网、ZAP baseline、10 client 并发与性能基线为发布门禁；24h soak 不作为发布前门禁，1.4.0 构建已于 2026-11-22 发布后补跑 PASS（1437/1437、fail=0、max_restarts=0）。Windows 暂不提供；GHCR / GitHub Release 暂缓。
+> 适用版本：Meatus `1.5.0`（完全开源、Apache-2.0、自托管；2026-11-25 定稿，待发布）
+> 发布状态：`1.5.0` 已定稿，四平台包、`.sha256` 与源码 SBOM 已构建；`v1.5.0` tag、Gitee Release、ACR `1.5.0` 镜像与生产 `1.4.0 → 1.5.0` 升级/回滚待执行，当前线上正式版本仍为 `1.4.0`。24h soak PASS（1440/1440、failed=0），快速门禁 `291 passed / 1 ignored`。Windows 暂不提供；GHCR / GitHub Release 暂缓。
 > 运行形态：一台公网 **server** + 一台或多台内网 **client**
 > 依赖：单二进制 + TOML（默认）/ YAML（管理面可写，规范化重写）；**零 PostgreSQL、零 Redis、零 Node 运行时**
 > 配套 AI 教程 Skill：`docs/skill/meatus-tutorial/`（复制到 Agent 的 `.user_skills/` 后可按步骤教学）
 
 本教程覆盖：本机跑通、公网部署、systemd、Docker Compose、纯 `docker run`、配置项、YAML、管理面 TLS、TCP / UDP / HTTP / HTTPS / ACME / SOCKS5、管理面板、指标与日志、热重载、升级备份、故障排查和安全基线。
+
+## V1.5 更新与升级
+
+### V1.5.0 发布（2026-11-25 定稿）
+
+V1.5.0 以 relay 组、签名配置包、客户端 multi-home、证书同步、健康摘除、滚动 drain/蓝绿与 QUIC 控制面隔离为主。定位 HA-ready，不宣称生产 HA；不包含 Windows 客户端与桌面 GUI。
+
+| 能力 | 说明 |
+| --- | --- |
+| Relay 组 | `[relay]` 可选；`meatus relay bundle export/verify/import`，Ed25519 验签，校验 group / member / 端口段 / epoch |
+| Multi-home | 每个 relay 成员独立控制会话；同一 proxy 注册到所有成员，单成员断开只清理该成员绑定 |
+| 证书同步 | primary-only ACME，secondary 只读证书库；60s push/pull，HMAC/AEAD peer 通道 |
+| 健康与摘除 | `/healthz` 输出 relay / peer；metrics 暴露 role / epoch / peer_up；漂移拒绝启动并按阈值摘除 |
+| Drain / 蓝绿 | `drain_grace_s`、`/healthz` 503、`scripts/relay-roll.sh` 逐台升级/回滚 |
+| QUIC 控制隔离 | 协议 v2 + QUIC 时另拨独立数据连接，控制连接 `control_only`；`ControlHealth` 记录 Pong 指标 |
+
+发布门禁：master 快速门禁 fmt / clippy `-D warnings` / `291 passed / 1 ignored`；standalone 24h soak `1440/1440`、`failed=0`、`RESULT: PASS`；四平台包 + `.sha256` + 源码 SBOM。Gitee Release、ACR `1.5.0`、`v1.5.0` tag 与生产升级/回滚待执行。
 
 ## V1.4 更新与升级
 
@@ -105,8 +122,8 @@ V1.3.0 以多客户端、授权与配额、审计备份、RBAC、API Token 与�
 sudo tar czf meatus-backup-$(date +%F).tgz \
   -C / var/lib/meatus etc/meatus
 
-# 2. 下载并校验 1.4.0 发布包
-VERSION=1.4.0
+# 2. 下载并校验 1.5.0 发布包
+VERSION=1.5.0
 TARGET=x86_64-unknown-linux-musl
 curl -LO "https://gitee.com/binsail/meatus/releases/download/v${VERSION}/meatus-${VERSION}-${TARGET}.tar.gz"
 sha256sum -c "meatus-${VERSION}-${TARGET}.tar.gz.sha256"
@@ -369,7 +386,7 @@ ssh -p 20022 <user>@127.0.0.1
 
 
 ```
-VERSION=1.4.0
+VERSION=1.5.0
 TARGET=x86_64-unknown-linux-musl
 curl -LO "https://gitee.com/binsail/meatus/releases/download/v${VERSION}/meatus-${VERSION}-${TARGET}.tar.gz"
 sha256sum -c "meatus-${VERSION}-${TARGET}.tar.gz.sha256"
@@ -490,7 +507,7 @@ docker run -d --name meatus-server \
   --health-timeout 5s \
   --health-start-period 10s \
   --health-retries 3 \
-  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0 \
+  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5.0 \
   server --config /data/server.toml
 ```
 
@@ -543,7 +560,7 @@ docker run -d --name meatus-client \
   -v "$PWD/client.toml:/data/client.toml" \
   -v "$PWD/server.crt:/data/server.crt:ro" \
   --add-host host.docker.internal:host-gateway \
-  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0 \
+  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5.0 \
   client --config /data/client.toml
 
 docker logs -f meatus-client
@@ -566,8 +583,8 @@ docker logs -f meatus-client
 docker login registry.cn-hangzhou.aliyuncs.com
 
 # 固定版本 / 次版本 / 最新
-docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0
-docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5.0
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5
 docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:latest
 ```
 
@@ -575,7 +592,9 @@ server /client 使用同一镜像，启动参数同上，只替换镜像名。�
 
 
 
-* `1.4.0` 多架构 index digest：`sha256:410ba5a992f3169ccce4c1162fb709c5b88aa773e68529c14469a499747f4e9d`（`1.4.0` / `1.4` / `latest` 同一 index；amd64 `sha256:ff62ab7c21c8326deab71ba43aec5d135039d58703c3af437da3cb3a7e7e8844`，arm64 `sha256:2834d8c1d5007a5d015a69384f460e925b794edbc2936db3c52e0681c974172f`）。
+* `1.5.0` 多架构 index digest：待 ACR `1.5.0` 推送后写入；当前 ACR `latest` 仍为 `1.4.0`。
+
+* `1.4.0` 多架构历史 index digest：`sha256:410ba5a992f3169ccce4c1162fb709c5b88aa773e68529c14469a499747f4e9d`（`1.4.0` / `1.4` / `latest` 同一 index；amd64 `sha256:ff62ab7c21c8326deab71ba43aec5d135039d58703c3af437da3cb3a7e7e8844`，arm64 `sha256:2834d8c1d5007a5d015a69384f460e925b794edbc2936db3c52e0681c974172f`）。
 
 * `1.3.0` 多架构历史 index digest：`sha256:0d1d94177b4f7cd5e44c0f543abc9c14fd3b1cffa6b39aa7dd358b68ddc8d619`（`1.3.0` / `1.3` / `latest` 同一 index；amd64 `sha256:0183ea28a152fdade440305397986fbc0b96e160bc68a1f9100dd05bad9e7be5`，arm64 `sha256:afefa8cf039665480b304527f4aaa503f32024214be6a20581470e5d64831b0f`）；历史 `1.2.1` digest 为 `sha256:bc1f9ae5e496bc83bb02bf50170ffbb4ffca4ade1e2ccea6d4b3d27bf2f7881e`
 
@@ -2436,7 +2455,7 @@ Docker：
 
 ```
 docker login registry.cn-hangzhou.aliyuncs.com
-docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0
+docker pull registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5.0
 docker stop meatus-server
 docker rm meatus-server
 # 用原来的 docker run 命令重新启动，保留 meatus-data 卷
@@ -2469,7 +2488,7 @@ Docker 命名卷：
 docker stop meatus-server
 docker run --rm --entrypoint sh \
   -v meatus-data:/data -v "$PWD:/backup" \
-  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0 \
+  registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5.0 \
   -c 'tar czf /backup/meatus-data.tgz -C /data .'
 docker start meatus-server
 ```
@@ -2845,7 +2864,7 @@ A：面板是运行时管理，TOML 配置下会写回 `client.toml` 并保留�
 
 **Q：**`docker pull ghcr.io/binsail/meatus`**&#x20;失败？**
 
-A：GHCR 镜像尚未推送，当前只发布到阿里云 ACR。先 `docker login registry.cn-hangzhou.aliyuncs.com`，再拉 `registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.4.0`。
+A：GHCR 镜像尚未推送，当前只发布到阿里云 ACR。先 `docker login registry.cn-hangzhou.aliyuncs.com`，再拉 `registry.cn-hangzhou.aliyuncs.com/mist/meatus:1.5.0`。
 
 **Q：自签证书浏览器报警告怎么办？**
 
@@ -2859,7 +2878,7 @@ A：自签只适合内网 / 测试。公网终端用户访问请用公网 CA 或
 
 
 
-* 版本发布：[https://gitee.com/binsail/meatus/releases/tag/v1.4.0](https://gitee.com/binsail/meatus/releases/tag/v1.4.0)
+* 版本发布：[https://gitee.com/binsail/meatus/releases/tag/v1.5.0](https://gitee.com/binsail/meatus/releases/tag/v1.4.0)
 
 * 安装与长期运行：`docs/INSTALL.md`
 
