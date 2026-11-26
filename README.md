@@ -31,6 +31,33 @@ Rust 实现的内网穿透工具：把本机端口安全地暴露到公网。**�
 
 已知限制：没有真实双主机 HA，当前只有 `.47` 一台生产机，DNS 无双 A；Windows 不进入 `1.5.0`，H1-01 仅代码完成、未做 Windows 11 真机 SCM 验收；G2-03、V5-01、桌面 GUI、GHCR 与 GitHub Release 暂缓。完整版本历史、升级说明与限制见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 架构一览
+
+![Meatus 架构图](docs/assets/meatus-architecture.png)
+
+内网 client 主动向公网 relay 建立 TLS 1.3 + yamux 连接；relay 终止 TLS，按 Host / SNI / 端口路由，再把连接复用到 client 侧的本地服务。控制面 `:7000` 与 4 条数据连接分离，HTTP/HTTPS `:80` / `:443`、TCP/UDP 端口池、ACME、Vue 3 面板与 Prometheus 都在同一个二进制内。
+
+> `1.5.0` 的 relay 组是 HA-ready 接缝，当前生产为 `.47` 单机；真实双主机 HA 验收在 `1.5.1`，不把 HA-ready 写成生产 HA。
+
+## 30 秒体验
+
+![30 秒 CLI 演示](docs/assets/meatus-30s-demo.gif)
+
+演示取自 `1.5.0` 真实二进制与线上 relay：`meatus --version`、HTTPS `200`、HTTP `200`、`/healthz`。它不是完整产品录屏，不包含客户端配置全过程；完整步骤见 [docs/USAGE.md](docs/USAGE.md)。
+
+## 与 frp / nps 的定位差异
+
+> 下表只做产品定位与取舍对比，不做逐项能力评分；frp / nps 的具体能力以其官方文档为准。
+
+| 维度 | Meatus | frp | nps |
+| --- | --- | --- | --- |
+| 语言 / 形态 | Rust，单二进制，内嵌 Vue 3 面板 | Go，单二进制，服务端 Dashboard + 客户端 Admin UI | Go，服务端 + Web 管理面板 |
+| 配置 | TOML / YAML；管理面可写 YAML | TOML / YAML / JSON | 以 Web 面板配置为主 |
+| 证书 | 内建 ACME：HTTP-01 / DNS-01，精确域名与泛域名 | 证书与 HTTPS 能力按配置 / 插件组合 | 证书由面板 / 配置文件管理 |
+| 传输 | 默认 TCP + TLS 1.3 + yamux；可选 QUIC，控制面隔离 | 多代理类型，生态成熟 | 多协议代理，面板化运维 |
+| 运维 | 零数据库；`/healthz`、Prometheus、审计脱敏 | 社区大、资料多 | 上手直观、统一 Web 管理 |
+| 适合 | 想要单二进制、内建面板与 ACME 的个人 / 小团队 | 需要成熟生态与多协议插件 | 偏好 Web 面板统一管理 |
+
 ## 目录结构
 
 ```
